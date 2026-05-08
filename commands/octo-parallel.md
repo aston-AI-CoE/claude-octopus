@@ -1,5 +1,5 @@
 ---
-description: "\"Team of Teams - Decompose compound tasks across independent claude instances\""
+description: "\"[advanced] Team of Teams - Decompose compound tasks across independent claude instances\""
 ---
 
 # Parallel - Team of Teams

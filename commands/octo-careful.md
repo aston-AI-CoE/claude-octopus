@@ -1,5 +1,5 @@
 ---
-description: "Activate destructive command warnings for the session"
+description: "\"[advanced] Activate destructive command warnings for the session\""
 ---
 
 # Careful Mode - Destructive Command Warnings

@@ -1,19 +1,8 @@
 ---
-description: "\"Manage scheduled workflow jobs (add via wizard, dashboard, list, remove, enable, disable, logs)\""
+description: "\"[advanced] Manage scheduled workflow jobs (add via wizard, dashboard, list, remove, enable, disable, logs)\""
 ---
 
 # Schedule
-
-## MANDATORY COMPLIANCE — DO NOT SKIP
-
-**When the user invokes `/octo:schedule`, you MUST use the scheduler CLI below. You are PROHIBITED from:**
-- Managing cron jobs or schedules manually without the scheduler
-- Skipping the scheduler subcommands and just editing files directly
-- Substituting `crontab -e` or manual file edits for the scheduler interface
-
-**The user chose `/octo:schedule` for the managed scheduler workflow.**
-
----
 
 Manage scheduled workflow jobs for the Claude Octopus scheduler.
 
@@ -28,6 +17,10 @@ ${HOME}/.claude-octopus/plugin/scripts/scheduler/octopus-scheduler.sh [subcomman
 This command supports **natural language** and provides two primary experiences:
 - **No args / "show jobs" / "what's scheduled"** → Dashboard table
 - **"add a job" / "schedule X" / `add` with no file** → Guided wizard
+
+### MANDATORY COMPLIANCE — DO NOT SKIP
+
+**When the user explicitly invokes `/octo:schedule`, you MUST use the scheduler command paths below.** You are PROHIBITED from inventing job state, editing scheduler files by hand, or bypassing the dashboard/wizard flow.
 
 ---
 

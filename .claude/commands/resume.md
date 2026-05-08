@@ -1,6 +1,6 @@
 ---
 command: resume
-description: Resume a previous agent by ID — continue an interrupted task where it left off
+description: "[advanced] Resume a previous agent by ID — continue an interrupted task where it left off"
 ---
 
 # /octo:resume — Agent Resume
@@ -8,6 +8,10 @@ description: Resume a previous agent by ID — continue an interrupted task wher
 **Your first output line MUST be:** `🐙 Octopus Agent Resume`
 
 Resume a previously-running Claude agent by ID. Picks up the agent's transcript and continues where it left off.
+
+## MANDATORY COMPLIANCE — DO NOT SKIP
+
+**When the user explicitly invokes `/octo:resume`, you MUST call the `agent-resume` orchestrator path below.** You are PROHIBITED from pretending to resume an agent from memory or starting unrelated fresh work without telling the user.
 
 ## Step 1: Get the Agent ID
 

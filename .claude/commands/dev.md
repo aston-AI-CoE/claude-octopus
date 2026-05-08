@@ -1,6 +1,6 @@
 ---
 command: dev
-description: "Switch to Dev Work mode - optimized for software development"
+description: "[advanced] Switch to Dev Work mode - optimized for software development"
 aliases:
   - dev-mode
 ---

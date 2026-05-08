@@ -1,31 +1,14 @@
 ---
-description: "\"Dark Factory Mode - Spec-in, software-out autonomous pipeline\""
+description: "\"[advanced] Dark Factory Mode - Spec-in, software-out autonomous pipeline\""
 ---
 
 # Factory - Dark Factory Mode (v8.25.0)
 
-## MANDATORY COMPLIANCE — DO NOT SKIP
-
-**When the user invokes `/octo:factory`, you MUST execute the full autonomous pipeline below. You are PROHIBITED from:**
-- Building the software directly without running the spec-driven pipeline
-- Skipping the embrace workflow or quality gates
-- Deciding the spec is "simple enough" to implement without multi-provider synthesis
-- Substituting a single-model implementation for the multi-LLM factory pipeline
-
-**The user chose Dark Factory deliberately.** They want spec-in, software-out with full multi-AI orchestration, adversarial review, and quality gates. If you catch yourself thinking "I can just implement this directly" — STOP. That is the exact rationalization this instruction prohibits.
-
-### EXECUTION MECHANISM — NON-NEGOTIABLE
-
-**You MUST execute this command by calling `orchestrate.sh` as documented below. You are PROHIBITED from:**
-- ❌ Doing the work yourself using only Claude-native tools (Agent, Read, Grep, Write)
-- ❌ Using a single Claude subagent instead of multi-provider dispatch via orchestrate.sh
-- ❌ Skipping orchestrate.sh because "I can do this faster directly"
-
-**Multi-LLM orchestration is the purpose of this command.** If you execute using only Claude, you've violated the command's contract.
-
----
-
 ## INSTRUCTIONS FOR CLAUDE
+
+### MANDATORY COMPLIANCE — DO NOT SKIP
+
+**When the user explicitly invokes `/octo:factory`, you MUST execute the orchestrated factory pipeline below.** You are PROHIBITED from replacing the pipeline with a direct Claude-only implementation.
 
 When the user invokes this command (e.g., `/octo:factory --spec <path>`):
 
@@ -55,22 +38,47 @@ if command -v gemini >/dev/null 2>&1; then
 fi
 ```
 
-Display the factory banner:
+**MANDATORY: Check provider availability before displaying the banner:**
+
+```bash
+echo "PROVIDER_CHECK_START"
+printf "codex:%s\n" "$(command -v codex >/dev/null 2>&1 && echo available || echo missing)"
+printf "gemini:%s\n" "$(command -v gemini >/dev/null 2>&1 && echo available || echo missing)"
+printf "perplexity:%s\n" "$([ -n "${PERPLEXITY_API_KEY:-}" ] && echo available || echo missing)"
+printf "opencode:%s\n" "$(command -v opencode >/dev/null 2>&1 && echo available || echo missing)"
+printf "copilot:%s\n" "$(command -v copilot >/dev/null 2>&1 && echo available || echo missing)"
+printf "qwen:%s\n" "$(command -v qwen >/dev/null 2>&1 && echo available || echo missing)"
+printf "ollama:%s\n" "$(command -v ollama >/dev/null 2>&1 && curl -sf http://localhost:11434/api/tags >/dev/null 2>&1 && echo available || echo missing)"
+printf "openrouter:%s\n" "$([ -n "${OPENROUTER_API_KEY:-}" ] && echo available || echo missing)"
+echo "PROVIDER_CHECK_END"
+```
+
+Display the factory banner with ACTUAL results:
 
 ```
 CLAUDE OCTOPUS ACTIVATED - Dark Factory Mode
 Pipeline: Parse → Scenarios → Embrace → Holdout → Score → Report
 
 Providers:
-  Codex CLI - Scenario generation + holdout evaluation
-  Gemini CLI - Cross-provider diversity + blind review
-  Claude - Orchestration, synthesis, satisfaction scoring
+  🔴 Codex CLI: [Available ✓ / Not installed ✗] - Scenario generation + holdout evaluation
+  🟡 Gemini CLI: [Available ✓ / Not installed ✗] - Cross-provider diversity + blind review
+  🔵 Claude: Available ✓ - Orchestration, synthesis, satisfaction scoring
 
 Spec: <spec-path>
 Estimated cost: $0.50-2.00 (~20-30 agent calls)
 ```
 
+**PROHIBITED: Displaying only Claude without listing all providers.**
 If both external providers are missing, warn but proceed (Claude-only mode is supported).
+
+### EXECUTION MECHANISM — NON-NEGOTIABLE
+
+**You MUST execute this command by calling `orchestrate.sh` as documented below. You are PROHIBITED from:**
+- ❌ Doing the work yourself using only Claude-native tools (Agent, Read, Grep, Write)
+- ❌ Using a single Claude subagent instead of multi-provider dispatch via orchestrate.sh
+- ❌ Skipping orchestrate.sh because "I can do this faster directly"
+
+**Multi-LLM orchestration is the purpose of this command.** If you execute using only Claude, you've violated the command's contract.
 
 ### Step 3: Validate Spec
 

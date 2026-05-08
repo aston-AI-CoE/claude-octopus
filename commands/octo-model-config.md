@@ -4,19 +4,17 @@ description: "Configure AI provider models for Claude Octopus workflows"
 
 # Model Configuration
 
+**Your first output line MUST be:** `🐙 Octopus Model Config`
+
 ## STEP 0: Emit Banner (MANDATORY — run before AskUserQuestion or any other step)
 
 ```bash
-if [ -n "${OCTO_COMPACT_BANNER:-}" ] || [ -n "${COMPACT_BANNERS:-}" ]; then
-  echo "🐙 Octopus Model Config (provider | model | config | routing | cost | codex | gemini | phase)"
-else
-  echo "🐙 Octopus Model Config"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "provider | model | config | routing | cost | codex | gemini | phase"
-fi
+echo "🐙 Octopus Model Config"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "provider | model | config | routing | cost"
 ```
 
-Run this unconditionally — even when arguments are provided or when going to interactive wizard.
+Run this unconditionally — even when arguments are provided or when going to interactive wizard. The explicit bash block ensures the banner emits even when the command routes straight to `AskUserQuestion` (which historically skipped the inline-prose instruction and broke E2E pattern matching — see #301).
 
 Interactive model configuration wizard. Detects installed providers, shows current settings, and guides users through configuration with AskUserQuestion.
 
@@ -106,7 +104,7 @@ AskUserQuestion({
     multiSelect: false,
     options: [
       // Always show:
-      {label: "🔵 Claude", description: "Current: claude-sonnet-4.6 / claude-opus-4.6 — built-in, no config needed"},
+      {label: "🔵 Claude", description: "Current: claude-sonnet-4.6 / claude-opus-4.7 (legacy 4.6 available) — built-in, no config needed"},
       // Only if codex installed:
       {label: "🔴 Codex (OpenAI)", description: "Current: <current_model> — handles implementation, reasoning"},
       // Only if gemini installed:
@@ -270,7 +268,7 @@ AskUserQuestion({
     multiSelect: true,
     options: [
       // Only show installed/configured providers
-      {label: "🔵 Claude (Sonnet 4.6)", description: "Moderator — instruction-following, synthesis"},
+      {label: "🔵 Claude (Sonnet 4.6 / Opus 4.7)", description: "Moderator — instruction-following, synthesis"},
       {label: "🔴 Codex (GPT-5.4)", description: "Technical depth — architecture, implementation"},
       {label: "🟡 Gemini", description: "Ecosystem perspective — alternatives, trends"},
       {label: "🟠 OpenRouter: GLM-5", description: "Code review specialist — quality focus"},

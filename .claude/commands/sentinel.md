@@ -14,6 +14,10 @@ updated: 2026-02-21
 
 GitHub-aware work monitor that triages issues, PRs, and CI failures. Sentinel observes and recommends workflows but never auto-executes them.
 
+## MANDATORY COMPLIANCE — DO NOT SKIP
+
+**When the user explicitly invokes `/octo:sentinel`, you MUST run the Sentinel orchestrator path below.** You are PROHIBITED from manually guessing repository status, skipping GitHub checks, or starting remediation without explicit user approval.
+
 ## Usage
 
 ```bash

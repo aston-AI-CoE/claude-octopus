@@ -27,9 +27,18 @@ description: Deep research with multi-source synthesis and comprehensive analysi
 
 When the user invokes this command (e.g., `/octo:research <arguments>`):
 
-### Step 1: Ask Research Intensity
+### Step 1: Resolve Research Breadth/Intensity
 
-**CRITICAL: Before starting research, use the AskUserQuestion tool to select intensity:**
+First parse explicit flags from the user's arguments:
+- `--breadth=light|standard|exhaustive`
+- `--intensity=quick|standard|deep`
+
+Map breadth to intensity when intensity is absent:
+- `light` -> `quick`
+- `standard` -> `standard`
+- `exhaustive` -> `deep`
+
+If neither flag is present, use the AskUserQuestion tool to select intensity:
 
 ```javascript
 AskUserQuestion({
@@ -57,10 +66,12 @@ Map the answer to an intensity value:
 
 **✓ CORRECT - Use the Skill tool:**
 ```
-Skill(skill: "octo:discover", args: "[intensity=quick|standard|deep] <user's arguments>")
+Skill(skill: "octo:discover", args: "[breadth=light|standard|exhaustive] [intensity=quick|standard|deep] <user's arguments without routing flags>")
 ```
 
-Example: `Skill(skill: "octo:discover", args: "[intensity=standard] OAuth 2.0 authentication patterns")`
+Examples:
+- `Skill(skill: "octo:discover", args: "[breadth=standard] [intensity=standard] OAuth 2.0 authentication patterns")`
+- `/octo:research --breadth=exhaustive current agent orchestration patterns` -> `Skill(skill: "octo:discover", args: "[breadth=exhaustive] [intensity=deep] current agent orchestration patterns")`
 
 **✗ INCORRECT - Do NOT use these:**
 ```

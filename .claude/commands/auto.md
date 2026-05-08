@@ -93,6 +93,12 @@ Multiple intents matched + resolved by priority ordering
 Multiple intents matched at same priority level
   → MEDIUM confidence (present top 2 candidates)
 
+No explicit intent + query asks between two named technologies/options (`X or Y`, `X vs Y`, two code-formatted names)
+  → MEDIUM confidence debate candidate (`octo:debate`)
+
+No explicit intent + substantial what/how/why/which question (40+ characters)
+  → MEDIUM confidence research candidate (`octo:discover`)
+
 No intent keywords matched
   → LOW confidence
 ```

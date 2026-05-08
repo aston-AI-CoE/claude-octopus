@@ -102,6 +102,8 @@ rank_results_by_signals() {
         [[ "$result" == *.raw-concat* ]] && continue
         [[ "$result" == *.partial-* ]] && continue
         [[ -n "$filter" && "$result" != *"$filter"* ]] && continue
+        grep -q "Status: FAILED" "$result" 2>/dev/null && continue
+        type octo_file_has_provider_rejection >/dev/null 2>&1 && octo_file_has_provider_rejection "$result" && continue
 
         local score
         score=$(score_result_file "$result")
@@ -126,7 +128,10 @@ aggregate_results() {
     local result_count=0
     > "$raw_concat"
     local ranked_files
-    ranked_files=$(rank_results_by_signals "$RESULTS_DIR" "$filter")
+    if type agent_status_output_files >/dev/null 2>&1; then
+        ranked_files=$(agent_status_output_files "$filter" 2>/dev/null || true)
+    fi
+    [[ -z "$ranked_files" ]] && ranked_files=$(rank_results_by_signals "$RESULTS_DIR" "$filter")
 
     if [[ -z "$ranked_files" ]]; then
         # Fallback: no ranked results, use original glob order
@@ -135,12 +140,22 @@ aggregate_results() {
             [[ "$result" == *aggregate* ]] && continue
             [[ "$result" == *.raw-concat* ]] && continue
             [[ -n "$filter" && "$result" != *"$filter"* ]] && continue
+            grep -q "Status: FAILED" "$result" 2>/dev/null && continue
+            type octo_file_has_provider_rejection >/dev/null 2>&1 && octo_file_has_provider_rejection "$result" && continue
             ranked_files+="$result"$'\n'
         done
     fi
 
+    local agent_summary=""
+    if type render_agent_summary >/dev/null 2>&1; then
+        agent_summary=$(render_agent_summary 2>/dev/null || true)
+    fi
+
     while IFS= read -r result; do
         [[ -z "$result" ]] && continue
+        [[ ! -f "$result" ]] && continue
+        grep -q "Status: FAILED" "$result" 2>/dev/null && continue
+        type octo_file_has_provider_rejection >/dev/null 2>&1 && octo_file_has_provider_rejection "$result" && continue
         local score
         score=$(score_result_file "$result")
         echo "---" >> "$raw_concat"
@@ -171,6 +186,8 @@ Rules:
 - Merge overlapping content; preserve distinct contributions from each source
 - Short but critical findings (minority opinions, edge cases, warnings) are EQUALLY important as verbose analysis — do NOT dismiss them for brevity
 - If sources conflict, state the conflict and your resolution
+- Cite the source provider/file for factual claims; mark uncited interpretation as [inference]
+- Treat failed providers as unavailable, not as evidence
 - The output must stand alone — a reader should get the complete picture without seeing the inputs
 
 Structure the output as:
@@ -178,6 +195,9 @@ Structure the output as:
 2. **Detailed Analysis** — Organized by topic, not by source
 3. **Conflicts & Trade-offs** — Where sources disagreed and why
 4. **Recommendations** — Prioritized next steps
+
+Agent status:
+${agent_summary:-No agent status ledger available}
 
 Subtask results:
 $(<"$raw_concat")"
@@ -189,6 +209,10 @@ $(<"$raw_concat")"
             echo "Generated: $(date)" >> "$aggregate_file"
             echo "Sources: $result_count subtask outputs (ranked by quality)" >> "$aggregate_file"
             [[ -n "$user_query" ]] && echo "Query: $user_query" >> "$aggregate_file"
+            if [[ -n "$agent_summary" ]]; then
+                echo "" >> "$aggregate_file"
+                echo "$agent_summary" >> "$aggregate_file"
+            fi
             echo "" >> "$aggregate_file"
             echo "$synthesis_result" >> "$aggregate_file"
             rm -f "$raw_concat"
@@ -205,6 +229,10 @@ $(<"$raw_concat")"
     echo "# Claude Octopus - Aggregated Results" > "$aggregate_file"
     echo "" >> "$aggregate_file"
     echo "Generated: $(date)" >> "$aggregate_file"
+    if [[ -n "$agent_summary" ]]; then
+        echo "" >> "$aggregate_file"
+        echo "$agent_summary" >> "$aggregate_file"
+    fi
     echo "" >> "$aggregate_file"
     cat "$raw_concat" >> "$aggregate_file"
     echo "" >> "$aggregate_file"
@@ -232,6 +260,8 @@ synthesize_probe_results() {
     local total_content_size=0
     for result in "$RESULTS_DIR"/*-probe-${task_group}-*.md; do
         [[ -f "$result" ]] || continue
+        grep -q "Status: FAILED" "$result" 2>/dev/null && { log DEBUG "Skipping $result (failed status)"; continue; }
+        type octo_file_has_provider_rejection >/dev/null 2>&1 && octo_file_has_provider_rejection "$result" && { log DEBUG "Skipping $result (provider rejection)"; continue; }
 
         # Check if file has meaningful content (>500 bytes of actual content)
         local file_size
@@ -272,6 +302,8 @@ synthesize_probe_results() {
     while IFS= read -r ranked_file; do
         [[ -z "$ranked_file" ]] && continue
         [[ ! -f "$ranked_file" ]] && continue
+        grep -q "Status: FAILED" "$ranked_file" 2>/dev/null && continue
+        type octo_file_has_provider_rejection >/dev/null 2>&1 && octo_file_has_provider_rejection "$ranked_file" && continue
         local file_size
         file_size=$(wc -c < "$ranked_file" 2>/dev/null || echo "0")
         [[ $file_size -le 500 ]] && continue
@@ -289,10 +321,15 @@ synthesize_probe_results() {
 
 Original Question: $original_prompt
 
+Agent status:
+$(type render_agent_summary >/dev/null 2>&1 && render_agent_summary 2>/dev/null || echo "No agent status ledger available")
+
 Sources are pre-ranked by quality score (best first). However:
 - Short but specific findings may be MORE valuable than lengthy general analysis
 - Minority opinions and dissenting views MUST be preserved — they often contain critical insights
 - Concrete examples (code, file paths, commands) outweigh abstract discussion
+- Every factual claim must cite its source provider/file or be explicitly marked [inference]
+- Failed or rejected provider outputs were excluded and must not be cited as evidence
 
 Structure your synthesis as:
 1. **Key Findings** — Top 3-5 actionable insights, ranked by relevance to the original question

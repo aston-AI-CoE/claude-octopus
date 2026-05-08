@@ -17,12 +17,18 @@
 # execution providers"; before this change there was no consumer.
 # Output: one agent_type per line. Empty when config absent/empty/missing.
 _fan_out_agents_from_config() {
+    local feature="${1:-parallel}"
+    local breadth="${OCTOPUS_FANOUT_BREADTH:-${OCTOPUS_RESEARCH_BREADTH:-}}"
     local config_file="${HOME}/.claude-octopus/config/providers.json"
     [[ ! -f "$config_file" ]] && return 0
     command -v jq >/dev/null 2>&1 || return 0
 
-    jq -r '
-        (.routing.features.parallel // [])
+    jq -r --arg feature "$feature" --arg breadth "$breadth" '
+        if $feature == "research" and $breadth != "" then
+            (.routing.features.research_breadth[$breadth] // .routing.features.research // .routing.features.parallel // [])
+        else
+            (.routing.features[$feature] // .routing.features.parallel // [])
+        end
         | if type == "array" then .[] else empty end
     ' "$config_file" 2>/dev/null || true
 }
@@ -36,7 +42,7 @@ fan_out() {
 
     # v9.31.0: honor wizard-configured participants if present
     local _configured
-    _configured=$(_fan_out_agents_from_config)
+    _configured=$(_fan_out_agents_from_config "${OCTOPUS_FANOUT_FEATURE:-parallel}")
     if [[ -n "$_configured" ]]; then
         while IFS= read -r _a; do
             [[ -z "$_a" ]] && continue
@@ -72,6 +78,7 @@ fan_out() {
     echo ""
     echo -e "${CYAN}View results:${NC}"
     echo "  ls -la $RESULTS_DIR/"
+    echo "  $(basename "$0") agent-summary"
     echo ""
 }
 
@@ -223,6 +230,7 @@ parallel_execute() {
         log WARN "Completed with $skipped skipped tasks (invalid/malformed)"
     fi
     log INFO "All $task_count tasks processed ($((task_count - skipped)) executed, $skipped skipped)"
+    type render_agent_summary >/dev/null 2>&1 && render_agent_summary
     aggregate_results
 }
 

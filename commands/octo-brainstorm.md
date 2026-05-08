@@ -8,13 +8,7 @@ description: "\"Start a creative thought partner brainstorming session\""
 
 ### MANDATORY COMPLIANCE — DO NOT SKIP
 
-**When the user invokes `/octo:brainstorm`, you MUST ask the mode selection question below BEFORE starting the session. You are PROHIBITED from:**
-- Defaulting to Solo mode without asking
-- Skipping the mode selection question
-- Brainstorming solo and calling it Team mode
-- Skipping the provider check or visual banner in Team mode
-
-**The user chose `/octo:brainstorm` for structured ideation. Follow the workflow.**
+**When the user invokes `/octo:brainstorm`, you MUST ask the mode selection question below BEFORE starting the session.** Do NOT default to Solo mode. Do NOT skip the question. The user must choose.
 
 ---
 
@@ -64,20 +58,35 @@ Standard thought partner session using four breakthrough techniques:
 
 **You MUST output this banner before doing anything else.** This is NOT optional — users need to see which AI providers are active and understand cost implications.
 
+**MANDATORY: First, use the Bash tool to check provider availability:**
+
+```bash
+echo "PROVIDER_CHECK_START"
+printf "codex:%s\n" "$(command -v codex >/dev/null 2>&1 && echo available || echo missing)"
+printf "gemini:%s\n" "$(command -v gemini >/dev/null 2>&1 && echo available || echo missing)"
+printf "perplexity:%s\n" "$([ -n "${PERPLEXITY_API_KEY:-}" ] && echo available || echo missing)"
+printf "opencode:%s\n" "$(command -v opencode >/dev/null 2>&1 && echo available || echo missing)"
+printf "copilot:%s\n" "$(command -v copilot >/dev/null 2>&1 && echo available || echo missing)"
+printf "qwen:%s\n" "$(command -v qwen >/dev/null 2>&1 && echo available || echo missing)"
+printf "ollama:%s\n" "$(command -v ollama >/dev/null 2>&1 && curl -sf http://localhost:11434/api/tags >/dev/null 2>&1 && echo available || echo missing)"
+printf "openrouter:%s\n" "$([ -n "${OPENROUTER_API_KEY:-}" ] && echo available || echo missing)"
+echo "PROVIDER_CHECK_END"
+```
+
+Then display with ACTUAL results — list ALL providers:
+
 ```
 🐙 **CLAUDE OCTOPUS ACTIVATED** — Multi-AI Brainstorm
 🔍 Brainstorm: [Topic being explored]
 
 Providers:
-🔴 Codex CLI — Technical feasibility and implementation angles
-🟡 Gemini CLI — Lateral thinking and ecosystem connections
-🔵 Claude — Synthesis, pattern naming, and moderation
+🔴 Codex CLI: [Available ✓ / Not installed ✗] — Technical feasibility and implementation angles
+🟡 Gemini CLI: [Available ✓ / Not installed ✗] — Lateral thinking and ecosystem connections
+🔵 Claude: Available ✓ — Synthesis, pattern naming, and moderation
 ```
 
-Check provider availability:
-- `command -v codex` for Codex CLI
-- `command -v gemini` for Gemini CLI
-- If a provider is unavailable, mark it `(unavailable — skipping)` in the banner
+**PROHIBITED: Displaying only "🔵 Claude: Available ✓" without listing all providers.**
+If a provider is unavailable, mark it `(unavailable — skipping)` in the banner
 
 #### Step 2b: Frame the Topic
 

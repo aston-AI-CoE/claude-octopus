@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # error-tracking.sh — Extracted from orchestrate.sh
-# Functions: record_error, update_task_progress, get_active_form_verb
+# Functions: record_error, update_task_progress, get_active_form_verb,
+#            write_agent_status, render_agent_summary, record_oversize_event
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # UX ENHANCEMENTS: Feature 1 - Enhanced Spinner Verbs (v7.16.0)
@@ -153,4 +154,263 @@ record_error() {
 ERREOF
 
     log DEBUG "Recorded error: agent=$agent, exit_code=$exit_code"
+}
+
+# Resolve the current run id for multi-provider diagnostics. Prefer the explicit
+# run id when a workflow sets one, then host/session ids, then a stable fallback.
+octo_current_run_id() {
+    local fallback
+    fallback="run-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    printf '%s\n' "${OCTOPUS_RUN_ID:-${OCTOPUS_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION:-$fallback}}}}}"
+}
+
+octo_run_dir() {
+    local run_id
+    run_id=$(octo_current_run_id)
+    printf '%s\n' "${WORKSPACE_DIR:-${HOME}/.claude-octopus}/runs/${run_id}"
+}
+
+octo_estimate_tokens_for_file() {
+    local file="$1"
+    [[ -f "$file" ]] || { echo "0"; return; }
+    local chars
+    chars=$(wc -c < "$file" 2>/dev/null | tr -d ' ' || echo "0")
+    [[ -z "$chars" ]] && chars=0
+    echo $((chars / 4))
+}
+
+octo_provider_rejection_pattern() {
+    printf '%s\n' 'Prompt is too long|request entity too large|context limit|context length|tokens exceeded|too many tokens|maximum context|input is too large'
+}
+
+octo_file_has_provider_rejection() {
+    local pattern
+    pattern=$(octo_provider_rejection_pattern)
+    local file
+    for file in "$@"; do
+        [[ -f "$file" ]] || continue
+        if grep -qiE "$pattern" "$file" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+classify_agent_output() {
+    local output_file="$1"
+    local exit_code="${2:-0}"
+    local agent="${3:-unknown}"
+    local stderr_file="${4:-}"
+
+    if [[ "$exit_code" -eq 124 || "$exit_code" -eq 143 ]]; then
+        echo "timeout:Timed out before completion"
+        return 0
+    fi
+
+    if [[ "$exit_code" -ne 0 ]]; then
+        echo "failed:Exit code $exit_code"
+        return 0
+    fi
+
+    if octo_file_has_provider_rejection "$output_file" "$stderr_file"; then
+        echo "failed:Prompt rejected by provider (oversize)"
+        return 0
+    fi
+
+    if [[ ! -s "$output_file" ]]; then
+        echo "failed:Empty output"
+        return 0
+    fi
+
+    if grep -q 'OUTPUT TRUNCATED' "$output_file" 2>/dev/null; then
+        echo "degraded:Output truncated"
+        return 0
+    fi
+
+    # Some CLIs exit 0 with only boilerplate after filtering.
+    if ! grep -q '[[:alnum:]]' "$output_file" 2>/dev/null; then
+        echo "failed:Empty output"
+        return 0
+    fi
+
+    echo "ok:"
+}
+
+write_agent_run_snapshot() {
+    command -v jq >/dev/null 2>&1 || return 0
+
+    local run_id dir jsonl snapshot latest_dir
+    run_id=$(octo_current_run_id)
+    dir=$(octo_run_dir)
+    jsonl="$dir/agents.jsonl"
+    snapshot="$dir/agents.json"
+    [[ -s "$jsonl" ]] || return 0
+
+    jq -s \
+        --arg run_id "$run_id" \
+        --arg command "${OCTOPUS_COMMAND:-${COMMAND:-unknown}}" \
+        --arg args "${OCTOPUS_COMMAND_ARGS:-}" \
+        'group_by(.agent)
+         | map(.[-1])
+         | {
+             run_id: $run_id,
+             command: $command,
+             args: $args,
+             updated_at: (now | todate),
+             agents: .
+           }' \
+        "$jsonl" > "${snapshot}.tmp" 2>/dev/null && mv "${snapshot}.tmp" "$snapshot"
+
+    latest_dir="${WORKSPACE_DIR:-${HOME}/.claude-octopus}/runs/latest"
+    rm -f "$latest_dir" 2>/dev/null || true
+    ln -sfn "$dir" "$latest_dir" 2>/dev/null || true
+}
+
+write_agent_status() {
+    local agent="$1"
+    local status="$2"      # ok|degraded|failed|timeout|running
+    local tokens_in="${3:-0}"
+    local tokens_out="${4:-0}"
+    local reason="${5:-}"
+    local duration_ms="${6:-0}"
+    local output_file="${7:-}"
+    local role="${8:-}"
+
+    local run_id dir
+    run_id=$(octo_current_run_id)
+    dir=$(octo_run_dir)
+    mkdir -p "$dir"
+
+    if command -v jq >/dev/null 2>&1; then
+        jq -nc \
+            --arg agent "$agent" \
+            --arg role "$role" \
+            --arg status "$status" \
+            --arg reason "$reason" \
+            --arg output_file "$output_file" \
+            --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson tokens_in "${tokens_in:-0}" \
+            --argjson tokens_out "${tokens_out:-0}" \
+            --argjson duration_ms "${duration_ms:-0}" \
+            '{agent:$agent,role:$role,status:$status,tokens_in:$tokens_in,tokens_out:$tokens_out,duration_ms:$duration_ms,reason:(if ($reason|length)>0 then $reason else "" end),output_file:(if ($output_file|length)>0 then $output_file else "" end),ts:$ts}' \
+            >> "$dir/agents.jsonl" 2>/dev/null || true
+    else
+        printf '{"agent":"%s","role":"%s","status":"%s","tokens_in":%d,"tokens_out":%d,"duration_ms":%d,"reason":"%s","output_file":"%s","ts":"%s"}\n' \
+            "$agent" "$role" "$status" "$tokens_in" "$tokens_out" "$duration_ms" \
+            "$reason" "$output_file" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$dir/agents.jsonl"
+    fi
+
+    write_agent_run_snapshot
+}
+
+record_oversize_event() {
+    local agent="$1"
+    local original_chars="$2"
+    local final_chars="$3"
+    local outcome="$4"
+
+    local dir
+    dir=$(octo_run_dir)
+    mkdir -p "$dir"
+
+    if command -v jq >/dev/null 2>&1; then
+        jq -nc \
+            --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg agent "$agent" \
+            --arg outcome "$outcome" \
+            --argjson original_chars "${original_chars:-0}" \
+            --argjson final_chars "${final_chars:-0}" \
+            '{ts:$ts,agent:$agent,original_chars:$original_chars,final_chars:$final_chars,outcome:$outcome}' \
+            >> "$dir/oversize.jsonl" 2>/dev/null || true
+    else
+        printf '{"ts":"%s","agent":"%s","original_chars":%d,"final_chars":%d,"outcome":"%s"}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$agent" "$original_chars" "$final_chars" "$outcome" \
+            >> "$dir/oversize.jsonl"
+    fi
+}
+
+agent_status_output_files() {
+    local filter="${1:-}"
+    local dir jsonl
+    dir=$(octo_run_dir)
+    jsonl="$dir/agents.jsonl"
+    [[ -s "$jsonl" ]] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+
+    jq -rs --arg filter "$filter" '
+        group_by(.agent)
+        | map(.[-1])
+        | map(select(.status == "ok" or .status == "degraded" or .status == "timeout"))
+        | map(.output_file // empty)
+        | map(select(length > 0))
+        | .[]
+        | select($filter == "" or contains($filter))
+    ' "$jsonl" 2>/dev/null | while IFS= read -r file; do
+        [[ -f "$file" ]] && printf '%s\n' "$file"
+    done
+}
+
+render_agent_summary() {
+    local dir jsonl
+    dir=$(octo_run_dir)
+    jsonl="$dir/agents.jsonl"
+    [[ -s "$jsonl" ]] || return 0
+
+    command -v jq >/dev/null 2>&1 || {
+        echo "Agent run summary: $jsonl"
+        return 0
+    }
+
+    local rows ok degraded failed timeout total
+    rows=$(jq -rs '
+        group_by(.agent)
+        | map(.[-1])
+        | .[]
+        | [
+            .agent,
+            .status,
+            ((.tokens_out // 0) | tostring),
+            (((.duration_ms // 0) / 1000) | floor | tostring),
+            (.reason // "-")
+          ]
+        | @tsv
+    ' "$jsonl" 2>/dev/null) || return 0
+
+    ok=$(jq -rs 'group_by(.agent)|map(.[-1])|map(select(.status=="ok"))|length' "$jsonl" 2>/dev/null || echo 0)
+    degraded=$(jq -rs 'group_by(.agent)|map(.[-1])|map(select(.status=="degraded"))|length' "$jsonl" 2>/dev/null || echo 0)
+    failed=$(jq -rs 'group_by(.agent)|map(.[-1])|map(select(.status=="failed"))|length' "$jsonl" 2>/dev/null || echo 0)
+    timeout=$(jq -rs 'group_by(.agent)|map(.[-1])|map(select(.status=="timeout"))|length' "$jsonl" 2>/dev/null || echo 0)
+    total=$((ok + degraded + failed + timeout))
+
+    echo ""
+    echo "Agent run summary"
+    echo "─────────────────────────────────────────────────────────────────────"
+    printf '%-22s | %-10s | %-6s | %-5s | %s\n' "Provider" "Status" "Tokens" "Time" "Reason"
+    echo "─────────────────────────────────────────────────────────────────────"
+    while IFS=$'\t' read -r agent status tokens_out seconds reason; do
+        [[ -z "$agent" ]] && continue
+        local glyph
+        case "$status" in
+            ok) glyph="✓" ;;
+            degraded) glyph="⚠" ;;
+            failed) glyph="✗" ;;
+            timeout) glyph="⏱" ;;
+            running) glyph="…" ;;
+            *) glyph="?" ;;
+        esac
+        [[ ${#reason} -gt 44 ]] && reason="${reason:0:41}..."
+        printf '%-22s | %s %-8s | %6s | %4ss | %s\n' "$agent" "$glyph" "$status" "$tokens_out" "$seconds" "${reason:--}"
+    done <<< "$rows"
+    echo ""
+
+    if [[ $failed -gt 0 || $timeout -gt 0 ]]; then
+        printf '⚠ %d of %d agents failed or timed out — synthesis should use %d available outputs. Details: %s\n' \
+            "$((failed + timeout))" "$total" "$((ok + degraded + timeout))" "$dir"
+        if [[ "${OCTOPUS_REQUIRE_ALL:-false}" == "true" ]]; then
+            echo "Aborting: OCTOPUS_REQUIRE_ALL=true."
+            return 78
+        fi
+    elif [[ $degraded -gt 0 ]]; then
+        printf 'ℹ %d agents ran in degraded mode. Details: %s\n' "$degraded" "$dir"
+    fi
 }

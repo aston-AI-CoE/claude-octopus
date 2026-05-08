@@ -1,5 +1,5 @@
 ---
-description: "Query past workflow results — filter by workflow type, date, or provider"
+description: "\"[advanced] Query past workflow results — filter by workflow type, date, or provider\""
 allowed-tools: Bash, Read, Grep
 ---
 

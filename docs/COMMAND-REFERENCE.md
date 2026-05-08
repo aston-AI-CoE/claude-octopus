@@ -1,6 +1,6 @@
 # Command and Usage Reference
 
-Complete reference for all 48 Claude Octopus slash commands, 10 CLI tools (`octopus` + `octo-compress`), plus activation rules, provider indicators, and the project-lifecycle features that are triggered by natural language rather than slash commands.
+Complete reference for all 48 Claude Octopus slash commands, CLI tools (`octopus` + `octo-compress`), plus activation rules, provider indicators, and the project-lifecycle features that are triggered by natural language rather than slash commands.
 
 ---
 
@@ -18,7 +18,7 @@ All slash commands use the `/octo:` namespace. The smart router command is `/oct
 
 | Command | Description |
 |---------|-------------|
-| `/octo:setup` | Check setup status and configure providers (alias: `/octo:sys-setup`) |
+| `/octo:setup` | Check setup status and configure providers (aliases: `/octo:configure`, `/octo:config`, `/octo:init`, `/octo:wizard`, `/octo:sys-setup`) |
 | `/octo:doctor` | Environment diagnostics across 9 check categories (includes RTK install + token optimization) |
 | `/octo:model-config` | Configure provider model selection per workflow phase |
 | `/octo:km` | Toggle Knowledge Work mode |
@@ -103,6 +103,7 @@ All slash commands use the `/octo:` namespace. The smart router command is `/oct
 | `/octo:history` | Query past workflow results — filter by workflow type, date, or provider |
 | `/octo:resume` | Resume a previous agent by ID — continue an interrupted task |
 | `/octo:discipline` | Toggle discipline mode — auto-invoke verification and review checks |
+| `octopus agent-summary` | Show the current multi-provider run status table |
 
 ### Admin
 
@@ -121,6 +122,7 @@ Plugin executables available as bare commands (CC v2.1.91+). Also usable via ful
 | `octopus version` | Show plugin version |
 | `octopus session` | Show current session info |
 | `octopus fleet` | Show provider fleet status |
+| `octopus agent-summary` | Show which providers ran, degraded, failed, timed out, or contributed usable output |
 | `octo-compress` | Pipe verbose output for token savings: `npm install 2>&1 \| octo-compress` |
 | `octo-compress json` | Force JSON array/object compression |
 | `octo-compress logs` | Force log compression (head+tail) |
@@ -179,6 +181,13 @@ Single entry point with natural language intent detection. Analyzes your request
 - `70–80%` — Shows suggestion, asks for confirmation
 - `<70%` — Lists options, asks to clarify
 
+**Alias and fuzzy matching:**
+- Setup aliases such as `/octo:configure`, `/octo:config`, `/octo:init`, `/octo:install`, `/octo:settings`, and `/octo:wizard` resolve to `/octo:setup`.
+- Common shortcut aliases resolve before routing: `/octo:cost` -> `/octo:costs`, `/octo:usage` -> `/octo:costs`, `/octo:optimize` -> `/octo:auto`, `/octo:sys-update` -> `/octo:doctor`.
+- Mistyped explicit `/octo:*` commands return close matches and write the event to `~/.claude-octopus/alias-log.tsv`.
+
+**Router promotion:** Prompts that name multiple concrete options, such as "Redis or DynamoDB" or "Option A vs Option B", are promoted to `/octo:debate` so the answer gets structured multi-model scoring instead of a single-model response.
+
 ---
 
 ## System Commands
@@ -187,7 +196,7 @@ Single entry point with natural language intent detection. Analyzes your request
 
 Check setup status and configure AI providers.
 
-**Aliases:** `/octo:sys-setup`
+**Aliases:** `/octo:configure`, `/octo:config`, `/octo:init`, `/octo:install`, `/octo:settings`, `/octo:wizard`, `/octo:sys-setup`
 
 **Usage:**
 ```
@@ -468,18 +477,32 @@ Intelligent plan builder — creates strategic execution plans without executing
 
 ### `/octo:research`
 
-Deep research with multi-source synthesis and comprehensive analysis.
+Deep research with multi-provider fanout, visible provider status, and attributed synthesis.
 
 **Usage:**
 ```
 /octo:research microservices patterns
 /octo:research OAuth 2.0 vs API key authentication
+/octo:research --breadth=light Redis vs Memcached
+/octo:research --breadth=exhaustive OAuth 2.0 in microservices
 ```
 
 **What it does:**
-- Multi-AI research using Codex, Gemini, and Claude
-- Documentation lookup and ecosystem analysis
-- Synthesizes findings into actionable, structured insights
+- Parses `--breadth=light|standard|exhaustive` and maps it to a dynamic research fleet
+- Runs multi-AI research across available providers such as Claude, Codex, Gemini, Copilot, Qwen, OpenCode, Ollama, Perplexity, OpenRouter, and WebFetch/WebSearch where configured
+- Applies provider-aware prompt-size preflight before dispatch, using `OCTOPUS_OVERSIZE_STRATEGY=summarize|truncate|fail`
+- Renders an agent summary table before synthesis so failed, degraded, or timed-out providers are visible
+- Synthesizes findings into actionable, structured insights with provider attribution and disagreement notes
+
+**Breadth modes:**
+
+| Breadth | Typical Fleet | Time Budget | Best For |
+|---------|---------------|-------------|----------|
+| `light` | Claude + Codex | ~60s | Quick technical checks |
+| `standard` | Claude + Codex + Gemini | ~180s | Default research and trade-offs |
+| `exhaustive` | Claude + Codex + Gemini + Perplexity/OpenRouter/Web | ~360s | High-stakes or broad ecosystem research |
+
+If no breadth is provided, Octopus uses `OCTOPUS_RESEARCH_BREADTH` when set, otherwise it defaults to standard or asks when the query is underspecified.
 
 ---
 
@@ -1226,6 +1249,27 @@ Show a cost breakdown by provider and workflow for the current session.
 
 ---
 
+### `octopus agent-summary`
+
+Show the current run's provider status table from `~/.claude-octopus/runs/<run-id>/agents.jsonl`.
+
+**Usage:**
+```
+octopus agent-summary
+octopus summary
+```
+
+**What it shows:**
+- Provider/agent name
+- Status: `ok`, `degraded`, `failed`, or `timeout`
+- Output token count and duration
+- Failure or degradation reason, including oversize prompt handling
+- Whether synthesis will continue or abort when `OCTOPUS_REQUIRE_ALL=true`
+
+Multi-provider commands call this automatically before synthesis when a run ledger is available.
+
+---
+
 ### `/octo:retro`
 
 Generate data-driven engineering retrospectives from git history.
@@ -1409,6 +1453,9 @@ When Claude Octopus activates external CLIs, you'll see visual indicators:
 | 🔴 | Codex CLI executing | OpenAI (your OPENAI_API_KEY) |
 | 🟡 | Gemini CLI executing | Google (your GEMINI_API_KEY) |
 | 🟣 | Perplexity Sonar search | Your PERPLEXITY_API_KEY |
+| 🟢 | Qwen or Copilot executing | Qwen free tier or GitHub Copilot subscription |
+| 🟠 | OpenCode/OpenRouter provider executing | Local/OpenRouter configuration |
+| 🌐 | Web research source | WebFetch/WebSearch or configured web provider |
 | 🔵 | Claude subagent | Included with Claude Code |
 
 **Rule of thumb:**
@@ -1425,6 +1472,11 @@ Providers:
 🔴 Codex CLI - Technical implementation analysis
 🟡 Gemini CLI - Ecosystem and community research
 🔵 Claude - Strategic synthesis
+
+Agent run summary
+Provider               | Status      | Tokens | Time | Reason
+codex                  | ok          |   4200 |  18s | -
+gemini                 | degraded    |   1800 |  61s | prompt summarized before dispatch
 ```
 
 ---
@@ -1449,6 +1501,8 @@ Instead of slash commands, you can use natural language with the `octo` prefix:
 - `octo build ...`, `octo implement ...`, `/octo:develop ...`
 - `octo review ...`, `octo validate ...`, `/octo:review ...`
 - `/octo:multi ...` or "run this with all providers ..." for forced parallel mode
+- `/octo:configure`, `/octo:config`, `/octo:init`, and `/octo:wizard` for setup
+- Mistyped explicit `/octo:*` commands show close matches instead of failing silently
 
 **Usually Claude-only:**
 - "read `file.ts`", "show git status", "find all routes", "fix this typo"

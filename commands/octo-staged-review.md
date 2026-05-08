@@ -1,5 +1,5 @@
 ---
-description: "\"Two-stage review: spec compliance then code quality\""
+description: "\"[advanced] Two-stage review: spec compliance then code quality\""
 ---
 
 # Staged Review — Two-Stage Pipeline

@@ -40,7 +40,8 @@ Match the query against keywords below. Check categories **in priority order** �
 | Intent | Trigger Keywords | Routes To |
 |--------|-----------------|-----------|
 | Lifecycle | end-to-end, complete lifecycle, full workflow, entire project, whole system | `octo:embrace` |
-| Parallel | parallel, team of teams, decompose, work packages, split into, multi-instance | `octo:parallel` |
+| Multi-LLM | multi, multi-llm, multi-provider, all providers, force multi, cross-model | `octo:multi` |
+| Parallel | parallel, team of teams, decompose, work packages, split into | `octo:parallel` |
 | Specification | spec, nlspec, specification, requirements doc, define scope, write spec | `octo:spec` |
 | Security | security audit, OWASP, vulnerability, pentest, threat model, CVE, attack surface | `octo:security` |
 | TDD | TDD, test-driven, write tests, test first, unit test, test coverage | `octo:tdd` |
@@ -85,6 +86,12 @@ Multiple intents matched + resolved by priority ordering
 
 Multiple intents matched at same priority level
   → MEDIUM confidence (present top 2 candidates)
+
+No explicit intent + query asks between two named technologies/options (`X or Y`, `X vs Y`, two code-formatted names)
+  → MEDIUM confidence debate candidate (`octo:debate`)
+
+No explicit intent + substantial what/how/why/which question (40+ characters)
+  → MEDIUM confidence research candidate (`octo:discover`)
 
 No intent keywords matched
   → LOW confidence
@@ -136,7 +143,8 @@ Engineering:
  8. Security    (/octo:security)       — Security audit with OWASP coverage
  9. TDD         (/octo:tdd)            — Test-driven development workflow
 10. Spec        (/octo:spec)           — NLSpec structured authoring
-11. Parallel    (/octo:parallel)       — Team of Teams decomposition
+11. Multi-LLM   (/octo:multi)          — Force all providers on any task
+12. Parallel    (/octo:parallel)       — Team of Teams decomposition
 
 Creative & Documentation:
 12. Design      (/octo:design-ui-ux)   — UI/UX design workflow
@@ -151,17 +159,35 @@ Quick:
 
 ### STEP 6: Display Visual Indicators
 
-For multi-AI workflows, display before executing:
+**MANDATORY: For multi-AI workflows, you MUST use the Bash tool to check provider availability BEFORE displaying the banner:**
+
+```bash
+echo "PROVIDER_CHECK_START"
+printf "codex:%s\n" "$(command -v codex >/dev/null 2>&1 && echo available || echo missing)"
+printf "gemini:%s\n" "$(command -v gemini >/dev/null 2>&1 && echo available || echo missing)"
+printf "perplexity:%s\n" "$([ -n "${PERPLEXITY_API_KEY:-}" ] && echo available || echo missing)"
+printf "opencode:%s\n" "$(command -v opencode >/dev/null 2>&1 && echo available || echo missing)"
+printf "copilot:%s\n" "$(command -v copilot >/dev/null 2>&1 && echo available || echo missing)"
+printf "qwen:%s\n" "$(command -v qwen >/dev/null 2>&1 && echo available || echo missing)"
+printf "ollama:%s\n" "$(command -v ollama >/dev/null 2>&1 && curl -sf http://localhost:11434/api/tags >/dev/null 2>&1 && echo available || echo missing)"
+printf "openrouter:%s\n" "$([ -n "${OPENROUTER_API_KEY:-}" ] && echo available || echo missing)"
+echo "PROVIDER_CHECK_END"
+```
+
+Then display the banner with ACTUAL results — list ALL providers with their real status:
 
 ```
 🐙 **CLAUDE OCTOPUS ACTIVATED** - [Workflow Type]
 [Phase Emoji] [Phase Name]: [Brief description]
 
 Providers:
-🔴 Codex CLI - [role in this workflow]
-🟡 Gemini CLI - [role in this workflow]
-🔵 Claude - [your role]
+🔴 Codex CLI: [Available ✓ / Not installed ✗] - [role in this workflow]
+🟡 Gemini CLI: [Available ✓ / Not installed ✗] - [role in this workflow]
+🟤 OpenCode: [Available ✓ / Not installed ✗] - [role in this workflow]
+🔵 Claude: Available ✓ - [your role]
 ```
+
+**PROHIBITED: Displaying only "🔵 Claude: Available ✓" without checking and listing other providers.**
 
 ### STEP 7: Record Routing Decision
 

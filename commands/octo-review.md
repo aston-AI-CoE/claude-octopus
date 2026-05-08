@@ -1,19 +1,55 @@
 ---
-description: "Expert multi-LLM code review with inline PR comments — competes with CC Code Review"
+description: "Enhanced multi-LLM review with inline PR comments — escalation path beyond Claude-native /review"
 ---
 
 # /octo:review
 
 ## MANDATORY COMPLIANCE — DO NOT SKIP
 
-**When the user invokes `/octo:review`, you MUST execute the multi-LLM review workflow below. You are PROHIBITED from:**
-- Doing a direct code review without running the structured workflow
-- Deciding the scope is "too broad" and narrowing it yourself — the user chose the scope
-- Skipping the provider check or AskUserQuestion steps
-- Substituting a simpler review approach because it seems "more effective"
-- Running two background Sonnet agents instead of the full multi-provider pipeline
+**When the user explicitly invokes `/octo:review`, you MUST execute the enhanced multi-provider review workflow below.** You are PROHIBITED from substituting Claude-native `/review`, direct reading, or a single-model review unless the user changes commands.
 
-**The user chose `/octo:review` over a regular code review deliberately.** They want multi-provider perspectives (Codex + Gemini + Claude), not a single-model review. If you catch yourself thinking "a focused audit would be more effective" — STOP. That is the exact rationalization this instruction prohibits.
+## Positioning
+
+Three review entry points coexist in Claude Code v2.1.111+ — pick the right one per context:
+
+| Command | Scope | Providers | When |
+|---|---|---|---|
+| Claude-native `/review` | Single-turn, current diff | Claude only | Ordinary review, one perspective suffices |
+| `/ultrareview` (CC v2.1.111+) | Cloud, parallel multi-agent | Claude parallelism | Pre-merge PR review without leaving CC |
+| `/octo:review` (this) | Multi-LLM, inline PR comments | Codex + Gemini + Claude | Provider diversity, adversarial cross-check, stricter escalation |
+
+Use `/octo:review` when the user explicitly wants enhanced multi-LLM review, multiple model opinions, provider diversity, or stricter escalation workflows. If CC v2.1.111+ and the user just says "review this", prefer `/ultrareview` unless provider diversity is specifically requested.
+
+When the user invokes this command (e.g., `/octo:review <arguments>`):
+
+**MANDATORY: Before displaying the banner or starting the review, use the Bash tool to check provider availability:**
+
+```bash
+echo "PROVIDER_CHECK_START"
+printf "codex:%s\n" "$(command -v codex >/dev/null 2>&1 && echo available || echo missing)"
+printf "gemini:%s\n" "$(command -v gemini >/dev/null 2>&1 && echo available || echo missing)"
+printf "perplexity:%s\n" "$([ -n "${PERPLEXITY_API_KEY:-}" ] && echo available || echo missing)"
+printf "opencode:%s\n" "$(command -v opencode >/dev/null 2>&1 && echo available || echo missing)"
+printf "copilot:%s\n" "$(command -v copilot >/dev/null 2>&1 && echo available || echo missing)"
+printf "qwen:%s\n" "$(command -v qwen >/dev/null 2>&1 && echo available || echo missing)"
+printf "ollama:%s\n" "$(command -v ollama >/dev/null 2>&1 && curl -sf http://localhost:11434/api/tags >/dev/null 2>&1 && echo available || echo missing)"
+printf "openrouter:%s\n" "$([ -n "${OPENROUTER_API_KEY:-}" ] && echo available || echo missing)"
+echo "PROVIDER_CHECK_END"
+```
+
+Then display the banner with ACTUAL results:
+
+```
+🐙 **CLAUDE OCTOPUS ACTIVATED** — Multi-LLM Code Review
+
+Providers:
+🔴 Codex CLI: [Available ✓ / Not installed ✗] — logic and correctness
+🟡 Gemini CLI: [Available ✓ / Not installed ✗] — security and edge cases
+🔵 Claude: Available ✓ — architecture and synthesis
+🟣 Perplexity: [Available ✓ / Not configured ✗] — CVE lookup
+```
+
+**PROHIBITED: Displaying only "🔵 Claude: Available ✓" without checking and listing other providers.**
 
 ### EXECUTION MECHANISM — NON-NEGOTIABLE
 
@@ -25,18 +61,6 @@ description: "Expert multi-LLM code review with inline PR comments — competes 
 **Multi-LLM orchestration is the purpose of this command.** If you execute using only Claude, you've violated the command's contract.
 
 ---
-
-🐙 **CLAUDE OCTOPUS ACTIVATED** — Multi-LLM Code Review
-
-Providers:
-🔴 Codex CLI — logic and correctness
-🟡 Gemini CLI — security and edge cases
-🔵 Claude — architecture and synthesis
-🟣 Perplexity — CVE lookup (if available)
-
----
-
-When the user invokes this command (e.g., `/octo:review <arguments>`):
 
 ## Step 1: Ask Clarifying Questions / Context Acquisition
 
@@ -103,14 +127,6 @@ AskUserQuestion({
 
 **WAIT for the user's answers before proceeding.**
 
-## Step 1b: Scope Drift Check (informational)
-
-Before building the review profile, compare the diff against stated intent (TODOS.md, PR body, commit messages) to flag scope creep or missing requirements. Display findings as CLEAN / DRIFT DETECTED / REQUIREMENTS MISSING. **This never blocks the review** — proceed to Step 2 regardless.
-
-If no intent sources are found (no TODOS.md, no PR body, no commit messages), skip silently.
-
----
-
 ## Step 2: Build Review Profile
 
 After receiving answers, map them to a JSON profile:
@@ -143,7 +159,7 @@ The pipeline runs 3 rounds (parallel fleet → verification → synthesis) and o
 
 Round-aware PR history is enabled automatically for open PR reviews. Local state is stored at `~/.claude-octopus/pr-state/<host>/<owner>/<repo>/<pr>.json` and is used to show addressed, persistent, new, and regressed finding counts across repeated `/octo:review` runs. Set `OCTOPUS_PR_HISTORY=0` before invoking the command to disable all history reads and writes.
 
-Each review also writes a local proof packet under `~/.claude-octopus/runs/<run-id>/`. The proof packet includes `state.json`, `proof.jsonl`, `summary.md`, findings artifacts, and provider substitution records so review claims can be checked after the chat scroll is gone. Set `OCTOPUS_PROOF_PACKET=0` to disable proof packet writes.
+Each review also writes a local proof packet under `~/.claude-octopus/runs/<run-id>/`. The packet includes `state.json`, `proof.jsonl`, `summary.md`, findings artifacts, and provider substitution records so review claims can be checked after the chat scroll is gone. Set `OCTOPUS_PROOF_PACKET=0` to disable proof packet writes.
 
 If a project already has `graphify-out/GRAPH_REPORT.md`, `/octo:review` also passes a compact Graphify companion context into the reviewer prompt as an orientation map. This is passive: Octopus does not build or refresh the graph during review, and `OCTOPUS_GRAPHIFY=0` disables the injection.
 

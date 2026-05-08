@@ -1,8 +1,14 @@
 ---
-description: "Security audit with OWASP compliance and vulnerability detection"
+description: "Enhanced multi-LLM or adversarial security audit — escalation path beyond Claude-native /security-review"
 ---
 
 # Security - Security Audit Skill
+
+## Positioning
+
+Use Claude-native `/security-review` for ordinary security review requests.
+
+Use `/octo:security` when the user explicitly wants enhanced multi-LLM or adversarial security audit behavior.
 
 **Your first output line MUST be:** `🐙 Octopus Security Audit`
 

@@ -55,6 +55,30 @@ else
     test_fail "expected octo:discover and no octo:research, got: ${output:-<empty>}"
 fi
 
+test_case "resolves setup aliases before session title"
+output="$(run_prompt_hook "/octo:configure providers")"
+if [[ "$output" == *'Alias resolved: /octo:configure -> /octo:setup'* ]] && [[ "$output" == *'Skill(skill: \"octo:setup\"'* ]]; then
+    test_pass
+else
+    test_fail "expected configure alias to setup, got: ${output:-<empty>}"
+fi
+
+test_case "suggests fuzzy matches for mistyped explicit commands"
+output="$(run_prompt_hook "/octo:reseach agent routing")"
+if [[ "$output" == *'Unknown command /octo:reseach'* ]] && [[ "$output" == *'/octo:research'* ]]; then
+    test_pass
+else
+    test_fail "expected research fuzzy suggestion, got: ${output:-<empty>}"
+fi
+
+test_case "promotes named option prompts to debate"
+output="$(run_prompt_hook "Redis or Memcached for session state?")"
+if [[ "$output" == *'Skill(skill: \"octo:debate\"'* ]]; then
+    test_pass
+else
+    test_fail "expected proper-noun option prompt to route to debate, got: ${output:-<empty>}"
+fi
+
 test_case "suggest mode does not inject mandatory skill call"
 output="$(run_prompt_hook "review this PR for regressions" "suggest")"
 if [[ "$output" == *"Detected intent: review"* ]] && [[ "$output" != *"MANDATORY: Invoke Skill"* ]]; then

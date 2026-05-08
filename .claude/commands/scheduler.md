@@ -1,6 +1,6 @@
 ---
 command: scheduler
-description: "Manage the scheduled workflow runner daemon (start/stop/status)"
+description: "[advanced] Manage the scheduled workflow runner daemon (start/stop/status)"
 aliases:
   - sched
 ---

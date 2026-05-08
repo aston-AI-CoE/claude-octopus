@@ -195,20 +195,20 @@ else
     test_fail "Minimum version should be 2.1.14, got: $min_version"
 fi
 
-# Test 9: Current Claude Code 2.1.131 must not be classified as outdated
-test_start "Claude Code 2.1.131 satisfies minimum version"
-if echo "$output" | grep -q "CLAUDE_CODE_VERSION=2.1.131"; then
+# Test 9: Current Claude Code 2.1.132 must not be classified as outdated
+test_start "Claude Code 2.1.132 satisfies minimum version"
+if echo "$output" | grep -q "CLAUDE_CODE_VERSION=2.1.132"; then
     if echo "$output" | grep -q "CLAUDE_CODE_STATUS=ok"; then
-        test_pass "Claude Code 2.1.131 reports status ok"
+        test_pass "Claude Code 2.1.132 reports status ok"
     else
-        test_fail "Claude Code 2.1.131 should report CLAUDE_CODE_STATUS=ok"
+        test_fail "Claude Code 2.1.132 should report CLAUDE_CODE_STATUS=ok"
     fi
 else
-    echo -e "${YELLOW}⚠ INFO${NC}: Local Claude Code is not v2.1.131; checking version_compare directly"
-    if bash -lc 'source scripts/lib/providers.sh; version_compare 2.1.131 2.1.14 ">="'; then
-        test_pass "version_compare treats 2.1.131 as >= 2.1.14"
+    echo -e "${YELLOW}⚠ INFO${NC}: Local Claude Code is not v2.1.132; checking version_compare directly"
+    if bash -lc 'source scripts/lib/providers.sh; version_compare 2.1.132 2.1.14 ">="'; then
+        test_pass "version_compare treats 2.1.132 as >= 2.1.14"
     else
-        test_fail "version_compare should treat 2.1.131 as >= 2.1.14"
+        test_fail "version_compare should treat 2.1.132 as >= 2.1.14"
     fi
 fi
 

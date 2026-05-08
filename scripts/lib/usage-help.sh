@@ -610,6 +610,7 @@ ${MAGENTA}═══════════════════════�
   init --interactive      Full guided setup (7 steps)
   config                  Update preferences (v4.5)
   status                  Show running agents
+  agent-summary           Show current run provider status table
   kill [id|all]           Stop agents
   clean                   Clean workspace
   aggregate               Combine all results

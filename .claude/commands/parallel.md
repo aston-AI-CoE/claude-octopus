@@ -1,6 +1,6 @@
 ---
 command: parallel
-description: "Team of Teams - Decompose compound tasks across independent claude instances"
+description: "[advanced] Team of Teams - Decompose compound tasks across independent claude instances"
 aliases:
   - team
   - teams

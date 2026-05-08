@@ -79,7 +79,14 @@ IMPORTANT: If you find yourself searching or grepping more than 3 times in a row
     # (probe dispatch has minimal variable content — context budget is the boundary)
 
     # v8.10.0: Enforce context budget AFTER all injections
-    enhanced_prompt=$(enforce_context_budget "$enhanced_prompt" "$role")
+    local tokens_in
+    tokens_in=$(( ${#enhanced_prompt} / 4 ))
+    enhanced_prompt=$(enforce_context_budget "$enhanced_prompt" "$role" "$agent_type")
+    local _budget_rc=$?
+    if [[ $_budget_rc -ne 0 ]]; then
+        type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "failed" "$tokens_in" 0 "Prompt exceeded context budget" 0 "" "$role" || true
+        return "$_budget_rc"
+    fi
 
     # Resolve model and command
     local model
@@ -163,6 +170,7 @@ IMPORTANT: If you find yourself searching or grepping more than 3 times in a row
 
     local auth_attempt=0
     local exit_code=0
+    local final_rc=0
     local start_time_ms
     start_time_ms=$(( $(date +%s) * 1000 ))
 
@@ -255,17 +263,50 @@ IMPORTANT: If you find yourself searching or grepping more than 3 times in a row
                 rm -f "${result_file}.bak"
             fi ;; esac
 
-        echo '```' >> "$result_file"
-        echo "" >> "$result_file"
-        echo "## Status: SUCCESS" >> "$result_file"
-
         local end_time_ms elapsed_ms
         end_time_ms=$(( $(date +%s) * 1000 ))
         elapsed_ms=$((end_time_ms - start_time_ms))
-        update_agent_status "$agent_type" "completed" "$elapsed_ms" 0.0
-        record_outcome "$agent_type" "$agent_type" "research" "$phase" "success" "$elapsed_ms" 2>/dev/null || true
-        # v9.3.0: Record file co-occurrence pattern for heuristic learning
-        record_run_pattern "$agent_type" "${enhanced_prompt:-$original_prompt}" "$result_file" 2>/dev/null || true
+
+        local classification status reason tokens_out
+        classification=$(classify_agent_output "$temp_output" "$exit_code" "$agent_type" "$temp_errors" 2>/dev/null || echo "ok:")
+        status="${classification%%:*}"
+        reason="${classification#*:}"
+        tokens_out=$(octo_estimate_tokens_for_file "$temp_output" 2>/dev/null || echo 0)
+
+        echo '```' >> "$result_file"
+        echo "" >> "$result_file"
+        # Legacy result consumers look for literal "Status: FAILED" and "Status: TIMEOUT" markers.
+        case "$status" in
+            failed)
+                echo "## Status: FAILED (${reason:-unusable output})" >> "$result_file"
+                if [[ -s "$temp_errors" ]]; then
+                    echo "" >> "$result_file"
+                    echo "## Errors" >> "$result_file"
+                    echo '```' >> "$result_file"
+                    cat "$temp_errors" >> "$result_file"
+                    echo '```' >> "$result_file"
+                fi
+                update_agent_status "$agent_type" "failed" "$elapsed_ms" 0.0
+                record_outcome "$agent_type" "$agent_type" "research" "$phase" "fail" "$elapsed_ms" 2>/dev/null || true
+                type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "failed" "$tokens_in" "$tokens_out" "${reason:-unusable output}" "$elapsed_ms" "$result_file" "$role" || true
+                final_rc=1
+                ;;
+            degraded)
+                echo "## Status: SUCCESS (DEGRADED: ${reason:-partial output})" >> "$result_file"
+                update_agent_status "$agent_type" "completed" "$elapsed_ms" 0.0
+                record_outcome "$agent_type" "$agent_type" "research" "$phase" "success" "$elapsed_ms" 2>/dev/null || true
+                record_run_pattern "$agent_type" "${enhanced_prompt:-$original_prompt}" "$result_file" 2>/dev/null || true
+                type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "degraded" "$tokens_in" "$tokens_out" "${reason:-partial output}" "$elapsed_ms" "$result_file" "$role" || true
+                ;;
+            *)
+                echo "## Status: SUCCESS" >> "$result_file"
+                update_agent_status "$agent_type" "completed" "$elapsed_ms" 0.0
+                record_outcome "$agent_type" "$agent_type" "research" "$phase" "success" "$elapsed_ms" 2>/dev/null || true
+                # v9.3.0: Record file co-occurrence pattern for heuristic learning
+                record_run_pattern "$agent_type" "${enhanced_prompt:-$original_prompt}" "$result_file" 2>/dev/null || true
+                type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "ok" "$tokens_in" "$tokens_out" "" "$elapsed_ms" "$result_file" "$role" || true
+                ;;
+        esac
     elif [[ $exit_code -eq 124 ]] || [[ $exit_code -eq 143 ]]; then
         # Timeout — preserve partial output
         if [[ -s "$temp_output" ]]; then
@@ -288,6 +329,12 @@ IMPORTANT: If you find yourself searching or grepping more than 3 times in a row
         echo "" >> "$result_file"
         echo "## Status: TIMEOUT" >> "$result_file"
         log "WARN" "Agent $agent_type timed out for task $task_id"
+        local end_time_ms elapsed_ms tokens_out
+        end_time_ms=$(( $(date +%s) * 1000 ))
+        elapsed_ms=$((end_time_ms - start_time_ms))
+        tokens_out=$(octo_estimate_tokens_for_file "$temp_output" 2>/dev/null || echo 0)
+        type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "timeout" "$tokens_in" "$tokens_out" "Timed out before completion" "$elapsed_ms" "$result_file" "$role" || true
+        final_rc=$exit_code
     else
         # Failure
         if [[ -s "$temp_output" ]]; then
@@ -304,6 +351,12 @@ IMPORTANT: If you find yourself searching or grepping more than 3 times in a row
             echo '```' >> "$result_file"
         fi
         log "WARN" "Agent $agent_type failed for task $task_id (exit=$exit_code)"
+        local end_time_ms elapsed_ms tokens_out
+        end_time_ms=$(( $(date +%s) * 1000 ))
+        elapsed_ms=$((end_time_ms - start_time_ms))
+        tokens_out=$(octo_estimate_tokens_for_file "$temp_output" 2>/dev/null || echo 0)
+        type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "failed" "$tokens_in" "$tokens_out" "Exit code $exit_code" "$elapsed_ms" "$result_file" "$role" || true
+        final_rc=$exit_code
     fi
 
     # Cleanup temp files
@@ -312,6 +365,7 @@ IMPORTANT: If you find yourself searching or grepping more than 3 times in a row
     log "INFO" "probe_single_agent complete: $result_file"
     # Output the result file path for the caller
     echo "$result_file"
+    return "$final_rc"
 }
 
 # Phase 1: PROBE (Discover) - Parallel research with synthesis
@@ -320,6 +374,8 @@ probe_discover() {
     local _ts; _ts=$(date +%s)
     local prompt="$1"
     local task_group="$_ts"
+    export OCTOPUS_COMMAND="${OCTOPUS_COMMAND:-discover}"
+    export OCTOPUS_COMMAND_ARGS="${OCTOPUS_COMMAND_ARGS:-$prompt}"
 
     echo ""
     octopus_phase_banner "RESEARCH (Phase 1/4)" "Parallel Exploration" "$MAGENTA"
@@ -577,6 +633,13 @@ ${_blind_spot_checklist}"
         fi
     fi
     echo ""
+
+    # v9.37.0: Make provider participation explicit before synthesis so users
+    # can tell which LLMs actually contributed and fail-fast if all providers
+    # are required.
+    if type render_agent_summary >/dev/null 2>&1; then
+        render_agent_summary || return $?
+    fi
 
     # v8.48.0: Write synthesis marker before attempting synthesis
     # WHY: The Bash tool's 120s timeout frequently kills the process during

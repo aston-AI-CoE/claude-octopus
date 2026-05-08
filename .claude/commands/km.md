@@ -1,6 +1,6 @@
 ---
 command: km
-description: "Switch to Knowledge Work mode (or toggle with off)"
+description: "[advanced] Switch to Knowledge Work mode (or toggle with off)"
 usage: "/octo:km [on|off]"
 examples:
   - "/octo:km       # Switch to Knowledge Work mode"

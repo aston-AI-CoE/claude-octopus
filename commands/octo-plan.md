@@ -234,7 +234,22 @@ recommend debate gates. Include the debate checkpoint markers in the saved plan
 
 ### Step 4: Present the Plan
 
-**Display a comprehensive plan visualization:**
+**MANDATORY: Before presenting the plan, use the Bash tool to check provider availability:**
+
+```bash
+echo "PROVIDER_CHECK_START"
+printf "codex:%s\n" "$(command -v codex >/dev/null 2>&1 && echo available || echo missing)"
+printf "gemini:%s\n" "$(command -v gemini >/dev/null 2>&1 && echo available || echo missing)"
+printf "perplexity:%s\n" "$([ -n "${PERPLEXITY_API_KEY:-}" ] && echo available || echo missing)"
+printf "opencode:%s\n" "$(command -v opencode >/dev/null 2>&1 && echo available || echo missing)"
+printf "copilot:%s\n" "$(command -v copilot >/dev/null 2>&1 && echo available || echo missing)"
+printf "qwen:%s\n" "$(command -v qwen >/dev/null 2>&1 && echo available || echo missing)"
+printf "ollama:%s\n" "$(command -v ollama >/dev/null 2>&1 && curl -sf http://localhost:11434/api/tags >/dev/null 2>&1 && echo available || echo missing)"
+printf "openrouter:%s\n" "$([ -n "${OPENROUTER_API_KEY:-}" ] && echo available || echo missing)"
+echo "PROVIDER_CHECK_END"
+```
+
+**Display a comprehensive plan visualization with ACTUAL provider status:**
 
 ```
 🐙 **CLAUDE OCTOPUS PLAN**
@@ -261,14 +276,18 @@ Validate quality — Review and refine
 → /octo:deliver
 
 Provider Availability:
-🔴 Codex CLI: [Available ✓ / Not installed ✗]
-🟡 Gemini CLI: [Available ✓ / Not installed ✗]
+🔴 Codex CLI: [Available ✓ / Not installed ✗] — based on bash check
+🟡 Gemini CLI: [Available ✓ / Not installed ✗] — based on bash check
+🟣 Perplexity: [Available ✓ / Not configured ✗] — based on bash check
+🟤 OpenCode: [Available ✓ / Not installed ✗] — based on bash check
 🔵 Claude: Available ✓
 
 YOUR INVOLVEMENT: [Checkpoints / Semi-autonomous / Hands-off]
 
 Time estimate: [Rough estimate based on scope]
 ```
+
+**PROHIBITED: Displaying only "🔵 Claude: Available ✓" without listing all providers.**
 
 ### Step 5: Save the Plan
 

@@ -1,7 +1,7 @@
 {
   "name": "octo",
-  "version": "9.36.1",
-  "description": "v9.36.1 — Codex-compatible portable skills with Claude-safe provider routing and session ID support. Run /octo:setup.",
+  "version": "9.37.0",
+  "description": "v9.37.0 — Agent summaries, prompt-size preflight, research fanout, and Codex-compatible portable skills. Run /octo:setup.",
   "author": {
     "name": "nyldn",
     "url": "https://github.com/nyldn"

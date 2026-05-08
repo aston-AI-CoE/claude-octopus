@@ -142,10 +142,129 @@ get_role_budget_proportion() {
     esac
 }
 
+# Provider-aware context ceiling. OCTOPUS_CONTEXT_BUDGET remains the global
+# fallback for compatibility; provider-specific env vars let higher-context CLIs
+# opt in without inflating smaller providers.
+get_provider_context_limit() {
+    local agent_type="${1:-}"
+    local provider="${agent_type%%-*}"
+    local default_budget="${OCTOPUS_CONTEXT_BUDGET:-12000}"
+
+    case "$agent_type" in
+        codex-large-context) echo "${OCTOPUS_CODEX_LARGE_CONTEXT_BUDGET:-${default_budget}}" ; return 0 ;;
+        claude-opus*|claude-sonnet|claude) echo "${OCTOPUS_CLAUDE_CONTEXT_BUDGET:-${default_budget}}" ; return 0 ;;
+    esac
+
+    case "$provider" in
+        codex)      echo "${OCTOPUS_CODEX_CONTEXT_BUDGET:-${default_budget}}" ;;
+        gemini)     echo "${OCTOPUS_GEMINI_CONTEXT_BUDGET:-${default_budget}}" ;;
+        claude)     echo "${OCTOPUS_CLAUDE_CONTEXT_BUDGET:-${default_budget}}" ;;
+        perplexity) echo "${OCTOPUS_PERPLEXITY_CONTEXT_BUDGET:-${default_budget}}" ;;
+        openrouter) echo "${OCTOPUS_OPENROUTER_CONTEXT_BUDGET:-${default_budget}}" ;;
+        copilot)    echo "${OCTOPUS_COPILOT_CONTEXT_BUDGET:-${default_budget}}" ;;
+        qwen)       echo "${OCTOPUS_QWEN_CONTEXT_BUDGET:-${default_budget}}" ;;
+        opencode)   echo "${OCTOPUS_OPENCODE_CONTEXT_BUDGET:-${default_budget}}" ;;
+        ollama)     echo "${OCTOPUS_OLLAMA_CONTEXT_BUDGET:-${default_budget}}" ;;
+        *)          echo "$default_budget" ;;
+    esac
+}
+
+summarize_then_dispatch() {
+    local prompt="$1"
+    local role="${2:-}"
+    local target_agent="${3:-unknown}"
+    local budget="${4:-12000}"
+    local char_budget=$((budget * 4))
+
+    # Keep the summarizer request itself bounded; preserve both task framing and
+    # tail-loaded instructions/diffs because provider CLIs often fail near ARG_MAX.
+    local summary_input="$prompt"
+    local max_summary_input="${OCTOPUS_OVERSIZE_SUMMARY_INPUT_CHARS:-120000}"
+    if [[ ${#summary_input} -gt $max_summary_input ]]; then
+        local head_chars=$((max_summary_input / 2))
+        local tail_chars=$((max_summary_input - head_chars))
+        local tail_start=$((${#summary_input} - tail_chars))
+        summary_input="${summary_input:0:$head_chars}
+
+[... middle omitted before preflight summarization; original prompt was ${#prompt} chars ...]
+
+${summary_input:$tail_start:$tail_chars}"
+    fi
+
+    local summary_prompt="Condense this oversized agent prompt before provider dispatch.
+
+Target provider: ${target_agent}
+Role: ${role:-none}
+Target budget: about ${budget} tokens (${char_budget} chars)
+
+Preserve:
+- the user's exact objective and constraints
+- file paths, commands, URLs, IDs, and quoted requirements
+- acceptance criteria and verification instructions
+- any explicit safety or permission limits
+
+Remove repetition, logs, duplicate context, and low-value boilerplate. Return only the condensed prompt.
+
+Oversized prompt:
+${summary_input}"
+
+    local candidates=()
+    if [[ -n "${OCTOPUS_OVERSIZE_SUMMARIZER:-}" ]]; then
+        candidates+=("$OCTOPUS_OVERSIZE_SUMMARIZER")
+    fi
+    candidates+=("gemini-fast" "codex-mini" "claude-sonnet" "codex")
+
+    local candidate summary previous_strategy previous_debug
+    previous_strategy="${OCTOPUS_OVERSIZE_STRATEGY-}"
+    previous_debug="${OCTOPUS_DEBUG-}"
+    export OCTOPUS_OVERSIZE_STRATEGY=truncate
+    export OCTOPUS_DEBUG="${OCTOPUS_DEBUG:-false}"
+
+    for candidate in "${candidates[@]}"; do
+        [[ "$candidate" == "$target_agent" ]] && continue
+        if type validate_agent_type >/dev/null 2>&1 && ! validate_agent_type "$candidate" >/dev/null 2>&1; then
+            continue
+        fi
+        if ! type run_agent_sync >/dev/null 2>&1; then
+            break
+        fi
+        summary=$(run_agent_sync "$candidate" "$summary_prompt" 120 "synthesizer" "preflight" 2>/dev/null) || summary=""
+        if [[ -n "$summary" && "$summary" != "Provider available" ]]; then
+            if [[ -n "$previous_strategy" ]]; then
+                export OCTOPUS_OVERSIZE_STRATEGY="$previous_strategy"
+            else
+                unset OCTOPUS_OVERSIZE_STRATEGY
+            fi
+            if [[ -n "$previous_debug" ]]; then
+                export OCTOPUS_DEBUG="$previous_debug"
+            else
+                unset OCTOPUS_DEBUG
+            fi
+            printf '%s\n' "$summary"
+            return 0
+        fi
+    done
+
+    if [[ -n "$previous_strategy" ]]; then
+        export OCTOPUS_OVERSIZE_STRATEGY="$previous_strategy"
+    else
+        unset OCTOPUS_OVERSIZE_STRATEGY
+    fi
+    if [[ -n "$previous_debug" ]]; then
+        export OCTOPUS_DEBUG="$previous_debug"
+    else
+        unset OCTOPUS_DEBUG
+    fi
+    return 1
+}
+
 enforce_context_budget() {
     local prompt="$1"
     local role="${2:-}"
-    local budget="${OCTOPUS_CONTEXT_BUDGET:-12000}"
+    local agent_type="${3:-}"
+    local budget
+    budget=$(get_provider_context_limit "$agent_type")
+    [[ "$budget" =~ ^[0-9]+$ ]] || budget="${OCTOPUS_CONTEXT_BUDGET:-12000}"
 
     # v9.3.0: Scale budget by role proportion
     if [[ -n "$role" ]]; then
@@ -158,10 +277,45 @@ enforce_context_budget() {
     local char_budget=$((budget * 4))
 
     if [[ ${#prompt} -gt $char_budget ]]; then
-        log "DEBUG" "Context budget: truncating prompt from ${#prompt} to $char_budget chars (~$budget tokens)"
-        echo "${prompt:0:$char_budget}
+        local strategy="${OCTOPUS_OVERSIZE_STRATEGY:-summarize}"
+        local original_chars=${#prompt}
+        local target="${agent_type:-unknown}"
+
+        case "$strategy" in
+            fail)
+                log "ERROR" "Context budget: prompt for $target is ${original_chars} chars; limit is $char_budget chars (~$budget tokens)"
+                type record_oversize_event >/dev/null 2>&1 && record_oversize_event "$target" "$original_chars" "$original_chars" "failed" || true
+                type write_agent_status >/dev/null 2>&1 && write_agent_status "$target" "failed" "$((original_chars / 4))" 0 "Prompt exceeded context budget" 0 "" "$role" || true
+                return 78
+                ;;
+            summarize)
+                log "WARN" "Context budget: summarizing prompt for $target from ${original_chars} to <=$char_budget chars (~$budget tokens)"
+                local summarized
+                if summarized=$(summarize_then_dispatch "$prompt" "$role" "$target" "$budget") && [[ -n "$summarized" ]]; then
+                    if [[ ${#summarized} -gt $char_budget ]]; then
+                        summarized="${summarized:0:$char_budget}
+
+[... summarized preflight output truncated to fit context budget of ~$budget tokens ...]"
+                    fi
+                    type record_oversize_event >/dev/null 2>&1 && record_oversize_event "$target" "$original_chars" "${#summarized}" "summarized" || true
+                    printf '%s\n' "$summarized"
+                    return 0
+                fi
+                log "WARN" "Context budget: summarizer unavailable; falling back to truncation for $target"
+                log "DEBUG" "Context budget: truncating prompt for $target from ${#prompt} to $char_budget chars (~$budget tokens)"
+                type record_oversize_event >/dev/null 2>&1 && record_oversize_event "$target" "$original_chars" "$char_budget" "truncated" || true
+                echo "${prompt:0:$char_budget}
 
 [... truncated to fit context budget of ~$budget tokens ...]"
+                ;;
+            truncate|*)
+                log "DEBUG" "Context budget: truncating prompt for $target from ${#prompt} to $char_budget chars (~$budget tokens)"
+                type record_oversize_event >/dev/null 2>&1 && record_oversize_event "$target" "$original_chars" "$char_budget" "truncated" || true
+                echo "${prompt:0:$char_budget}
+
+[... truncated to fit context budget of ~$budget tokens ...]"
+                ;;
+        esac
     else
         echo "$prompt"
     fi

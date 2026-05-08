@@ -1,5 +1,5 @@
 ---
-description: "Show cost breakdown by provider and workflow for the current session"
+description: "\"[advanced] Show cost breakdown by provider and workflow for the current session\""
 allowed-tools: Bash, Read, Glob, Grep
 ---
 

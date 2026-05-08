@@ -161,6 +161,21 @@ ${earned_skills_ctx}"
 ${provider_ctx}"
     fi
 
+    # v9.37.0: Enforce prompt budget after all sync-agent injections, including
+    # the Codex subagent preamble. This catches oversized prompts before a
+    # provider burns time and exits with a context-length error.
+    if [[ "$agent_type" == codex* && "$agent_type" != "codex-review" ]]; then
+        enhanced_prompt="${CODEX_SUBAGENT_PREAMBLE}${enhanced_prompt}"
+    fi
+    local tokens_in
+    tokens_in=$(( ${#enhanced_prompt} / 4 ))
+    enhanced_prompt=$(enforce_context_budget "$enhanced_prompt" "$role" "$agent_type")
+    local _budget_rc=$?
+    if [[ $_budget_rc -ne 0 ]]; then
+        type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "failed" "$tokens_in" 0 "Prompt exceeded context budget" 0 "" "$role" || true
+        return "$_budget_rc"
+    fi
+
     log DEBUG "run_agent_sync: agent=$agent_type, role=${role:-none}, phase=${phase:-none}"
 
     # Record usage (get model from agent type)
@@ -182,6 +197,7 @@ ${provider_ctx}"
         if ! _health_diag=$(check_provider_health "$_provider_for_health" 2>&1); then
             log WARN "Provider '$_provider_for_health' health check failed: $_health_diag"
             log WARN "Skipping agent dispatch for $agent_type (provider unavailable)"
+            type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "failed" "$tokens_in" 0 "Provider unavailable: $_health_diag" 0 "" "$role" || true
             echo "[Provider $_provider_for_health unavailable: $_health_diag]"
             return 1
         fi
@@ -222,11 +238,6 @@ ${provider_ctx}"
     # maintained with spawn/workflows dispatch paths.
     if [[ "$agent_type" == gemini* || "$agent_type" == copilot* || "$agent_type" == qwen* || "$agent_type" == cursor-agent* ]]; then
         cmd_array+=(-p "")
-    fi
-
-    # v9.2.2: Inject subagent preamble for Codex dispatches (Issue #176)
-    if [[ "$agent_type" == codex* && "$agent_type" != "codex-review" ]]; then
-        enhanced_prompt="${CODEX_SUBAGENT_PREAMBLE}${enhanced_prompt}"
     fi
 
     # v9.2.2: All agents use stdin to avoid ARG_MAX "Argument list too long" on large diffs (Issue #173)
@@ -272,6 +283,7 @@ ${provider_ctx}"
 
     # Tail-bias: the deliverable summary lives at the end of codex-style output.
     local _max_bytes="${OCTOPUS_AGENT_MAX_OUTPUT_BYTES:-262144}"
+    local _sync_output_truncated=false
     if [[ -n "$output" && $_max_bytes -gt 0 && ${#output} -gt $_max_bytes ]]; then
         local _orig_bytes=${#output}
         # Build the banner first so we can measure it exactly and budget the
@@ -292,7 +304,11 @@ ${provider_ctx}"
             output="${output:0:$_head_bytes}${_banner}${output:$_tail_start:$_tail_bytes}"
         fi
         log WARN "Agent $agent_type output truncated: ${_orig_bytes}B → ${#output}B (cap=${_max_bytes}B)"
+        _sync_output_truncated=true
     fi
+
+    local _elapsed_ms
+    _elapsed_ms=$(( ($(date +%s) - _dispatch_start) * 1000 ))
 
     # Check exit code and handle errors
     if [[ $exit_code -ne 0 ]]; then
@@ -331,8 +347,33 @@ ${provider_ctx}"
                 fi
             fi
         fi
+        local _sync_status="failed"
+        local _sync_reason="Exit code $exit_code"
+        if [[ $exit_code -eq 124 || $exit_code -eq 143 ]]; then
+            _sync_status="timeout"
+            _sync_reason="Timed out before completion"
+        fi
+        type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "$_sync_status" "$tokens_in" "$(octo_estimate_tokens_for_file "$temp_out" 2>/dev/null || echo 0)" "$_sync_reason" "$_elapsed_ms" "" "$role" || true
         rm -f "$temp_err" "$temp_out"
         return $exit_code
+    fi
+
+    if type classify_agent_output >/dev/null 2>&1; then
+        local _classification _sync_status _sync_reason
+        _classification=$(classify_agent_output "$temp_out" "$exit_code" "$agent_type" "$temp_err")
+        _sync_status="${_classification%%:*}"
+        _sync_reason="${_classification#*:}"
+        if [[ "$_sync_status" == "failed" ]]; then
+            log ERROR "Agent $agent_type returned unusable output: $_sync_reason"
+            type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "failed" "$tokens_in" "$(octo_estimate_tokens_for_file "$temp_out" 2>/dev/null || echo 0)" "$_sync_reason" "$_elapsed_ms" "" "$role" || true
+            rm -f "$temp_err" "$temp_out"
+            return 1
+        fi
+        if [[ "$_sync_output_truncated" == "true" ]]; then
+            _sync_status="degraded"
+            _sync_reason="Output truncated"
+        fi
+        type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "$_sync_status" "$tokens_in" "$(octo_estimate_tokens_for_file "$temp_out" 2>/dev/null || echo 0)" "$_sync_reason" "$_elapsed_ms" "" "$role" || true
     fi
 
     # v8.7.0: Wrap external CLI output with trust markers

@@ -7,6 +7,10 @@ arguments:
     required: true
 ---
 
+### MANDATORY COMPLIANCE — DO NOT SKIP
+
+**When the user explicitly invokes `/octo:prd`, you MUST follow the orchestrated PRD workflow below.** You are PROHIBITED from writing the PRD directly without the required clarification, research, scoring, and `orchestrate.sh` steps.
+
 ### EXECUTION MECHANISM — NON-NEGOTIABLE
 
 **You MUST execute this command by calling `orchestrate.sh` as documented below. You are PROHIBITED from:**

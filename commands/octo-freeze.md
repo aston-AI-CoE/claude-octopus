@@ -1,5 +1,5 @@
 ---
-description: "Restrict file edits to a specific directory boundary"
+description: "\"[advanced] Restrict file edits to a specific directory boundary\""
 ---
 
 # Freeze Mode - Edit Boundary Enforcement

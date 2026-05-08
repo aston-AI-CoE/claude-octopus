@@ -5,6 +5,10 @@ description: Enhanced multi-LLM review with inline PR comments — escalation pa
 
 # /octo:review
 
+## MANDATORY COMPLIANCE — DO NOT SKIP
+
+**When the user explicitly invokes `/octo:review`, you MUST execute the enhanced multi-provider review workflow below.** You are PROHIBITED from substituting Claude-native `/review`, direct reading, or a single-model review unless the user changes commands.
+
 ## Positioning
 
 Three review entry points coexist in Claude Code v2.1.111+ — pick the right one per context:

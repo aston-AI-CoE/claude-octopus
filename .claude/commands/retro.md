@@ -1,6 +1,6 @@
 ---
 command: retro
-description: Generate engineering retrospectives from git history with trends and team analysis
+description: "[advanced] Generate engineering retrospectives from git history with trends and team analysis"
 allowed-tools: Bash, Read, Glob, Grep, Write
 ---
 

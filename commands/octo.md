@@ -12,5 +12,6 @@ When the user invokes `/octo:octo <query>`, you MUST:
 
 1. Inform the user: "Note: `/octo:octo` has been renamed to `/octo:auto`. Routing your request now."
 2. Immediately invoke: `Skill(skill: "octo:auto", args: "<full user query>")`
+3. If the routed workflow dispatches multiple providers, surface `${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh agent-summary` before final synthesis when available.
 
 Do NOT duplicate the routing logic here — delegate entirely to `/octo:auto`.

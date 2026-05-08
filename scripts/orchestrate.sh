@@ -2661,6 +2661,9 @@ case "$COMMAND" in
     status)
         show_status
         ;;
+    agent-summary|summary)
+        render_agent_summary
+        ;;
     analytics)
         generate_analytics_report "${1:-30}"
         ;;

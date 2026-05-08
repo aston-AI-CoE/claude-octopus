@@ -1,6 +1,6 @@
 ---
 command: guard
-description: Activate both careful mode and freeze mode together
+description: "[advanced] Activate both careful mode and freeze mode together"
 ---
 
 # Guard Mode - Full Safety Activation

@@ -23,6 +23,8 @@ You get:    A structured comparison with three independent viewpoints,
 
 This works for research, escalated code review, debugging, TDD, escalated security audits, UI design, PRDs, and full build-to-ship workflows — 48 commands, 52 skills, 32 specialized personas.
 
+Multi-provider runs show an agent summary before synthesis, so failed, timed out, or oversize-rejected Codex/Gemini/OpenRouter/etc. perspectives are visible instead of being hidden behind a polished final answer.
+
 ## Install
 
 ```bash
@@ -40,20 +42,21 @@ Then run `/octo:setup` — it detects your providers, shows what's available, an
 
 | I want to... | Type this |
 |---|---|
-| Research a topic with multiple AI perspectives | `/octo:research htmx vs react` |
+| Research a topic with multiple AI perspectives | `/octo:research --breadth=standard htmx vs react` |
 | Debate two approaches with structured scoring | `/octo:debate monorepo vs microservices` |
 | Build a feature end-to-end (research → ship) | `/octo:embrace build stripe integration` |
 | Review code with enhanced multi-model analysis | `/octo:review` |
 | Run an escalated security audit (OWASP + adversarial) | `/octo:security` |
 | Write tests first, then code | `/octo:tdd create user auth` |
 | Go from spec to working software autonomously | `/octo:factory "CSV to JSON converter"` |
+| Check which providers contributed to the current run | `octopus agent-summary` |
 | Just do something quick | `/octo:quick fix the login bug` |
 
 Don't know the command? Describe what you need — `/octo:auto <anything>` routes to the right workflow.
 
 ## Prerequisites
 
-- Claude Code v2.1.83+
+- Claude Code v2.1.14+
 - Zero external providers needed (Claude is built in)
 - Optional: Codex CLI, Gemini CLI, Copilot, Qwen, Ollama, Perplexity API key, OpenRouter API key
 - Five of eight providers cost nothing extra (OAuth, free tiers, or local)

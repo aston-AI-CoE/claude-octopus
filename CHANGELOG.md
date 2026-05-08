@@ -4,6 +4,28 @@
 
 ---
 
+## [9.37.0] - 2026-05-08
+
+### Added
+
+- Add provider-aware prompt-size preflight with summarize, truncate, and fail strategies plus oversize run telemetry for multi-provider dispatch.
+- Add per-agent status ledgers and visible agent summary tables so multi-LLM workflows show ok, degraded, failed, and timeout providers before synthesis.
+- Add research breadth routing for light, standard, and exhaustive fanout with status-aware synthesis attribution.
+
+### Changed
+
+- Strengthen `/octo:research` and Discover guidance to build dynamic multi-provider fleets across Codex, Gemini, Copilot, Qwen, OpenCode, Ollama, Perplexity, OpenRouter, Cursor Agent, and Claude.
+- Promote named option and comparison prompts to debate so substantial "A or B" decisions route through multi-model scoring instead of plain chat.
+- Regenerate Claude, Codex, OpenClaw, and Factory surfaces, including the generated `octo-discipline` command.
+
+### Fixed
+
+- Route setup/configure aliases and mistyped `/octo:*` commands to canonical commands with fuzzy suggestions.
+- Skip failed or rejected provider outputs during aggregation while preserving visible failure reasons in summaries.
+- Surface oversize provider rejections instead of allowing empty outputs to look like successful provider contributions.
+
+---
+
 ## [9.36.1] - 2026-05-07
 
 ### Added

@@ -1,6 +1,6 @@
 ---
 command: factory
-description: "Dark Factory Mode - Spec-in, software-out autonomous pipeline"
+description: "[advanced] Dark Factory Mode - Spec-in, software-out autonomous pipeline"
 aliases:
   - dark-factory
   - build-from-spec
@@ -9,6 +9,10 @@ aliases:
 # Factory - Dark Factory Mode (v8.25.0)
 
 ## INSTRUCTIONS FOR CLAUDE
+
+### MANDATORY COMPLIANCE — DO NOT SKIP
+
+**When the user explicitly invokes `/octo:factory`, you MUST execute the orchestrated factory pipeline below.** You are PROHIBITED from replacing the pipeline with a direct Claude-only implementation.
 
 When the user invokes this command (e.g., `/octo:factory --spec <path>`):
 

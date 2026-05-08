@@ -1,5 +1,5 @@
 ---
-description: "Force multi-provider parallel execution for any task - manual override mode"
+description: "\"[advanced] Force multi-provider parallel execution for any task - manual override mode\""
 ---
 
 # Multi - Multi-Provider Override

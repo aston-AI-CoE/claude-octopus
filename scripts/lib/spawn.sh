@@ -261,9 +261,20 @@ ${heuristic_ctx}"
         fi
     fi
 
-    # v8.10.0: Enforce context budget AFTER all injections (skill + memory)
-    # Previously called before injections, causing final prompt to exceed budget (Issue #25)
-    enhanced_prompt=$(enforce_context_budget "$enhanced_prompt" "${role:-}")
+    # v8.10.0/v9.37.0: Enforce context budget AFTER all injections and after
+    # the Codex subagent preamble. Previously the Codex preamble was appended in
+    # the subprocess after budgeting, so Codex prompts could still exceed limits.
+    if [[ "$agent_type" == codex* && "$agent_type" != "codex-review" ]]; then
+        enhanced_prompt="${CODEX_SUBAGENT_PREAMBLE}${enhanced_prompt}"
+    fi
+    local tokens_in
+    tokens_in=$(( ${#enhanced_prompt} / 4 ))
+    enhanced_prompt=$(enforce_context_budget "$enhanced_prompt" "${role:-}" "$agent_type")
+    local _budget_rc=$?
+    if [[ $_budget_rc -ne 0 ]]; then
+        type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "failed" "$tokens_in" 0 "Prompt exceeded context budget" 0 "" "${role:-}" || true
+        return "$_budget_rc"
+    fi
 
     # v8.4: Auto-route claude-opus to fast mode when appropriate
     # WARNING: Fast Opus is 6x more expensive ($30/$150 vs $5/$25 per MTok)
@@ -451,6 +462,7 @@ ${heuristic_ctx}"
             echo "# Result-capture: SubagentStop hook" >> "$result_file"
         fi
         echo "" >> "$result_file"
+        type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "running" "$tokens_in" 0 "Dispatched via Agent Teams" 0 "$result_file" "${role:-none}" || true
 
         log "DEBUG" "Agent Teams instruction written to: $agent_instruction_file"
         if [[ "$SUPPORTS_HOOK_LAST_MESSAGE" == "true" ]]; then
@@ -510,6 +522,7 @@ ${heuristic_ctx}"
         # Use seconds instead of milliseconds for compatibility (macOS date doesn't support %N)
         start_time_ms=$(( $(date +%s) * 1000 ))
         update_agent_status "$agent_type" "running" 0 0.0
+        type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "running" "$tokens_in" 0 "" 0 "$result_file" "${role:-none}" || true
 
         # v7.19.0 P0.1: Use tee to stream output to both temp file and raw backup
         # v8.10.0: Gemini uses stdin-based prompt delivery (Issue #25)
@@ -528,11 +541,6 @@ ${heuristic_ctx}"
         # Append headless flag (-p "") for CLI providers that read prompt from stdin
         if [[ "$agent_type" == gemini* ]] || [[ "$agent_type" == cursor-agent* ]] || [[ "$agent_type" == copilot* ]] || [[ "$agent_type" == qwen* ]]; then
             cmd_array+=(-p "")
-        fi
-
-        # v9.2.2: Inject subagent preamble for Codex dispatches (Issue #176)
-        if [[ "$agent_type" == codex* && "$agent_type" != "codex-review" ]]; then
-            enhanced_prompt="${CODEX_SUBAGENT_PREAMBLE}${enhanced_prompt}"
         fi
 
         local auth_attempt=0
@@ -600,10 +608,14 @@ ${heuristic_ctx}"
             log "DEBUG" "Result already captured by SubagentStop hook, skipping CLI output parse"
         fi
 
+        local _octo_success_status="ok"
+        local _octo_success_reason=""
+        local _octo_tokens_out=0
+
         # v7.19.0 P0.1: Process output regardless of exit code (preserves partial results)
         if [[ "$_hook_captured" == "true" ]]; then
             # Hook already wrote ## Output + ## Status: SUCCESS — skip to post-processing
-            :
+            _octo_tokens_out=$(octo_estimate_tokens_for_file "$result_file" 2>/dev/null || echo 0)
         elif [[ $exit_code -eq 0 ]]; then
             # Filter out CLI header noise and extract actual response
             # v9.3.1: Check for CLI header separator before filtering — codex exec
@@ -660,7 +672,23 @@ ${heuristic_ctx}"
             esac
 
             echo "" >> "$result_file"
-            echo "## Status: SUCCESS" >> "$result_file"
+            local _classification
+            _classification=$(classify_agent_output "$temp_output" "$exit_code" "$agent_type" "$temp_errors" 2>/dev/null || echo "ok:")
+            _octo_success_status="${_classification%%:*}"
+            _octo_success_reason="${_classification#*:}"
+            _octo_tokens_out=$(octo_estimate_tokens_for_file "$temp_output" 2>/dev/null || echo 0)
+
+            case "$_octo_success_status" in
+                failed)
+                    echo "## Status: FAILED (${_octo_success_reason:-unusable output})" >> "$result_file"
+                    ;;
+                degraded)
+                    echo "## Status: SUCCESS (DEGRADED: ${_octo_success_reason:-partial output})" >> "$result_file"
+                    ;;
+                *)
+                    echo "## Status: SUCCESS" >> "$result_file"
+                    ;;
+            esac
 
             # v8.6.0: Preserve native metrics block for batch completion
             if [[ -s "$raw_output" ]]; then
@@ -686,22 +714,30 @@ ${heuristic_ctx}"
             local end_time_ms elapsed_ms
             end_time_ms=$(( $(date +%s) * 1000 ))
             elapsed_ms=$((end_time_ms - start_time_ms))
-            update_agent_status "$agent_type" "completed" "$elapsed_ms" 0.0
-            # v8.18.0: Record provider learning
-            local result_summary
-            result_summary=$(head -c 200 "$result_file" 2>/dev/null | tr '\n' ' ')
-            append_provider_history "$agent_type" "${phase:-unknown}" "${enhanced_prompt:0:100}" "$result_summary" 2>/dev/null || true
-            # v8.20.0: Record outcome for provider intelligence
-            record_outcome "$agent_type" "$agent_type" "${task_type:-unknown}" "${phase:-unknown}" "success" "$elapsed_ms" 2>/dev/null || true
-            # v9.13: Reset circuit breaker on success
-            type record_success &>/dev/null && record_success "$provider_prefix" 2>/dev/null || true
-            # v9.3.0: Record file co-occurrence pattern for heuristic learning
-            record_run_pattern "$agent_type" "${enhanced_prompt:-$prompt}" "$result_file" 2>/dev/null || true
-            # v8.20.1: Record task duration metric
-            record_task_metric "task_duration_ms" "$elapsed_ms" 2>/dev/null || true
-            # v8.21.0: Anti-drift checkpoint (non-blocking)
-            if type run_drift_check &>/dev/null 2>&1; then
-                run_drift_check "${enhanced_prompt:-$prompt}" "$(cat "$result_file" 2>/dev/null)" "$agent_type" "${phase:-unknown}" 2>/dev/null || true
+            if [[ "$_octo_success_status" == "failed" ]]; then
+                update_agent_status "$agent_type" "failed" "$elapsed_ms" 0.0
+                record_outcome "$agent_type" "$agent_type" "${task_type:-unknown}" "${phase:-unknown}" "fail" "$elapsed_ms" 2>/dev/null || true
+                type record_failure &>/dev/null && record_failure "$provider_prefix" "provider_rejection" 2>/dev/null || true
+                type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "failed" "$tokens_in" "$_octo_tokens_out" "${_octo_success_reason:-unusable output}" "$elapsed_ms" "$result_file" "${role:-none}" || true
+            else
+                update_agent_status "$agent_type" "completed" "$elapsed_ms" 0.0
+                # v8.18.0: Record provider learning
+                local result_summary
+                result_summary=$(head -c 200 "$result_file" 2>/dev/null | tr '\n' ' ')
+                append_provider_history "$agent_type" "${phase:-unknown}" "${enhanced_prompt:0:100}" "$result_summary" 2>/dev/null || true
+                # v8.20.0: Record outcome for provider intelligence
+                record_outcome "$agent_type" "$agent_type" "${task_type:-unknown}" "${phase:-unknown}" "success" "$elapsed_ms" 2>/dev/null || true
+                # v9.13: Reset circuit breaker on success
+                type record_success &>/dev/null && record_success "$provider_prefix" 2>/dev/null || true
+                # v9.3.0: Record file co-occurrence pattern for heuristic learning
+                record_run_pattern "$agent_type" "${enhanced_prompt:-$prompt}" "$result_file" 2>/dev/null || true
+                # v8.20.1: Record task duration metric
+                record_task_metric "task_duration_ms" "$elapsed_ms" 2>/dev/null || true
+                type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "$_octo_success_status" "$tokens_in" "$_octo_tokens_out" "$_octo_success_reason" "$elapsed_ms" "$result_file" "${role:-none}" || true
+                # v8.21.0: Anti-drift checkpoint (non-blocking)
+                if type run_drift_check &>/dev/null 2>&1; then
+                    run_drift_check "${enhanced_prompt:-$prompt}" "$(cat "$result_file" 2>/dev/null)" "$agent_type" "${phase:-unknown}" 2>/dev/null || true
+                fi
             fi
         elif [[ $exit_code -eq 124 ]] || [[ $exit_code -eq 143 ]]; then
             # v7.19.0 P0.2: TIMEOUT - Preserve partial output
@@ -759,6 +795,9 @@ ${heuristic_ctx}"
             end_time_ms=$(( $(date +%s) * 1000 ))
             elapsed_ms=$((end_time_ms - start_time_ms))
             update_agent_status "$agent_type" "timeout" "$elapsed_ms" 0.0
+            local tokens_out
+            tokens_out=$(octo_estimate_tokens_for_file "$temp_output" 2>/dev/null || echo 0)
+            type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "timeout" "$tokens_in" "$tokens_out" "Timed out before completion" "$elapsed_ms" "$result_file" "${role:-none}" || true
             # v8.20.0: Record timeout for provider intelligence
             record_outcome "$agent_type" "$agent_type" "${task_type:-unknown}" "${phase:-unknown}" "timeout" "$elapsed_ms" 2>/dev/null || true
             # v9.13: Record timeout as transient failure for circuit breaker
@@ -801,6 +840,9 @@ ${heuristic_ctx}"
             end_time_ms=$(( $(date +%s) * 1000 ))
             elapsed_ms=$((end_time_ms - start_time_ms))
             update_agent_status "$agent_type" "failed" "$elapsed_ms" 0.0
+            local tokens_out
+            tokens_out=$(octo_estimate_tokens_for_file "$temp_output" 2>/dev/null || echo 0)
+            type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "failed" "$tokens_in" "$tokens_out" "Exit code $exit_code" "$elapsed_ms" "$result_file" "${role:-none}" || true
             # v8.20.0: Record failure for provider intelligence
             record_outcome "$agent_type" "$agent_type" "${task_type:-unknown}" "${phase:-unknown}" "fail" "$elapsed_ms" 2>/dev/null || true
             # v9.13: Record failure for circuit breaker (classify from error output if available)

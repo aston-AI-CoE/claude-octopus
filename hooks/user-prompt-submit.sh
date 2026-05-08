@@ -110,6 +110,69 @@ fi
 # GUARD: Skip if user already invoked an /octo: command (prevent double-exec)
 # ═══════════════════════════════════════════════════════════════════════════════
 PROMPT_LOWER=$(printf '%s' "$PROMPT" | tr '[:upper:]' '[:lower:]')
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || echo ".")"
+OCTO_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$HOOK_DIR/.." && pwd 2>/dev/null || echo ".")}"
+OCTO_COMMANDS_DIR="${OCTO_PLUGIN_ROOT}/.claude/commands"
+
+octo_command_exists() {
+    local cmd="$1"
+    [[ -f "${OCTO_COMMANDS_DIR}/${cmd}.md" ]]
+}
+
+octo_alias_for() {
+    local cmd="$1"
+    case "$cmd" in
+        configure|config|init|install|settings|wizard|octopus-configure) echo "setup" ;;
+        ex|extr) echo "extract" ;;
+        cost|usage) echo "costs" ;;
+        optimize|optimise|router|smart) echo "auto" ;;
+        update|update-clis|sys-update|sys-setup) echo "doctor" ;;
+        co-research|co-discover) echo "discover" ;;
+        *) return 1 ;;
+    esac
+}
+
+octo_log_alias_event() {
+    local kind="$1"
+    local raw="$2"
+    local target="${3:-}"
+    mkdir -p "${HOME}/.claude-octopus" 2>/dev/null || return 0
+    printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$kind" "$raw" "$target" >> "${HOME}/.claude-octopus/alias-log.tsv" 2>/dev/null || true
+}
+
+octo_fuzzy_suggestions() {
+    local raw="$1"
+    [[ -d "$OCTO_COMMANDS_DIR" ]] || return 1
+    if command -v python3 &>/dev/null; then
+        python3 - "$OCTO_COMMANDS_DIR" "$raw" <<'PY' 2>/dev/null
+import difflib
+import pathlib
+import sys
+
+cmd_dir = pathlib.Path(sys.argv[1])
+raw = sys.argv[2]
+commands = sorted(p.stem for p in cmd_dir.glob("*.md"))
+matches = difflib.get_close_matches(raw, commands, n=3, cutoff=0.58)
+if not matches:
+    matches = [c for c in commands if c.startswith(raw[:3])][:3]
+print(" ".join(matches))
+PY
+        return 0
+    fi
+
+    local candidate emitted=0
+    for path in "$OCTO_COMMANDS_DIR"/*.md; do
+        [[ -f "$path" ]] || continue
+        candidate="${path##*/}"
+        candidate="${candidate%.md}"
+        if [[ "$candidate" == "$raw"* || "$candidate" == "${raw:0:3}"* ]]; then
+            printf '%s ' "$candidate"
+            emitted=$((emitted + 1))
+            [[ $emitted -ge 3 ]] && break
+        fi
+    done
+    [[ $emitted -gt 0 ]]
+}
 
 # ── Session title auto-naming (CC v2.1.94+, SUPPORTS_SESSION_TITLE_HOOK) ──
 # When user invokes /octo: command, auto-title the session for easier /resume.
@@ -121,8 +184,30 @@ PROMPT_LOWER=$(printf '%s' "$PROMPT" | tr '[:upper:]' '[:lower:]')
 _OCTO_EXPLICIT=false
 if [[ "$PROMPT_LOWER" == /octo:* ]] || [[ "$PROMPT_LOWER" == "octo:"* ]]; then
     _OCTO_EXPLICIT=true
+    _RAW_CMD=$(printf '%s' "$PROMPT" | sed -E 's|^/?[Oo][Cc][Tt][Oo]:([A-Za-z0-9_-]+).*|\1|')
+    _CMD=$(printf '%s' "$_RAW_CMD" | tr '[:upper:]' '[:lower:]')
+    _ARGS=$(printf '%s' "$PROMPT" | sed -E 's|^/?[Oo][Cc][Tt][Oo]:[A-Za-z0-9_-]+[[:space:]]*||')
+
+    if [[ -n "$_CMD" ]] && ! octo_command_exists "$_CMD"; then
+        if _ALIAS=$(octo_alias_for "$_CMD") && octo_command_exists "$_ALIAS"; then
+            octo_log_alias_event "alias" "$_RAW_CMD" "$_ALIAS"
+            emit_user_prompt_context "[🐙 Octopus] Alias resolved: /octo:${_RAW_CMD} -> /octo:${_ALIAS}. Treat this invocation as /octo:${_ALIAS}; invoke Skill(skill: \"octo:${_ALIAS}\", args: \"$(escape_for_json "$_ARGS")\") before responding."
+            exit 0
+        fi
+        _SUGGESTIONS=$(octo_fuzzy_suggestions "$_CMD" || true)
+        if [[ -n "$_SUGGESTIONS" ]]; then
+            octo_log_alias_event "fuzzy" "$_RAW_CMD" "$_SUGGESTIONS"
+            _FORMATTED=$(printf '%s' "$_SUGGESTIONS" | awk '{for (i=1; i<=NF; i++) printf "%s/octo:%s", (i>1?", ":""), $i}')
+            emit_user_prompt_context "[🐙 Octopus] Unknown command /octo:${_RAW_CMD}. Did you mean ${_FORMATTED}? Do not guess; ask the user to choose one unless the intended command is obvious from the prompt."
+            exit 0
+        fi
+    elif [[ "$_RAW_CMD" != "$_CMD" ]]; then
+        octo_log_alias_event "case" "$_RAW_CMD" "$_CMD"
+        emit_user_prompt_context "[🐙 Octopus] Command canonicalized: /octo:${_RAW_CMD} -> /octo:${_CMD}. Treat this invocation as /octo:${_CMD}."
+        exit 0
+    fi
+
     if [[ "${OCTOPUS_AUTO_TITLE:-true}" != "false" ]]; then
-        _CMD=$(printf '%s' "$PROMPT_LOWER" | sed 's|^/\{0,1\}octo:\([a-z_-]*\).*|\1|')
         if [[ -n "$_CMD" ]]; then
             _SESSION_ID=$(printf '%s' "$INPUT" | grep -o '"session_id":"[^"]*"' | head -1 | cut -d'"' -f4)
             _TITLE_FILE="${HOME}/.claude-octopus/.session-titled-${_SESSION_ID:-unknown}"
@@ -241,6 +326,24 @@ if [[ -z "$INTENT" ]]; then
             set_intent "review" 1 "weak" ;;
         *"should we "*|*" vs "*|*" versus "*|*"decide between"*|*"which is better"*|*"trade-off"*|*"tradeoff"*|*"compare alternatives"*|*"compare "*)
             set_intent "debate" 2 "strong" ;;
+    esac
+fi
+
+if [[ -z "$INTENT" ]]; then
+    # Promotion safeguards for prompts that lack explicit router keywords but
+    # still clearly need multi-model breadth.
+    if [[ "$PROMPT_LOWER" == *" or "* ]] || [[ "$PROMPT_LOWER" == *" vs "* ]]; then
+        _proper_count=$(printf '%s' "$PROMPT" | python3 -c 'import re,sys; s=sys.stdin.read(); print(len(re.findall(r"`[^`]+`|\b[A-Z][A-Za-z0-9_.-]{2,}\b", s)))' 2>/dev/null || echo 0)
+        if [[ "${_proper_count:-0}" -ge 2 ]]; then
+            set_intent "debate" 2 "strong"
+        fi
+    fi
+fi
+
+if [[ -z "$INTENT" && "$PROMPT" == *"?" && ${#PROMPT} -ge 40 ]]; then
+    case "$PROMPT_LOWER" in
+        what\ *|how\ *|why\ *|which\ *|where\ *|when\ *)
+            set_intent "discover" 2 "weak" ;;
     esac
 fi
 
