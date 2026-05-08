@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+---
+
+## [9.37.1] - 2026-05-08
+
 ### Fixed
 
 - Resolve the installed Octopus plugin root in `/octo:doctor` before invoking scripts so Windows Git Bash installs do not depend on `~/.claude-octopus/plugin` symlink creation (#360).
