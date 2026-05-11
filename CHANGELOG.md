@@ -4,6 +4,14 @@
 
 ---
 
+## [9.37.3] - 2026-05-11
+
+### Fixed
+
+- Sync the README version badge with the released plugin version so release validation passes after the #367 skill-path fix.
+
+---
+
 ## [9.37.2] - 2026-05-10
 
 ### Fixed
