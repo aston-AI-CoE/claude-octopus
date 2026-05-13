@@ -1,5 +1,19 @@
 # Changelog
 
+## [9.37.4] - 2026-05-13
+
+### Added
+
+- Add `OCTO_ALLOWED_PROVIDERS` so users can restrict Octopus provider checks and fleet fanout to an explicit provider set (#370).
+- Add a read-only GitHub work queue hook that periodically surfaces open Octopus issues and PRs while working in the repo.
+
+### Fixed
+
+- Prevent the stable `~/.claude-octopus/plugin` self-heal path from recreating the plugin symlink as a self-referential loop (#371).
+- Update release validation to understand directory-based plugin skill registrations.
+
+---
+
 ## [Unreleased]
 
 ---

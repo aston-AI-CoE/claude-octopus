@@ -1,7 +1,7 @@
 {
   "name": "octo",
-  "version": "9.37.3",
-  "description": "v9.37.3 \u2014 Agent summaries, prompt-size preflight, research fanout, and Codex-compatible portable skills. Run /octo:setup.",
+  "version": "9.37.4",
+  "description": "v9.37.4 \u2014 Agent summaries, prompt-size preflight, research fanout, and Codex-compatible portable skills. Run /octo:setup.",
   "author": {
     "name": "nyldn",
     "url": "https://github.com/nyldn"

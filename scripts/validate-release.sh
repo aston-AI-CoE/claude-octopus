@@ -322,8 +322,13 @@ echo ""
 # ============================================================================
 echo "🎯 Checking skill registration..."
 
-SKILL_FILES=$(ls "$ROOT_DIR/.claude/skills/"*.md 2>/dev/null | xargs -n1 basename | sort)
-REGISTERED_SKILLS=$(grep -o '\.claude/skills/[^"]*\.md' "$ROOT_DIR/.claude-plugin/plugin.json" | sed 's|.*\.claude/skills/||' | sort)
+if command -v jq >/dev/null 2>&1 && jq -e '.skills[]? | select(startswith("./skills/"))' "$ROOT_DIR/.claude-plugin/plugin.json" >/dev/null 2>&1; then
+    SKILL_FILES=$(find "$ROOT_DIR/skills" -mindepth 2 -maxdepth 2 -name "SKILL.md" -type f 2>/dev/null | sed "s|^$ROOT_DIR/skills/||;s|/SKILL.md$||" | sort)
+    REGISTERED_SKILLS=$(jq -r '.skills[]? | select(startswith("./skills/")) | sub("^\\./skills/"; "") | sub("/$"; "")' "$ROOT_DIR/.claude-plugin/plugin.json" | sort)
+else
+    SKILL_FILES=$(ls "$ROOT_DIR/.claude/skills/"*.md 2>/dev/null | xargs -n1 basename | sort)
+    REGISTERED_SKILLS=$(grep -o '\.claude/skills/[^"]*\.md' "$ROOT_DIR/.claude-plugin/plugin.json" | sed 's|.*\.claude/skills/||' | sort)
+fi
 
 for skill_file in $SKILL_FILES; do
     if ! echo "$REGISTERED_SKILLS" | grep -q "^${skill_file}$"; then
@@ -354,7 +359,14 @@ echo ""
 echo "🏷️  Checking skill frontmatter format..."
 
 invalid_skill_names=0
-for skill_file in "$ROOT_DIR/.claude/skills/"*.md; do
+if command -v jq >/dev/null 2>&1 && jq -e '.skills[]? | select(startswith("./skills/"))' "$ROOT_DIR/.claude-plugin/plugin.json" >/dev/null 2>&1; then
+    SKILL_FRONTMATTER_FILES=("$ROOT_DIR"/skills/*/SKILL.md)
+else
+    SKILL_FRONTMATTER_FILES=("$ROOT_DIR"/.claude/skills/*.md)
+fi
+
+for skill_file in "${SKILL_FRONTMATTER_FILES[@]}"; do
+    [[ -f "$skill_file" ]] || continue
     skill_name=$(sed -n '2p' "$skill_file" | grep -o 'name: .*' | sed 's/name: //' || true)
     # Skip if no name found (might be a different format)
     if [[ -z "$skill_name" ]]; then
@@ -395,6 +407,15 @@ fi
 
 echo ""
 
+# Release artifact creation is intentionally limited to a clean main checkout.
+# Running validation on a dirty release branch should validate files only, not
+# create tags/releases that point at the wrong commit.
+CURRENT_BRANCH=$(git -C "$ROOT_DIR" branch --show-current 2>/dev/null || echo "")
+WORKTREE_DIRTY=$(git -C "$ROOT_DIR" status --porcelain 2>/dev/null || echo "")
+can_create_release_artifacts() {
+    [[ "$CURRENT_BRANCH" == "main" && -z "$WORKTREE_DIRTY" ]]
+}
+
 # ============================================================================
 # 9. GIT TAG CHECK & AUTO-CREATE
 # ============================================================================
@@ -416,16 +437,21 @@ if git tag -l "$EXPECTED_TAG" | grep -q "$EXPECTED_TAG"; then
     fi
 else
     echo -e "  ${YELLOW}NOTE: Tag $EXPECTED_TAG not yet created${NC}"
-    echo -e "  ${GREEN}  Auto-creating tag...${NC}"
+    if can_create_release_artifacts; then
+        echo -e "  ${GREEN}  Auto-creating tag...${NC}"
 
-    # Extract CHANGELOG entry for tag message
-    TAG_MESSAGE=$(awk "/## \[$PLUGIN_VERSION\]/,/^## \[/" "$ROOT_DIR/CHANGELOG.md" | head -20 | tail -n +2)
-    if [[ -n "$TAG_MESSAGE" ]]; then
-        git tag -a "$EXPECTED_TAG" -m "$TAG_MESSAGE"
-        echo -e "  ${GREEN}✓ Tag $EXPECTED_TAG created with CHANGELOG excerpt${NC}"
+        # Extract CHANGELOG entry for tag message
+        TAG_MESSAGE=$(awk "/## \[$PLUGIN_VERSION\]/,/^## \[/" "$ROOT_DIR/CHANGELOG.md" | head -20 | tail -n +2)
+        if [[ -n "$TAG_MESSAGE" ]]; then
+            git tag -a "$EXPECTED_TAG" -m "$TAG_MESSAGE"
+            echo -e "  ${GREEN}✓ Tag $EXPECTED_TAG created with CHANGELOG excerpt${NC}"
+        else
+            git tag -a "$EXPECTED_TAG" -m "Release $EXPECTED_TAG"
+            echo -e "  ${GREEN}✓ Tag $EXPECTED_TAG created${NC}"
+        fi
     else
-        git tag -a "$EXPECTED_TAG" -m "Release $EXPECTED_TAG"
-        echo -e "  ${GREEN}✓ Tag $EXPECTED_TAG created${NC}"
+        echo -e "  ${YELLOW}  Deferring tag creation until release changes are merged to clean main${NC}"
+        ((warnings++)) || true
     fi
 fi
 
@@ -481,7 +507,7 @@ else
             # Check if tag exists on remote
             REMOTE_TAG_SHA=$(git ls-remote origin "refs/tags/$EXPECTED_TAG" 2>/dev/null | cut -f1)
 
-            if [[ -n "$REMOTE_TAG_SHA" ]]; then
+            if [[ -n "$REMOTE_TAG_SHA" ]] && can_create_release_artifacts; then
                 echo -e "  ${GREEN}  Auto-creating GitHub release from CHANGELOG...${NC}"
 
                 # Extract CHANGELOG entry for this version
@@ -501,7 +527,7 @@ else
                     ((warnings++)) || true
                 fi
             else
-                echo -e "  ${YELLOW}  Tag not yet pushed to remote - will create release after push${NC}"
+                echo -e "  ${YELLOW}  Release creation deferred until tag exists on clean main${NC}"
             fi
         fi
     fi
@@ -514,6 +540,11 @@ echo ""
 # ============================================================================
 push_tag_if_needed() {
     local tag="$1"
+    if ! can_create_release_artifacts; then
+        echo -e "${YELLOW}NOTE: Not pushing/creating release artifacts outside a clean main checkout${NC}"
+        return 0
+    fi
+
     if git tag -l "$tag" | grep -q "$tag"; then
         REMOTE_TAG_SHA=$(git ls-remote origin "refs/tags/$tag^{}" 2>/dev/null | cut -f1)
         if [[ -z "$REMOTE_TAG_SHA" ]]; then
