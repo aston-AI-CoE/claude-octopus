@@ -8,21 +8,32 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 source "${SCRIPT_DIR}/../lib/cursor-agent.sh" 2>/dev/null || true
+source "${SCRIPT_DIR}/../lib/provider-allowlist.sh" 2>/dev/null || true
+
+provider_status() {
+    local provider="$1"
+    local status="$2"
+    if declare -f octo_provider_allowed >/dev/null 2>&1 && ! octo_provider_allowed "$provider"; then
+        status="missing"
+    fi
+    printf "%s:%s\n" "$provider" "$status"
+}
 
 cursor_agent_status="missing"
-if declare -f _is_cursor_agent_binary >/dev/null 2>&1 && _is_cursor_agent_binary && \
+if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed "cursor-agent"; } && \
+   declare -f _is_cursor_agent_binary >/dev/null 2>&1 && _is_cursor_agent_binary && \
    { [ -n "${CURSOR_API_KEY:-}" ] || grep -Eq '"authInfo"[[:space:]]*:[[:space:]]*\{' "${HOME}/.cursor/cli-config.json" 2>/dev/null; }; then
     cursor_agent_status="available"
 fi
 
 echo "PROVIDER_CHECK_START"
-printf "codex:%s\n" "$(command -v codex >/dev/null 2>&1 && echo available || echo missing)"
-printf "gemini:%s\n" "$(command -v gemini >/dev/null 2>&1 && echo available || echo missing)"
-printf "perplexity:%s\n" "$([ -n "${PERPLEXITY_API_KEY:-}" ] && echo available || echo missing)"
-printf "opencode:%s\n" "$(command -v opencode >/dev/null 2>&1 && echo available || echo missing)"
-printf "copilot:%s\n" "$(command -v copilot >/dev/null 2>&1 && echo available || echo missing)"
-printf "qwen:%s\n" "$(command -v qwen >/dev/null 2>&1 && echo available || echo missing)"
-printf "cursor-agent:%s\n" "$cursor_agent_status"
-printf "ollama:%s\n" "$(command -v ollama >/dev/null 2>&1 && curl -sf http://localhost:11434/api/tags >/dev/null 2>&1 && echo available || echo missing)"
-printf "openrouter:%s\n" "$([ -n "${OPENROUTER_API_KEY:-}" ] && echo available || echo missing)"
+provider_status "codex" "$(command -v codex >/dev/null 2>&1 && echo available || echo missing)"
+provider_status "gemini" "$(command -v gemini >/dev/null 2>&1 && echo available || echo missing)"
+provider_status "perplexity" "$([ -n "${PERPLEXITY_API_KEY:-}" ] && echo available || echo missing)"
+provider_status "opencode" "$(command -v opencode >/dev/null 2>&1 && echo available || echo missing)"
+provider_status "copilot" "$(command -v copilot >/dev/null 2>&1 && echo available || echo missing)"
+provider_status "qwen" "$(command -v qwen >/dev/null 2>&1 && echo available || echo missing)"
+provider_status "cursor-agent" "$cursor_agent_status"
+provider_status "ollama" "$({ ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed "ollama"; } && command -v ollama >/dev/null 2>&1 && curl -sf http://localhost:11434/api/tags >/dev/null 2>&1 && echo available || echo missing)"
+provider_status "openrouter" "$([ -n "${OPENROUTER_API_KEY:-}" ] && echo available || echo missing)"
 echo "PROVIDER_CHECK_END"

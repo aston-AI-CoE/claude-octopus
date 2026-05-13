@@ -20,6 +20,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 source "${SCRIPT_DIR}/../lib/cursor-agent.sh" 2>/dev/null || true
+source "${SCRIPT_DIR}/../lib/provider-allowlist.sh" 2>/dev/null || true
 
 WORKFLOW="${1:-research}"
 INTENSITY="${2:-standard}"
@@ -45,21 +46,24 @@ get_family() {
 # ── Provider Detection ────────────────────────────────────────────────────────
 # Order = preference for primary slot assignment
 AVAILABLE_CLI=()
-command -v codex >/dev/null 2>&1 && AVAILABLE_CLI+=(codex)
-command -v gemini >/dev/null 2>&1 && AVAILABLE_CLI+=(gemini)
-command -v copilot >/dev/null 2>&1 && AVAILABLE_CLI+=(copilot)
-command -v qwen >/dev/null 2>&1 && AVAILABLE_CLI+=(qwen)
-command -v opencode >/dev/null 2>&1 && AVAILABLE_CLI+=(opencode)
-command -v ollama >/dev/null 2>&1 && curl -sf http://localhost:11434/api/tags >/dev/null 2>&1 && AVAILABLE_CLI+=(ollama)
-if declare -f _is_cursor_agent_binary >/dev/null 2>&1 && _is_cursor_agent_binary; then
+if octo_provider_allowed codex && command -v codex >/dev/null 2>&1; then AVAILABLE_CLI+=(codex); fi
+if octo_provider_allowed gemini && command -v gemini >/dev/null 2>&1; then AVAILABLE_CLI+=(gemini); fi
+if octo_provider_allowed copilot && command -v copilot >/dev/null 2>&1; then AVAILABLE_CLI+=(copilot); fi
+if octo_provider_allowed qwen && command -v qwen >/dev/null 2>&1; then AVAILABLE_CLI+=(qwen); fi
+if octo_provider_allowed opencode && command -v opencode >/dev/null 2>&1; then AVAILABLE_CLI+=(opencode); fi
+if octo_provider_allowed ollama && command -v ollama >/dev/null 2>&1 && curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then AVAILABLE_CLI+=(ollama); fi
+if octo_provider_allowed cursor-agent && declare -f _is_cursor_agent_binary >/dev/null 2>&1 && _is_cursor_agent_binary; then
     if [[ -n "${CURSOR_API_KEY:-}" ]] || grep -Eq '"authInfo"[[:space:]]*:[[:space:]]*\{' "${HOME}/.cursor/cli-config.json" 2>/dev/null; then
         AVAILABLE_CLI+=(cursor-agent)
     fi
 fi
-[[ -n "${PERPLEXITY_API_KEY:-}" ]] && AVAILABLE_CLI+=(perplexity)
-[[ -n "${OPENROUTER_API_KEY:-}" ]] && AVAILABLE_CLI+=(openrouter)
+octo_provider_allowed perplexity && [[ -n "${PERPLEXITY_API_KEY:-}" ]] && AVAILABLE_CLI+=(perplexity)
+octo_provider_allowed openrouter && [[ -n "${OPENROUTER_API_KEY:-}" ]] && AVAILABLE_CLI+=(openrouter)
 
-CLI_COUNT=${#AVAILABLE_CLI[@]}
+CLI_COUNT=0
+if [[ -n "${AVAILABLE_CLI[*]:-}" ]]; then
+    CLI_COUNT=${#AVAILABLE_CLI[@]}
+fi
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -69,10 +73,7 @@ _contains() { [[ " $1 " == *" $2 "* ]]; }
 # Check if provider is available
 is_available() {
     local p="$1"
-    for a in "${AVAILABLE_CLI[@]}"; do
-        [[ "$a" == "$p" ]] && return 0
-    done
-    return 1
+    _contains "${AVAILABLE_CLI[*]:-}" "$p"
 }
 
 # Pick first available provider from a preference list, with fallback
@@ -82,7 +83,15 @@ pick_provider() {
     for p in "$@"; do
         is_available "$p" && echo "$p" && return 0
     done
-    echo "$fallback"
+    if octo_provider_allowed "$fallback"; then
+        echo "$fallback"
+    elif [[ -n "${AVAILABLE_CLI[*]:-}" ]]; then
+        # shellcheck disable=SC2086 # Intentional split to read the first provider.
+        set -- ${AVAILABLE_CLI[*]}
+        echo "$1"
+    else
+        echo ""
+    fi
 }
 
 # Build family-diverse provider ordering from available CLIs
@@ -111,6 +120,11 @@ emit() {
     printf '%s|%s|%s\n' "$1" "$2" "$3"
 }
 
+emit_if_allowed() {
+    octo_provider_allowed "$1" || return 0
+    emit "$@"
+}
+
 # Count unique families across given providers + implicit anthropic
 count_families() {
     local families="anthropic"  # Claude is always present
@@ -132,8 +146,12 @@ build_research_fleet() {
 
     # If no CLI providers at all, just use claude-sonnet
     if [[ $dcount -eq 0 ]]; then
-        diverse_arr=(claude-sonnet)
-        dcount=1
+        if octo_provider_allowed claude-sonnet; then
+            diverse_arr=(claude-sonnet)
+            dcount=1
+        else
+            return 0
+        fi
     fi
 
     case "$INTENSITY" in
@@ -153,7 +171,7 @@ build_research_fleet() {
             idx=$((idx + 1))
             emit "${diverse_arr[$((idx % dcount))]}" "Ecosystem Overview" "Research existing solutions and patterns for: $PROMPT. What has been done before? What worked, what failed?"
             idx=$((idx + 1))
-            emit "claude-sonnet" "Edge Cases" "Explore edge cases and potential challenges for: $PROMPT. What could go wrong? What's often overlooked?"
+            emit_if_allowed "claude-sonnet" "Edge Cases" "Explore edge cases and potential challenges for: $PROMPT. What could go wrong? What's often overlooked?"
             emit "${diverse_arr[$((idx % dcount))]}" "Feasibility" "Investigate technical feasibility and dependencies for: $PROMPT. What are the prerequisites?"
             idx=$((idx + 1))
 
@@ -162,7 +180,7 @@ build_research_fleet() {
                 local src
                 src=$(find . -maxdepth 2 -type f \( -name "*.ts" -o -name "*.py" -o -name "*.go" -o -name "*.rs" -o -name "*.java" -o -name "*.js" \) 2>/dev/null | head -1)
                 if [[ -n "${src:-}" ]]; then
-                    emit "claude-sonnet" "Codebase Analysis" "Analyze the LOCAL CODEBASE in the current directory for: $PROMPT. Run: find . -type f -name '*.ts' -o -name '*.py' -o -name '*.js' | head -30, then read key files. Report: tech stack, architecture patterns, file structure, coding conventions, and how they relate to the prompt. Focus on ACTUAL code, not hypotheticals."
+                    emit_if_allowed "claude-sonnet" "Codebase Analysis" "Analyze the LOCAL CODEBASE in the current directory for: $PROMPT. Run: find . -type f -name '*.ts' -o -name '*.py' -o -name '*.js' | head -30, then read key files. Report: tech stack, architecture patterns, file structure, coding conventions, and how they relate to the prompt. Focus on ACTUAL code, not hypotheticals."
                 fi
             fi
             ;;
@@ -172,7 +190,7 @@ build_research_fleet() {
             idx=$((idx + 1))
             emit "${diverse_arr[$((idx % dcount))]}" "Ecosystem Overview" "Research existing solutions and patterns for: $PROMPT. What has been done before? What worked, what failed?"
             idx=$((idx + 1))
-            emit "claude-sonnet" "Edge Cases" "Explore edge cases and potential challenges for: $PROMPT. What could go wrong? What's often overlooked?"
+            emit_if_allowed "claude-sonnet" "Edge Cases" "Explore edge cases and potential challenges for: $PROMPT. What could go wrong? What's often overlooked?"
             emit "${diverse_arr[$((idx % dcount))]}" "Feasibility" "Investigate technical feasibility and dependencies for: $PROMPT. What are the prerequisites?"
             idx=$((idx + 1))
 
@@ -181,7 +199,7 @@ build_research_fleet() {
                 local src
                 src=$(find . -maxdepth 2 -type f \( -name "*.ts" -o -name "*.py" -o -name "*.go" -o -name "*.rs" -o -name "*.java" -o -name "*.js" \) 2>/dev/null | head -1)
                 if [[ -n "${src:-}" ]]; then
-                    emit "claude-sonnet" "Codebase Analysis" "Analyze the LOCAL CODEBASE in the current directory for: $PROMPT. Run: find . -type f -name '*.ts' -o -name '*.py' -o -name '*.js' | head -30, then read key files. Report: tech stack, architecture patterns, file structure, coding conventions, and how they relate to the prompt. Focus on ACTUAL code, not hypotheticals."
+                    emit_if_allowed "claude-sonnet" "Codebase Analysis" "Analyze the LOCAL CODEBASE in the current directory for: $PROMPT. Run: find . -type f -name '*.ts' -o -name '*.py' -o -name '*.js' | head -30, then read key files. Report: tech stack, architecture patterns, file structure, coding conventions, and how they relate to the prompt. Focus on ACTUAL code, not hypotheticals."
                 fi
             fi
 
@@ -189,7 +207,7 @@ build_research_fleet() {
             idx=$((idx + 1))
 
             # Web research via Perplexity
-            if [[ -n "${PERPLEXITY_API_KEY:-}" ]]; then
+            if is_available perplexity; then
                 emit "perplexity" "Web Research" "Search the live web for the latest information about: $PROMPT. Find recent articles, documentation, blog posts, GitHub repos, and community discussions. Include source URLs and publication dates. Focus on information from the last 12 months that may not be in training data."
             fi
 
@@ -199,10 +217,10 @@ build_research_fleet() {
                 local up="${diverse_arr[$((i % dcount))]}"
                 _contains "$used_providers" "$up" || used_providers="$used_providers $up"
             done
-            used_providers="$used_providers claude-sonnet"
-            [[ -n "${PERPLEXITY_API_KEY:-}" ]] && used_providers="$used_providers perplexity"
+            octo_provider_allowed claude-sonnet && used_providers="$used_providers claude-sonnet"
+            is_available perplexity && used_providers="$used_providers perplexity"
 
-            for extra in "${AVAILABLE_CLI[@]}"; do
+            for extra in ${AVAILABLE_CLI[*]:-}; do
                 _contains "$used_providers" "$extra" && continue
                 case "$extra" in
                     copilot)
@@ -221,31 +239,37 @@ build_research_fleet() {
             done
             ;;
     esac
+    return 0
 }
 
 # ── Review Fleet ──────────────────────────────────────────────────────────────
 build_review_fleet() {
     local logic_provider
     logic_provider=$(pick_provider "claude-sonnet" codex opencode copilot)
-    emit "$logic_provider" "Logic Reviewer" "Review for correctness and logic bugs, edge cases, regressions in: $PROMPT"
+    [[ -n "$logic_provider" ]] && emit "$logic_provider" "Logic Reviewer" "Review for correctness and logic bugs, edge cases, regressions in: $PROMPT"
 
     local sec_provider
     sec_provider=$(pick_provider "claude-sonnet" gemini qwen copilot)
     # Ensure different from logic reviewer
-    if [[ "$sec_provider" == "$logic_provider" && "$sec_provider" != "claude-sonnet" ]]; then
-        sec_provider="claude-sonnet"
+    if [[ -n "$sec_provider" && "$sec_provider" == "$logic_provider" && "$sec_provider" != "claude-sonnet" ]]; then
+        local alternate_provider
+        alternate_provider=$(pick_provider "" claude-sonnet)
+        if [[ -n "$alternate_provider" && "$alternate_provider" != "$logic_provider" ]]; then
+            sec_provider="$alternate_provider"
+        fi
     fi
-    emit "$sec_provider" "Security Reviewer" "Review for OWASP vulnerabilities, injection, auth flaws, data exposure in: $PROMPT"
+    [[ -n "$sec_provider" ]] && emit "$sec_provider" "Security Reviewer" "Review for OWASP vulnerabilities, injection, auth flaws, data exposure in: $PROMPT"
 
-    emit "claude-sonnet" "Architecture Reviewer" "Review architecture, integration, API contracts, breaking changes in: $PROMPT"
+    emit_if_allowed "claude-sonnet" "Architecture Reviewer" "Review architecture, integration, API contracts, breaking changes in: $PROMPT"
 
     local cve_provider
-    if [[ -n "${PERPLEXITY_API_KEY:-}" ]]; then
+    if is_available perplexity; then
         cve_provider="perplexity"
     else
         cve_provider=$(pick_provider "claude-sonnet" gemini copilot qwen)
     fi
-    emit "$cve_provider" "CVE Reviewer" "Check for known CVEs, library advisories, and security bulletins related to: $PROMPT"
+    [[ -n "$cve_provider" ]] && emit "$cve_provider" "CVE Reviewer" "Check for known CVEs, library advisories, and security bulletins related to: $PROMPT"
+    return 0
 }
 
 # ── Debate Fleet ──────────────────────────────────────────────────────────────
@@ -254,7 +278,7 @@ build_debate_fleet() {
     local used_families=""
     local debater_count=0
 
-    for p in "${AVAILABLE_CLI[@]}"; do
+    for p in ${AVAILABLE_CLI[*]:-}; do
         # Skip providers not suited for debate (API-only, local models)
         case "$p" in perplexity|openrouter|ollama) continue ;; esac
 
@@ -275,7 +299,8 @@ build_debate_fleet() {
     for d in $debaters; do
         emit "$d" "Debater" "Argue your position on: $PROMPT"
     done
-    emit "claude-sonnet" "Moderator" "Synthesize debate positions and identify consensus on: $PROMPT"
+    emit_if_allowed "claude-sonnet" "Moderator" "Synthesize debate positions and identify consensus on: $PROMPT"
+    return 0
 }
 
 # ── Architecture Fleet ────────────────────────────────────────────────────────
@@ -296,7 +321,7 @@ build_architecture_fleet() {
         [[ $arch_count -ge 2 ]] && break
     done
 
-    [[ $arch_count -eq 0 ]] && architects="claude-sonnet"
+    [[ $arch_count -eq 0 ]] && octo_provider_allowed claude-sonnet && architects="claude-sonnet"
 
     local i=0
     for a in $architects; do
@@ -307,7 +332,8 @@ build_architecture_fleet() {
         fi
         i=$((i + 1))
     done
-    emit "claude-sonnet" "Architecture Synthesis" "Synthesize architectural perspectives for: $PROMPT. Recommend the best approach with trade-off analysis."
+    emit_if_allowed "claude-sonnet" "Architecture Synthesis" "Synthesize architectural perspectives for: $PROMPT. Recommend the best approach with trade-off analysis."
+    return 0
 }
 
 # ── Main Dispatch ─────────────────────────────────────────────────────────────
@@ -321,5 +347,10 @@ case "$WORKFLOW" in
 esac
 
 # ── Fleet Summary (stderr — for diagnostic/logging) ──────────────────────────
-families=$(count_families "${AVAILABLE_CLI[@]}")
+if [[ -n "${AVAILABLE_CLI[*]:-}" ]]; then
+    # shellcheck disable=SC2086 # Provider names are single shell words.
+    families=$(count_families ${AVAILABLE_CLI[*]})
+else
+    families=$(count_families)
+fi
 >&2 echo "FLEET_SUMMARY: workflow=$WORKFLOW intensity=$INTENSITY families=${families} cli_count=${CLI_COUNT} providers=${AVAILABLE_CLI[*]:-none}"
