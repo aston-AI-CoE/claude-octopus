@@ -12,6 +12,19 @@ _ROUTING_LOADED=1
 # PROVIDER CONFIG ROUTING HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+is_claude_agent_type() {
+    local agent_type="${1:-}"
+
+    case "$agent_type" in
+        claude|claude-*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 # Resolve a provider/config token from providers.json into a concrete agent type.
 # Returns non-zero for unknown or unavailable agents so callers can skip safely.
 resolve_provider_to_agent() {

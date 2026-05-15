@@ -12,9 +12,12 @@
 # Every parallel spawn loop MUST call fleet_dispatch_begin before the first
 # spawn_agent call and fleet_dispatch_end after the last one. The smoke test
 # tests/smoke/test-fleet-dispatch-guard.sh enforces this statically.
+_octopus_agent_sync_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! type start_quota_watcher >/dev/null 2>&1; then
-    _octopus_agent_sync_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     source "${_octopus_agent_sync_lib_dir}/quota-watcher.sh" 2>/dev/null || true
+fi
+if ! type is_claude_agent_type >/dev/null 2>&1; then
+    source "${_octopus_agent_sync_lib_dir}/routing.sh" 2>/dev/null || true
 fi
 
 fleet_dispatch_begin() {
@@ -52,29 +55,22 @@ should_use_agent_teams() {
 
     # User override: force native for Claude agents
     if [[ "$OCTOPUS_AGENT_TEAMS" == "native" ]]; then
-        case "$agent_type" in
-            claude|claude-sonnet|claude-opus|claude-opus-fast)
-                if [[ "$SUPPORTS_STABLE_AGENT_TEAMS" == "true" ]]; then
-                    return 0
-                else
-                    log "WARN" "Agent Teams forced but SUPPORTS_STABLE_AGENT_TEAMS not available"
-                    return 1
-                fi
-                ;;
-            *)
-                # Non-Claude agents always use legacy (external CLIs)
+        if is_claude_agent_type "$agent_type"; then
+            if [[ "$SUPPORTS_STABLE_AGENT_TEAMS" == "true" ]]; then
+                return 0
+            else
+                log "WARN" "Agent Teams forced but SUPPORTS_STABLE_AGENT_TEAMS not available"
                 return 1
-                ;;
-        esac
+            fi
+        fi
+
+        # Non-Claude agents always use legacy (external CLIs)
+        return 1
     fi
 
     # Auto mode: use teams for Claude agents when stable teams are available
-    if [[ "$SUPPORTS_STABLE_AGENT_TEAMS" == "true" ]]; then
-        case "$agent_type" in
-            claude|claude-sonnet|claude-opus|claude-opus-fast)
-                return 0
-                ;;
-        esac
+    if [[ "$SUPPORTS_STABLE_AGENT_TEAMS" == "true" ]] && is_claude_agent_type "$agent_type"; then
+        return 0
     fi
 
     return 1

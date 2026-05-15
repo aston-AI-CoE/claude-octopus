@@ -6,9 +6,20 @@
 # Extracted from orchestrate.sh — v9.7.5
 # ═══════════════════════════════════════════════════════════════════════════════
 
+_model_resolver_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! declare -f _is_cursor_agent_binary >/dev/null 2>&1; then
-    _model_resolver_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     source "${_model_resolver_lib_dir}/cursor-agent.sh" 2>/dev/null || true
+fi
+if ! declare -f is_claude_agent_type >/dev/null 2>&1; then
+    source "${_model_resolver_lib_dir}/routing.sh" 2>/dev/null || true
+fi
+if ! declare -f is_claude_agent_type >/dev/null 2>&1; then
+    is_claude_agent_type() {
+        case "${1:-}" in
+            claude|claude-*) return 0 ;;
+            *) return 1 ;;
+        esac
+    }
 fi
 
 # v9.23.0: Opus default picker — prefers 4.7 when host supports it, falls back to 4.6.
@@ -259,15 +270,17 @@ is_agent_available_v2() {
     # Load config if needed
     [[ -z "$PROVIDER_CODEX_INSTALLED" ]] && load_providers_config
 
+    if is_claude_agent_type "$agent"; then
+        [[ "$PROVIDER_CLAUDE_INSTALLED" == "true" ]]
+        return
+    fi
+
     case "$agent" in
         codex|codex-standard|codex-mini|codex-max|codex-general|codex-review|codex-spark|codex-reasoning|codex-large-context)
             [[ "$PROVIDER_CODEX_INSTALLED" == "true" && "$PROVIDER_CODEX_AUTH_METHOD" != "none" ]]
             ;;
         gemini|gemini-fast|gemini-image)
             [[ "$PROVIDER_GEMINI_INSTALLED" == "true" && "$PROVIDER_GEMINI_AUTH_METHOD" != "none" ]]
-            ;;
-        claude|claude-sonnet|claude-opus)
-            [[ "$PROVIDER_CLAUDE_INSTALLED" == "true" ]]
             ;;
         openrouter|openrouter-*)
             [[ "$PROVIDER_OPENROUTER_ENABLED" == "true" && "$PROVIDER_OPENROUTER_API_KEY_SET" == "true" ]]

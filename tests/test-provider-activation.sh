@@ -254,7 +254,8 @@ echo -e "\033[0;34mTest Group 6: Agent Teams dispatch safety\033[0m"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # 6.1: should_use_agent_teams only returns 0 for Claude agents
-if grep -rA 20 'should_use_agent_teams()' $SCRIPTS_ALL | grep -q 'claude|claude-sonnet|claude-opus'; then
+agent_teams_predicate_refs=$(grep -rA 30 'should_use_agent_teams()' $SCRIPTS_ALL | grep -c 'is_claude_agent_type "$agent_type"' || true)
+if [[ "$agent_teams_predicate_refs" -gt 0 ]]; then
     pass "6.1 Agent Teams only routes Claude agent types"
 else
     fail "6.1 Agent Teams may route non-Claude agents incorrectly"
