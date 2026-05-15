@@ -66,6 +66,9 @@ assert_contains "$(grep -c 'build_review_fleet' "$ALL_SRC" 2>/dev/null || echo 0
 assert_contains "$(grep -c 'review_run' "$ALL_SRC" 2>/dev/null || echo 0)" \
   "[1-9]" "review_run: function exists"
 
+assert_contains "$(grep -c 'review_collect_diff' "$ALL_SRC" 2>/dev/null || echo 0)" \
+  "[1-9]" "review_collect_diff: function exists"
+
 assert_contains "$(grep 'normal\|nit\|pre.existing' "$ALL_SRC" 2>/dev/null | head -5)" \
   "normal|nit|pre.existing" "severity model: all three levels referenced"
 
@@ -103,6 +106,23 @@ assert_contains "$(grep 'post_inline_comments.*findings_file.*||' "$ALL_SRC" 2>/
 
 assert_contains "$(grep -A2 'commit_id.*headRefOid' "$ALL_SRC" 2>/dev/null | head -10)" \
   'commit_id' "post_inline_comments: empty commit_id guarded"
+
+# ── diff target file support ─────────────────────────────────────────────────
+
+source "$PROJECT_ROOT/scripts/lib/review.sh"
+
+DIFF_TARGET="$TMPDIR_TEST/review-target.diff"
+cat > "$DIFF_TARGET" <<'EOF'
+diff --git a/foo.txt b/foo.txt
+--- a/foo.txt
++++ b/foo.txt
+@@ -1 +1 @@
+-old
++new
+EOF
+
+assert_contains "$(review_collect_diff "$DIFF_TARGET")" \
+  "diff --git a/foo.txt b/foo.txt" "review_collect_diff: reads unified diff file targets"
 
 # ── MCP schema ───────────────────────────────────────────────────────────────
 

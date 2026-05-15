@@ -201,6 +201,29 @@ build_review_fleet() {
     echo "$fleet"
 }
 
+# review_collect_diff: resolves a review target to unified diff content.
+# Targets can be built-in scopes (staged, working-tree), a PR number, a git
+# pathspec, or an already-generated .diff/.patch file.
+review_collect_diff() {
+    local target="$1"
+    local diff_content=""
+
+    case "$target" in
+        staged)       diff_content=$(git diff --cached 2>/dev/null || true) ;;
+        working-tree) diff_content=$(git diff 2>/dev/null || true) ;;
+        [0-9]*)       diff_content=$(gh pr diff "$target" 2>/dev/null || true) ;;
+        *)
+            if [[ -f "$target" ]] && [[ -r "$target" ]] && head -n 20 "$target" 2>/dev/null | grep -Ec "^(diff --git|--- |\+\+\+ |@@ )" >/dev/null; then
+                diff_content=$(cat "$target" 2>/dev/null || true)
+            else
+                diff_content=$(git diff HEAD -- "$target" 2>/dev/null || true)
+            fi
+            ;;
+    esac
+
+    printf '%s' "$diff_content"
+}
+
 # review_run: canonical 3-round multi-LLM code review pipeline
 # WHY: replaces the single-model "codex exec review" dispatch with a
 # v9.0: Provider report card — prints post-run summary of provider status
@@ -363,12 +386,7 @@ review_run() {
 
     # ── Collect diff ─────────────────────────────────────────────────────────
     local diff_content=""
-    case "$target" in
-        staged)       diff_content=$(git diff --cached 2>/dev/null || true) ;;
-        working-tree) diff_content=$(git diff 2>/dev/null || true) ;;
-        [0-9]*)       diff_content=$(gh pr diff "$target" 2>/dev/null || true) ;;
-        *)            diff_content=$(git diff HEAD -- "$target" 2>/dev/null || true) ;;
-    esac
+    diff_content=$(review_collect_diff "$target")
 
     if [[ -z "$diff_content" ]]; then
         log WARN "review_run: no diff found for target=$target"
