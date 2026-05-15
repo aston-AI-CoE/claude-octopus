@@ -13,6 +13,14 @@ fi
 if ! declare -f is_claude_agent_type >/dev/null 2>&1; then
     source "${_model_resolver_lib_dir}/routing.sh" 2>/dev/null || true
 fi
+if ! declare -f is_claude_agent_type >/dev/null 2>&1; then
+    is_claude_agent_type() {
+        case "${1:-}" in
+            claude|claude-*) return 0 ;;
+            *) return 1 ;;
+        esac
+    }
+fi
 
 # v9.23.0: Opus default picker — prefers 4.7 when host supports it, falls back to 4.6.
 # Respects OCTOPUS_OPUS_MODEL override (user-pinned version).

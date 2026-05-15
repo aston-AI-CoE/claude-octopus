@@ -39,7 +39,12 @@ else
 fi
 
 test_case "Agent Teams dispatch uses the shared Claude predicate"
-if grep -A 50 'should_use_agent_teams()' "$AGENT_SYNC" | grep -q 'is_claude_agent_type "\$agent_type"'; then
+if awk '
+    /should_use_agent_teams\(\)/, /^}/ {
+        if ($0 ~ /is_claude_agent_type "\$agent_type"/) found=1
+    }
+    END { exit(found ? 0 : 1) }
+' "$AGENT_SYNC"; then
     test_pass
 else
     test_fail "should_use_agent_teams does not use is_claude_agent_type"
