@@ -13,4 +13,9 @@ if [[ ! -t 0 ]]; then
     prompt=$(cat)
 fi
 
+if [[ -z "${prompt//[[:space:]]/}" ]]; then
+    echo "vibe-exec: no prompt provided on stdin" >&2
+    exit 64
+fi
+
 exec vibe "$@" -p "$prompt"
