@@ -729,6 +729,9 @@ Return ONLY JSON: {\"findings\": [...ranked, deduplicated findings...]}"
         if [[ "$publish" == "auto" ]] && awk "BEGIN{exit !($avg_confidence >= 0.85)}"; then
             log INFO "review_run: auto-publishing to PR #$pr_number (confidence=$avg_confidence)"
             post_inline_comments "$pr_number" "$findings_file" || render_terminal_report "$findings_file"
+        elif [[ "$publish" == "auto" ]]; then
+            log INFO "review_run: avg_confidence=$avg_confidence below 0.85 auto-publish gate; rendering terminal report instead."
+            render_terminal_report "$findings_file"
         elif [[ "$publish" == "ask" ]]; then
             render_terminal_report "$findings_file"
             echo ""
