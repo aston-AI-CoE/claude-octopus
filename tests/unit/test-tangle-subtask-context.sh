@@ -29,10 +29,11 @@ NC=""
 TMUX_MODE=false
 DRY_RUN=false
 SUPPORTS_PARALLEL_FILE_SAFETY=false
-RESULTS_DIR="$(mktemp -d)"
+RESULTS_DIR="$TEST_TMP_DIR/tangle-subtask-context"
 LOGS_DIR="$RESULTS_DIR/logs"
 WORKSPACE_DIR="$RESULTS_DIR/workspace"
 CAPTURE_DIR="$RESULTS_DIR/captured-prompts"
+rm -rf "$RESULTS_DIR"
 mkdir -p "$WORKSPACE_DIR/.octo/agents" "$CAPTURE_DIR"
 trap 'rm -rf "$RESULTS_DIR"' EXIT
 
@@ -44,6 +45,17 @@ design_review_ceremony() { :; }
 fleet_dispatch_begin() { :; }
 fleet_dispatch_end() { :; }
 validate_tangle_results() { :; }
+
+test_case "subtask prompt builder validates required inputs"
+set +e
+empty_prompt_error=$(build_tangle_subtask_prompt "" "1. [CODING] Files: README.md" 2>&1 >/dev/null)
+empty_prompt_status=$?
+set -e
+if [[ "$empty_prompt_status" -eq 64 && "$empty_prompt_error" == *"original task is required"* ]]; then
+    test_pass
+else
+    test_fail "expected original-task validation failure; status=$empty_prompt_status output=$empty_prompt_error"
+fi
 
 run_agent_sync() {
     cat <<'EOF'
@@ -65,7 +77,19 @@ original_prompt="Update src/lib/templates/NA10_HANDLE_SILENCE.ts and src/lib/tem
 
 tangle_develop "$original_prompt" >/dev/null
 
-captured_prompts="$(cat "$CAPTURE_DIR"/*.prompt)"
+prompt_files=("$CAPTURE_DIR"/*.prompt)
+if [[ ! -e "${prompt_files[0]}" ]]; then
+    captured_prompts=""
+else
+    captured_prompts="$(cat "${prompt_files[@]}")"
+fi
+
+test_case "captures exactly one prompt per decomposed subtask"
+if [[ ${#prompt_files[@]} -eq 2 && -e "${prompt_files[0]}" && -e "${prompt_files[1]}" ]]; then
+    test_pass
+else
+    test_fail "expected exactly 2 captured prompts, got ${#prompt_files[@]}"
+fi
 
 test_case "subtask prompts include original task context"
 if [[ "$captured_prompts" == *"Original task context:"* ]] && \

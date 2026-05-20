@@ -772,6 +772,15 @@ build_tangle_subtask_prompt() {
     local original_task="$1"
     local assigned_subtask="$2"
 
+    if [[ -z "${original_task//[[:space:]]/}" ]]; then
+        echo "build_tangle_subtask_prompt: original task is required" >&2
+        return 64
+    fi
+    if [[ -z "${assigned_subtask//[[:space:]]/}" ]]; then
+        echo "build_tangle_subtask_prompt: assigned subtask is required" >&2
+        return 64
+    fi
+
     cat <<EOF
 Original task context:
 ${original_task}
@@ -793,10 +802,14 @@ EOF
 
 tangle_extract_write_scopes() {
     local text="$1"
+    local files_text
 
-    printf '%s\n' "$text" \
+    files_text=$(printf '%s\n' "$text" | sed -nE 's/.*Files:[[:space:]]*//p' | head -n 1)
+    [[ -n "$files_text" ]] || files_text="$text"
+
+    printf '%s\n' "$files_text" \
         | tr ' `",;()[]{}' '\n' \
-        | sed -nE '/^[A-Za-z0-9_.@%+-]+\/[A-Za-z0-9_.@%+\/-]+(\*|\/)?(:[0-9]+)?$/p' \
+        | sed -nE '/^([A-Za-z0-9_.@%+-]+\/[A-Za-z0-9_.@%+\/-]+|[A-Za-z0-9_.@%+-]+\.[A-Za-z0-9_.@%+-]+)(\*|\/)?(:[0-9]+)?$/p' \
         | sed -E 's/:([0-9]+)$//; s/[[:punct:]]+$//' \
         | sed -E 's#^\./##; s#/\*$#/#; s#//+#/#g' \
         | sed '/^$/d' \

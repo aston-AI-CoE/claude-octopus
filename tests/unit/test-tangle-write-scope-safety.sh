@@ -29,9 +29,10 @@ NC=""
 TMUX_MODE=false
 DRY_RUN=false
 SUPPORTS_PARALLEL_FILE_SAFETY=false
-RESULTS_DIR="$(mktemp -d)"
+RESULTS_DIR="$TEST_TMP_DIR/tangle-write-scope-safety"
 LOGS_DIR="$RESULTS_DIR/logs"
 WORKSPACE_DIR="$RESULTS_DIR/workspace"
+rm -rf "$RESULTS_DIR"
 mkdir -p "$WORKSPACE_DIR/.octo/agents"
 trap 'rm -rf "$RESULTS_DIR"' EXIT
 
@@ -71,6 +72,16 @@ if tangle_scopes_overlap "src/lib/templates/" "src/lib/templates/NA02_REQUEST_RE
     test_pass
 else
     test_fail "directory/file overlap detection is incorrect"
+fi
+
+test_case "write scope extraction reads only Files clause"
+scopes=$(tangle_extract_write_scopes "[CODING] Update docs after reading src/context.ts. Files: README.md, docs/setup.md")
+if [[ "$scopes" == *"README.md"* ]] && \
+   [[ "$scopes" == *"docs/setup.md"* ]] && \
+   [[ "$scopes" != *"src/context.ts"* ]]; then
+    test_pass
+else
+    test_fail "write scope extraction did not isolate Files clause; got: $scopes"
 fi
 
 original_prompt="Update src/lib/templates/NA02_REQUEST_REPORT.ts and src/lib/legal/legalReferenceCatalog.ts without producing duplicate subject prefixes."
