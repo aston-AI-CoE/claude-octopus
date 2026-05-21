@@ -893,6 +893,19 @@ Output as numbered list with [CODING] or [REASONING] prefix for each subtask."
     echo "$subtasks"
     echo ""
 
+    local parseable_subtask_count=0
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        [[ "$line" =~ ^[0-9]+[\.\)] ]] && ((parseable_subtask_count++)) || true
+    done <<< "$subtasks"
+
+    if [[ $parseable_subtask_count -eq 0 ]]; then
+        log WARN "Decomposition produced no parseable subtasks, falling back to direct execution"
+        spawn_agent "codex" "$resolved_prompt" "tangle-${task_group}-direct" "implementer" "tangle"
+        wait
+        return
+    fi
+
     # Step 2: Parallel execution with progress tracking
     log INFO "Step 2: Parallel execution..."
     local subtask_num=0
@@ -1007,6 +1020,152 @@ Output as numbered list with [CODING] or [REASONING] prefix for each subtask."
     validate_tangle_results "$task_group" "$resolved_prompt"
 }
 
+ink_delivery_sanitize_context() {
+    sed -e 's/\[Synthesis failed - raw results attached\]/[Upstream phase synthesis failed; raw fallback omitted from compact delivery context]/g'
+}
+
+ink_delivery_file_label() {
+    local file="$1"
+    local base
+    base=$(basename "$file")
+
+    case "$base" in
+        probe-synthesis-*) echo "Probe Synthesis" ;;
+        grasp-consensus-*) echo "Grasp Consensus" ;;
+        tangle-validation-*) echo "Tangle Validation" ;;
+        *aggregate*) echo "Aggregate Result" ;;
+        *) echo "Supporting Result" ;;
+    esac
+}
+
+ink_delivery_append_excerpt() {
+    local file="$1"
+    local max_chars="$2"
+    local label
+    local size
+
+    [[ -f "$file" ]] || return 0
+    label=$(ink_delivery_file_label "$file")
+    size=$(wc -c < "$file" 2>/dev/null | tr -d '[:space:]')
+    size="${size:-0}"
+
+    echo "## Source: ${label}"
+    echo "- File: ${file}"
+    echo "- Size: ${size} bytes"
+    if [[ "$size" =~ ^[0-9]+$ && "$size" -gt "$max_chars" ]]; then
+        echo "- Included: first ${max_chars} bytes (truncated)"
+    else
+        echo "- Included: full file"
+    fi
+    echo ""
+    echo '```markdown'
+    if [[ "$size" =~ ^[0-9]+$ && "$size" -gt "$max_chars" ]]; then
+        head -c "$max_chars" "$file" 2>/dev/null | ink_delivery_sanitize_context
+        echo ""
+        echo "[... truncated by ink delivery context: original ${size} bytes, included ${max_chars} bytes ...]"
+    else
+        ink_delivery_sanitize_context < "$file"
+    fi
+    echo '```'
+    echo ""
+}
+
+build_ink_delivery_context() {
+    local tangle_results="${1:-}"
+    local max_file="${OCTOPUS_INK_FILE_CONTEXT_CHARS:-12000}"
+    local max_total="${OCTOPUS_INK_CONTEXT_CHARS:-60000}"
+
+    [[ "$max_file" =~ ^[0-9]+$ ]] || max_file=12000
+    [[ "$max_total" =~ ^[0-9]+$ ]] || max_total=60000
+    max_file=$((10#$max_file))
+    max_total=$((10#$max_total))
+    [[ "$max_file" -lt 1000 ]] && max_file=1000
+    [[ "$max_total" -lt 4000 ]] && max_total=4000
+
+    local -a files=()
+    local seen="|"
+    local candidate
+
+    for candidate in \
+        "$tangle_results" \
+        "$(ls -t "$RESULTS_DIR"/tangle-validation-*.md 2>/dev/null | head -1)" \
+        "$(ls -t "$RESULTS_DIR"/grasp-consensus-*.md 2>/dev/null | head -1)" \
+        "$(ls -t "$RESULTS_DIR"/probe-synthesis-*.md 2>/dev/null | head -1)"; do
+        [[ -n "$candidate" && -f "$candidate" ]] || continue
+        if [[ "$seen" != *"|$candidate|"* ]]; then
+            files+=("$candidate")
+            seen="${seen}${candidate}|"
+        fi
+    done
+
+    for candidate in "$RESULTS_DIR"/*.md; do
+        [[ -f "$candidate" ]] || continue
+        [[ "$candidate" == *aggregate* || "$candidate" == *delivery* ]] && continue
+        [[ "$seen" == *"|$candidate|"* ]] && continue
+        files+=("$candidate")
+        seen="${seen}${candidate}|"
+        [[ ${#files[@]} -ge 10 ]] && break
+    done
+
+    local tmp_context
+    tmp_context=$(mktemp "${TMPDIR:-/tmp}/octo-ink-context.XXXXXX") || return 1
+
+    {
+        echo "# Compact Delivery Context"
+        echo ""
+        echo "This context is bounded before synthesis. Full raw artifacts remain on disk in RESULTS_DIR."
+        echo ""
+        echo "## Context Budget"
+        echo "- Max per source file: ${max_file} bytes"
+        echo "- Max total context: ${max_total} bytes"
+        echo "- Source files selected: ${#files[@]}"
+        echo ""
+
+        for candidate in "${files[@]}"; do
+            ink_delivery_append_excerpt "$candidate" "$max_file"
+        done
+    } > "$tmp_context"
+
+    local total_size
+    total_size=$(wc -c < "$tmp_context" 2>/dev/null | tr -d '[:space:]')
+    total_size="${total_size:-0}"
+
+    if [[ "$total_size" =~ ^[0-9]+$ && "$total_size" -gt "$max_total" ]]; then
+        head -c "$max_total" "$tmp_context" 2>/dev/null
+        echo ""
+        echo ""
+        echo "[... compact delivery context truncated: original ${total_size} bytes, included ${max_total} bytes ...]"
+    else
+        cat "$tmp_context"
+    fi
+
+    rm -f "$tmp_context"
+}
+
+build_ink_fallback_delivery() {
+    local prompt="$1"
+    local sonnet_review="$2"
+    local compact_context="$3"
+
+    cat <<EOF
+Automated synthesis unavailable.
+
+## Executive Summary
+The delivery phase completed local checks, but the synthesis provider did not return a polished final narrative. This fallback is intentionally compact and does not attach raw phase artifacts.
+
+## Key Deliverables
+- Compact delivery context assembled from phase artifacts.
+- Quality review retained below when available.
+- Full raw artifacts remain available in RESULTS_DIR for manual inspection.
+
+## Quality Review
+${sonnet_review}
+
+## Compact Source Context
+${compact_context}
+EOF
+}
+
 # Phase 4: INK (Deliver) - Quality gates + final output
 # The octopus inks the final solution with precision
 ink_deliver() {
@@ -1060,15 +1219,11 @@ ink_deliver() {
     # Step 2: Synthesize final output
     log INFO "Step 2: Synthesizing final deliverable..."
 
-    local all_results=""
-    local result_count=0
-    for result in "$RESULTS_DIR"/*.md; do
-        [[ -f "$result" ]] || continue
-        [[ "$result" == *aggregate* || "$result" == *delivery* ]] && continue
-        all_results+="$(<"$result")\n\n"
-        ((result_count++)) || true
-        [[ $result_count -ge 10 ]] && break  # Limit context size
-    done
+    local all_results
+    all_results=$(build_ink_delivery_context "$tangle_results")
+    local result_count
+    result_count=$(grep -c '^## Source:' <<< "$all_results" 2>/dev/null || true)
+    result_count="${result_count:-0}"
 
     # Sonnet 4.6 quality review before synthesis
     log INFO "Step 2a: Sonnet 4.6 quality review..."
@@ -1136,6 +1291,11 @@ ${all_results}"
         local simplify_result
         simplify_result=$(run_agent_sync "claude-sonnet" "$simplify_prompt" 120 "code-reviewer" "ink") || true
         if [[ -n "$simplify_result" ]]; then
+            if [[ ${#simplify_result} -gt 12000 ]]; then
+                simplify_result="${simplify_result:0:12000}
+
+[... simplification review truncated to 12000 chars ...]"
+            fi
             all_results="${all_results}
 
 --- SIMPLIFICATION REVIEW ---
@@ -1157,12 +1317,12 @@ Original task: $prompt
 Quality Review (from Sonnet 4.6):
 $sonnet_review
 
-Results to synthesize:
+Compact source context to synthesize:
 $all_results"
 
     local delivery
     delivery=$(run_agent_sync "gemini" "$synthesis_prompt" 180 "synthesizer" "ink") || {
-        delivery="[Synthesis failed - raw results attached]\n\n$all_results"
+        delivery=$(build_ink_fallback_delivery "$prompt" "$sonnet_review" "$all_results")
     }
 
     # Step 3: Generate final document
@@ -1182,7 +1342,8 @@ $delivery
 
 ## Quality Certification
 - Pre-delivery checks: $([[ "$checks_passed" == "true" ]] && echo "PASSED" || echo "NEEDS REVIEW")
-- Results synthesized: $result_count files
+- Results synthesized: $result_count compact source files
+- Context policy: bounded excerpts; raw phase artifacts are not embedded on synthesis failure
 - Generated by: Claude Octopus Double Diamond
 - Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 EOF
