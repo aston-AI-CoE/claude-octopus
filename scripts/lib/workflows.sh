@@ -923,6 +923,12 @@ tangle_develop() {
     fi
 
     mkdir -p "$RESULTS_DIR"
+    local worktree_before_file="${RESULTS_DIR}/.tangle-${task_group}-worktree-before.txt"
+    if type snapshot_tangle_worktree_paths >/dev/null 2>&1; then
+        snapshot_tangle_worktree_paths > "$worktree_before_file" 2>/dev/null || true
+    else
+        : > "$worktree_before_file"
+    fi
 
     # Initialize tmux if enabled
     if [[ "$TMUX_MODE" == "true" ]]; then
@@ -1149,7 +1155,7 @@ Output as numbered list with [CODING] or [REASONING] prefix for each subtask."
 
     # Step 3: Validation gate
     log INFO "Step 3: Validation gate..."
-    validate_tangle_results "$task_group" "$resolved_prompt"
+    validate_tangle_results "$task_group" "$resolved_prompt" "$worktree_before_file"
 }
 
 ink_delivery_sanitize_context() {

@@ -4,15 +4,104 @@
 
 # Validate tangle results with quality gate
 # v3.0: Supports configurable threshold and loop-until-approved retry logic
+
+extract_explicit_file_refs() {
+    local text="$1"
+
+    printf '%s\n' "$text" \
+        | grep -oE '(src|lib|app|test|tests|docs|pkg|cmd|internal|scripts|config|public|assets|components|pages|utils|hooks|services|models|controllers|routes|middleware|api)/[a-zA-Z0-9_./-]+\.[a-zA-Z]{1,5}|\./[a-zA-Z0-9_./-]+\.[a-zA-Z]{1,5}' 2>/dev/null \
+        | sed 's#^\./##' \
+        | head -100 \
+        | sort -u || true
+}
+
+extract_tangle_result_output() {
+    local result_file="$1"
+
+    awk '
+        /^## Output[[:space:]]*$/ { capture = 1; next }
+        /^## Status:/ { capture = 0 }
+        capture { print }
+    ' "$result_file" 2>/dev/null || true
+}
+
+check_explicit_file_coverage() {
+    local original_prompt="$1"
+    local output_corpus="$2"
+    local missing=""
+    local output_refs=""
+    local ref
+
+    output_refs="$(extract_explicit_file_refs "$output_corpus")"
+
+    while IFS= read -r ref; do
+        [[ -z "$ref" ]] && continue
+        case $'\n'"$output_refs"$'\n' in
+            *$'\n'"$ref"$'\n'*) ;;
+            *) missing+="${ref}"$'\n' ;;
+        esac
+    done <<< "$(extract_explicit_file_refs "$original_prompt")"
+
+    printf '%s' "$missing"
+}
+
+snapshot_tangle_worktree_paths() {
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+
+    {
+        git diff --name-only 2>/dev/null || true
+        git diff --cached --name-only 2>/dev/null || true
+        git ls-files --others --exclude-standard 2>/dev/null || true
+    } | sed '/^$/d' | sort -u
+}
+
+tangle_prompt_requires_worktree_changes() {
+    local original_prompt="$1"
+    local mode="${OCTOPUS_TANGLE_REQUIRE_WORKTREE_CHANGES:-auto}"
+
+    case "$mode" in
+        false|off|0|no)
+            return 1
+            ;;
+        true|on|1|yes)
+            return 0
+            ;;
+    esac
+
+    if [[ -n "$(extract_explicit_file_refs "$original_prompt")" ]]; then
+        return 0
+    fi
+
+    local impl_hits
+    impl_hits=$(printf '%s\n' "$original_prompt" \
+        | grep -Eic '\b(implement|build|create|add|update|modify|edit|fix|refactor|wire|integrate|feature|component|command|route|hook|template|test|tests|typescript|javascript|code|app|ui)\b' 2>/dev/null || true)
+    impl_hits=${impl_hits%%$'\n'*}
+    [[ ${impl_hits:-0} -gt 0 ]]
+}
+
+check_tangle_worktree_changes() {
+    local before_file="$1"
+    local current_file
+    current_file=$(mktemp "${TMPDIR:-/tmp}/octo-tangle-worktree-after.XXXXXX") || return 0
+
+    snapshot_tangle_worktree_paths > "$current_file" 2>/dev/null || true
+    if [[ -f "$before_file" ]]; then
+        comm -13 <(sort -u "$before_file") <(sort -u "$current_file")
+    fi
+    rm -f "$current_file"
+}
+
 validate_tangle_results() {
     local task_group="$1"
     local original_prompt="$2"
+    local worktree_before_file="${3:-}"
     local validation_file="${RESULTS_DIR}/tangle-validation-${task_group}.md"
     local quality_retry_count=0
 
     while true; do
         # Collect all results
         local results=""
+        local result_outputs=""
         local success_count=0
         local fail_count=0
         FAILED_SUBTASKS=""  # Reset for this validation pass (string-based)
@@ -43,7 +132,18 @@ validate_tangle_results() {
                 fi
             fi
             results+="$(<"$result")\n\n---\n\n"
+            result_outputs+="$(extract_tangle_result_output "$result")"$'\n'
         done
+
+        local missing_explicit_files
+        missing_explicit_files=$(check_explicit_file_coverage "$original_prompt" "$result_outputs")
+        local worktree_changes=""
+        local requires_worktree_changes=false
+        if [[ -n "$worktree_before_file" && -f "$worktree_before_file" ]] && \
+           tangle_prompt_requires_worktree_changes "$original_prompt"; then
+            requires_worktree_changes=true
+            worktree_changes=$(check_tangle_worktree_changes "$worktree_before_file")
+        fi
 
         # Quality gate check (using configurable per-phase threshold - v8.19.0)
         local tangle_threshold
@@ -60,6 +160,18 @@ validate_tangle_results() {
         elif [[ $success_rate -lt 90 ]]; then
             gate_status="WARNING"
             gate_color="${YELLOW}"
+        fi
+
+        if [[ -n "$missing_explicit_files" ]]; then
+            gate_status="FAILED"
+            gate_color="${RED}"
+            log WARN "Tangle missing explicit file coverage: $(echo "$missing_explicit_files" | tr '\n' ' ')" 2>/dev/null || true
+        fi
+
+        if [[ "$requires_worktree_changes" == "true" && -z "$worktree_changes" ]]; then
+            gate_status="FAILED"
+            gate_color="${RED}"
+            log WARN "Tangle produced no new worktree changes for an implementation task" 2>/dev/null || true
         fi
 
         # v8.20.1: Record quality gate metric
@@ -125,6 +237,45 @@ $challenge_result
         local quality_branch
         quality_branch=$(evaluate_quality_branch "$success_rate" "$quality_retry_count")
 
+        # Write validation report before branching so abort/escalate/retry paths
+        # still leave an actionable artifact for embrace and post-run diagnosis.
+        cat > "$validation_file" << EOF
+# TANGLE Phase Validation Report
+## Task: $original_prompt
+## Generated: $(date)
+
+### Quality Gate: ${gate_status}
+- Success Rate: ${success_rate}% (threshold: ${tangle_threshold}%)
+- Successful: ${success_count}/${total} result files
+- Failed: ${fail_count}/${total} result files
+- Decision Branch: ${quality_branch}
+- Retry Attempts: ${quality_retry_count}/${MAX_QUALITY_RETRIES}
+
+### Explicit File Coverage
+$(if [[ -n "$missing_explicit_files" ]]; then
+    echo "#### Missing Explicit File Coverage"
+    echo "$missing_explicit_files" | sed '/^$/d; s/^/- /'
+else
+    echo "All explicit file references from the task were covered by tangle outputs."
+fi)
+
+### Worktree Change Evidence
+$(if [[ "$requires_worktree_changes" == "true" ]]; then
+    if [[ -n "$worktree_changes" ]]; then
+        echo "Tangle produced worktree changes:"
+        echo "$worktree_changes" | sed '/^$/d; s/^/- /'
+    else
+        echo "#### Missing Worktree Changes"
+        echo "This prompt was classified as implementation work, but tangle produced no new modified, staged, or untracked paths. Agents likely returned analysis/plans instead of applying edits."
+    fi
+else
+    echo "Not required for this prompt."
+fi)
+
+### Subtask Results
+$results
+EOF
+
         case "$quality_branch" in
             proceed|proceed_warn)
                 # Quality gate passed - continue to delivery
@@ -183,25 +334,9 @@ $challenge_result
                 ;;
         esac
 
-        # Write validation report
-        cat > "$validation_file" << EOF
-# TANGLE Phase Validation Report
-## Task: $original_prompt
-## Generated: $(date)
-
-### Quality Gate: ${gate_status}
-- Success Rate: ${success_rate}% (threshold: ${QUALITY_THRESHOLD}%)
-- Successful: ${success_count}/${total} providers
-- Failed: ${fail_count}/${total} providers
-- Retry Attempts: ${quality_retry_count}/${MAX_QUALITY_RETRIES}
-
-### Subtask Results
-$results
-EOF
-
         echo ""
         echo -e "${gate_color}${_BOX_TOP}${NC}"
-        echo -e "${gate_color}║  Quality Gate: ${gate_status} (${success_rate}% of providers succeeded)${NC}"
+        echo -e "${gate_color}║  Quality Gate: ${gate_status} (${success_rate}% of tangle results succeeded)${NC}"
         echo -e "${gate_color}${_BOX_BOT}${NC}"
 
         if [[ "$gate_status" == "FAILED" ]]; then
