@@ -50,7 +50,7 @@ assert_has 'trimmed_prompt=' \
 assert_has 'resolved_prompt="\$\{prompt\}' \
     "plan reference handling preserves surrounding user instructions"
 
-assert_has 'spawn_agent "codex" "\$resolved_prompt"' \
+assert_has 'build_tangle_subtask_prompt "\$resolved_prompt"' \
     "direct fallback receives resolved prompt"
 
 source "$WORKFLOWS"
@@ -79,7 +79,7 @@ fleet_dispatch_begin() { :; }
 fleet_dispatch_end() { :; }
 run_agent_sync() {
     printf '%s' "$2" > "$DECOMPOSE_CAPTURE_FILE"
-    printf '%s\n' "1. [CODING] Validate resolved plan context"
+    printf '%s\n' "1. [CODING] Validate resolved plan context. Files: scripts/lib/workflows.sh"
 }
 validate_tangle_results() {
     CAPTURED_VALIDATE_PROMPT="$2"
@@ -145,7 +145,7 @@ log() {
     printf '%s %s\n' "${1:-}" "${2:-}" >> "$LOG_CAPTURE_FILE"
 }
 run_agent_sync() {
-    printf '%s\n' "1. [CODING] stalled implementation"
+    printf '%s\n' "1. [CODING] stalled implementation. Files: scripts/lib/workflows.sh"
 }
 spawn_agent_capture_pid() {
     printf '%s\n' "999999"
