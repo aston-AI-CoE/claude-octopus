@@ -8,9 +8,12 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/../helpers/test-framework.sh"
 test_suite "tangle worktree change evidence"
 
-RESULTS_DIR="$(mktemp -d)"
-REPO_DIR="$(mktemp -d)"
-trap 'rm -rf "$RESULTS_DIR" "$REPO_DIR"' EXIT
+TEST_TMP_DIR="${TEST_TMP_DIR:-/tmp/octopus-tests-$$}"
+RESULTS_DIR="$TEST_TMP_DIR/tangle-worktree-evidence-results"
+REPO_DIR="$TEST_TMP_DIR/tangle-worktree-evidence-repo"
+rm -rf "$RESULTS_DIR" "$REPO_DIR"
+mkdir -p "$RESULTS_DIR" "$REPO_DIR"
+trap 'rm -rf "$TEST_TMP_DIR"' EXIT INT TERM
 
 GREEN=""
 RED=""

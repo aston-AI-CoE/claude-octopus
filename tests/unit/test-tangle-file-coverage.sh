@@ -44,8 +44,11 @@ retry_failed_subtasks() { :; }
 evaluate_quality_branch() { echo "proceed"; }
 get_gate_threshold() { echo "75"; }
 
-RESULTS_DIR="$(mktemp -d)"
-trap 'rm -rf "$RESULTS_DIR"' EXIT
+TEST_TMP_DIR="${TEST_TMP_DIR:-/tmp/octopus-tests-$$}"
+RESULTS_DIR="$TEST_TMP_DIR/tangle-file-coverage"
+rm -rf "$RESULTS_DIR"
+mkdir -p "$RESULTS_DIR"
+trap 'rm -rf "$TEST_TMP_DIR"' EXIT INT TERM
 
 write_success_result() {
     local file="$1"
@@ -92,6 +95,16 @@ if validate_tangle_results "coverage" "$original_prompt" >/dev/null 2>&1; then
     test_pass
 else
     test_fail "validation failed even though all explicit files were covered"
+fi
+
+test_case "explicit file coverage requires exact file tokens"
+missing=$(check_explicit_file_coverage \
+    "Update src/foo.ts." \
+    "Updated src/foo.tsx and src/foo.ts.bak.")
+if [[ "$missing" == *"src/foo.ts"* ]]; then
+    test_pass
+else
+    test_fail "partial filename matches were treated as exact coverage"
 fi
 
 test_summary

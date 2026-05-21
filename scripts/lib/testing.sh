@@ -29,13 +29,17 @@ check_explicit_file_coverage() {
     local original_prompt="$1"
     local output_corpus="$2"
     local missing=""
+    local output_refs=""
     local ref
+
+    output_refs="$(extract_explicit_file_refs "$output_corpus")"
 
     while IFS= read -r ref; do
         [[ -z "$ref" ]] && continue
-        if [[ "$output_corpus" != *"$ref"* ]]; then
-            missing+="${ref}"$'\n'
-        fi
+        case $'\n'"$output_refs"$'\n' in
+            *$'\n'"$ref"$'\n'*) ;;
+            *) missing+="${ref}"$'\n' ;;
+        esac
     done <<< "$(extract_explicit_file_refs "$original_prompt")"
 
     printf '%s' "$missing"
@@ -68,8 +72,11 @@ tangle_prompt_requires_worktree_changes() {
         return 0
     fi
 
-    printf '%s\n' "$original_prompt" \
-        | grep -Eiq '\b(implement|build|create|add|update|modify|edit|fix|refactor|wire|integrate|feature|component|command|route|hook|template|test|tests|typescript|javascript|code|app|ui)\b'
+    local impl_hits
+    impl_hits=$(printf '%s\n' "$original_prompt" \
+        | grep -Eic '\b(implement|build|create|add|update|modify|edit|fix|refactor|wire|integrate|feature|component|command|route|hook|template|test|tests|typescript|javascript|code|app|ui)\b' 2>/dev/null || true)
+    impl_hits=${impl_hits%%$'\n'*}
+    [[ ${impl_hits:-0} -gt 0 ]]
 }
 
 check_tangle_worktree_changes() {
