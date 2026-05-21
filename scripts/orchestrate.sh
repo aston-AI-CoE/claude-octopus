@@ -2300,6 +2300,24 @@ case "$COMMAND" in
         fi
         embrace_full_workflow "$*"
         ;;
+    embrace-gate)
+        # Explicit debate checkpoint inside the Embrace workflow.
+        if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+            echo "Usage: $(basename "$0") embrace-gate <define-develop|develop-deliver> <prompt> [context-artifact]"
+            echo "Example: $(basename "$0") embrace-gate define-develop \"implement auth\" ~/.claude-octopus/results/grasp-consensus-123.md"
+            exit 0
+        fi
+        if [[ $# -lt 2 ]]; then
+            log ERROR "Missing arguments for embrace debate gate"
+            echo "Usage: $(basename "$0") embrace-gate <define-develop|develop-deliver> <prompt> [context-artifact]"
+            exit 1
+        fi
+        _embrace_gate="$1"
+        shift
+        _embrace_prompt="$1"
+        shift
+        embrace_debate_gate "$_embrace_gate" "$_embrace_prompt" "${1:-}"
+        ;;
     synthesize-probe)
         # v8.48.0: Standalone probe synthesis — recovers from Bash tool timeout
         # WHY: probe spawns 5+ agents (~60-90s) then runs Gemini synthesis (~30-60s),

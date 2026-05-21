@@ -88,7 +88,15 @@ AskUserQuestion({
 })
 ```
 
-After receiving answers, incorporate them into all subsequent phase invocations — use the scope to calibrate research depth, focus areas to weight provider perspectives, autonomy level to control phase transitions, and debate preference to gate Define→Develop handoffs.
+After receiving answers, incorporate them into all subsequent phase invocations — use the scope to calibrate research depth, focus areas to weight provider perspectives, autonomy level to control phase transitions, and debate preference to gate handoffs.
+
+Normalize the debate preference immediately:
+- `DEBATE_GATES=define` for "Yes — debate at Define→Develop gate"
+- `DEBATE_GATES=both` for "Yes — debate at both gates"
+- `DEBATE_GATES=none` for "No — skip debates"
+- `DEBATE_GATES=auto` for "Only if disagreement detected"
+
+**Gate ledger invariant:** if `DEBATE_GATES=define`, a `embrace-gate-define-develop-*.md` artifact from the current run MUST exist before Phase 3 starts. If `DEBATE_GATES=both`, both `embrace-gate-define-develop-*.md` and `embrace-gate-develop-deliver-*.md` artifacts from the current run MUST exist before their next phases. Autonomy mode does not waive requested gates. If a requested gate command fails or produces no artifact, STOP and report the failed gate instead of continuing.
 
 ### Remote/Cloud Defaults
 
@@ -167,13 +175,16 @@ This builds consensus across providers. Results saved to `~/.claude-octopus/resu
 
 If user selected debate gates at Define→Develop transition:
 1. Read consensus from `~/.claude-octopus/results/grasp-consensus-*.md`
-2. Run a quick adversarial debate challenging the approach:
+2. Run the explicit Embrace gate via orchestrate.sh:
 
-```
-Skill(skill: "octo:debate", args: "Given this consensus, what are the biggest risks? What alternatives were dismissed too quickly? --rounds 1 --debate-style adversarial --max-words 200")
+```bash
+latest_consensus="$(ls -t ~/.claude-octopus/results/grasp-consensus-*.md | head -1)"
+cd "${HOME}/.claude-octopus/plugin" && bash scripts/orchestrate.sh embrace-gate define-develop "<user's prompt>" "$latest_consensus"
 ```
 
-3. If risks surface, present via AskUserQuestion:
+3. Verify `~/.claude-octopus/results/embrace-gate-define-develop-*.md` exists for this run before Phase 3. If the command fails or no artifact exists, STOP.
+
+4. If risks surface and autonomy is supervised/manual, present via AskUserQuestion:
 ```javascript
 AskUserQuestion({
   questions: [{
@@ -202,7 +213,14 @@ This dispatches implementation with quality gates. Results saved to `~/.claude-o
 
 ### Second Debate Gate (if "both gates" selected)
 
-Same pattern as above but collaborative style, reviewing implementation quality.
+If `DEBATE_GATES=both`, run this before Phase 4:
+
+```bash
+latest_tangle="$(ls -t ~/.claude-octopus/results/tangle-validation-*.md | head -1)"
+cd "${HOME}/.claude-octopus/plugin" && bash scripts/orchestrate.sh embrace-gate develop-deliver "<user's prompt>" "$latest_tangle"
+```
+
+Verify `~/.claude-octopus/results/embrace-gate-develop-deliver-*.md` exists for this run before Phase 4. If the command fails or no artifact exists, STOP. In autonomous mode, continue only after the gate artifact exists; do not silently skip this gate.
 
 ### Phase 4 — Deliver
 
