@@ -520,6 +520,37 @@ test_council_revision_prompt_includes_prior_critiques() {
     fi
 }
 
+test_council_scans_artifact_critical_veto() {
+    test_case "Council scans artifacts for critical veto"
+    load_council_lib || return 1
+
+    local tmp_dir
+    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-artifact-veto.XXXXXX")"
+    mkdir -p "$tmp_dir/responses" "$tmp_dir/critiques" "$tmp_dir/revisions"
+
+    council_reset_defaults
+    COUNCIL_RUN_DIR="$tmp_dir"
+    COUNCIL_FIXTURE=""
+
+    cat > "$tmp_dir/responses/01-security-auditor.md" << 'EOF'
+VETO: critical
+Confidence: 0.86
+Reason: The migration plan can corrupt production data.
+EOF
+
+    council_scan_veto_artifacts
+
+    if [[ "$COUNCIL_VETO_TRIGGERED" == "true" ]] &&
+       [[ "$COUNCIL_VETO_SEVERITY" == "critical" ]] &&
+       [[ "$COUNCIL_VETO_CONFIDENCE" == "0.86" ]] &&
+       grep -q "corrupt production data" <<< "$COUNCIL_VETO_REASON"; then
+        test_pass
+    else
+        test_fail "critical artifact veto was not detected"
+        return 1
+    fi
+}
+
 test_council_command_files_are_registered
 test_council_orchestrate_route_exists
 test_council_defaults_are_depth_aware
@@ -544,4 +575,5 @@ test_council_cost_cap_aborts_before_fanout
 test_council_deep_fixture_writes_revision_artifacts
 test_council_cross_critique_prompt_includes_peer_responses
 test_council_revision_prompt_includes_prior_critiques
+test_council_scans_artifact_critical_veto
 test_summary

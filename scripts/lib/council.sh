@@ -32,6 +32,11 @@ COUNCIL_RESPONSES_RECEIVED=""
 COUNCIL_QUORUM_MET=""
 COUNCIL_IMPLEMENTATION_PLAN_WRITTEN=""
 COUNCIL_ABORTED_FOR_COST=""
+COUNCIL_VETO_TRIGGERED=""
+COUNCIL_VETO_SEVERITY=""
+COUNCIL_VETO_CONFIDENCE=""
+COUNCIL_VETO_REASON=""
+COUNCIL_VETO_SOURCE=""
 
 council_usage() {
     cat << EOF
@@ -88,6 +93,11 @@ council_reset_defaults() {
     COUNCIL_QUORUM_MET="false"
     COUNCIL_IMPLEMENTATION_PLAN_WRITTEN="false"
     COUNCIL_ABORTED_FOR_COST="false"
+    COUNCIL_VETO_TRIGGERED="false"
+    COUNCIL_VETO_SEVERITY=""
+    COUNCIL_VETO_CONFIDENCE=""
+    COUNCIL_VETO_REASON=""
+    COUNCIL_VETO_SOURCE=""
 }
 
 council_plugin_root() {
@@ -788,8 +798,43 @@ council_needs_implementation_plan() {
     [[ "$COUNCIL_GOAL" == "implement" || "$COUNCIL_IMPLEMENT" != "never" ]]
 }
 
+council_scan_veto_artifacts() {
+    COUNCIL_VETO_TRIGGERED="false"
+    COUNCIL_VETO_SEVERITY=""
+    COUNCIL_VETO_CONFIDENCE=""
+    COUNCIL_VETO_REASON=""
+    COUNCIL_VETO_SOURCE=""
+
+    if [[ "$COUNCIL_FIXTURE" == "critical-veto" ]]; then
+        COUNCIL_VETO_TRIGGERED="true"
+        COUNCIL_VETO_SEVERITY="critical"
+        COUNCIL_VETO_CONFIDENCE="1.0"
+        COUNCIL_VETO_REASON="fixture: implementation plan lacks tests for a high-risk change"
+        COUNCIL_VETO_SOURCE="fixture"
+        return 0
+    fi
+
+    local dir file confidence reason
+    for dir in responses critiques revisions; do
+        for file in "${COUNCIL_RUN_DIR:-}/${dir}"/*.md; do
+            [[ -f "$file" ]] || continue
+            if grep -Eiq '(^|[[:space:][:punct:]])veto[[:space:]]*:[[:space:]]*critical|critical[[:space:]-]+veto' "$file"; then
+                confidence="$(awk -F: 'tolower($1) ~ /^[[:space:]]*confidence[[:space:]]*$/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); if ($2 ~ /^[0-9.]+$/) { print $2; exit } }' "$file")"
+                reason="$(awk -F: 'tolower($1) ~ /^[[:space:]]*reason[[:space:]]*$/ { sub(/^[^:]*:[[:space:]]*/, ""); print; exit }' "$file")"
+
+                COUNCIL_VETO_TRIGGERED="true"
+                COUNCIL_VETO_SEVERITY="critical"
+                COUNCIL_VETO_CONFIDENCE="${confidence:-}"
+                COUNCIL_VETO_REASON="${reason:-critical veto declared in council artifact}"
+                COUNCIL_VETO_SOURCE="${dir}/$(basename "$file")"
+                return 0
+            fi
+        done
+    done
+}
+
 council_veto_triggered() {
-    [[ "$COUNCIL_FIXTURE" == "critical-veto" ]]
+    [[ "$COUNCIL_VETO_TRIGGERED" == "true" || "$COUNCIL_FIXTURE" == "critical-veto" ]]
 }
 
 council_write_implementation_plan() {
@@ -993,6 +1038,7 @@ council_write_summary_json() {
 
     council_estimate_cost
     council_build_roster
+    council_scan_veto_artifacts
 
     jq -n \
         --arg run_id "$COUNCIL_RUN_ID" \
@@ -1021,6 +1067,11 @@ council_write_summary_json() {
         --arg quorum_met "$COUNCIL_QUORUM_MET" \
         --arg implementation_plan_written "$COUNCIL_IMPLEMENTATION_PLAN_WRITTEN" \
         --arg aborted_for_cost "$COUNCIL_ABORTED_FOR_COST" \
+        --arg veto_triggered "$COUNCIL_VETO_TRIGGERED" \
+        --arg veto_severity "$COUNCIL_VETO_SEVERITY" \
+        --arg veto_confidence "$COUNCIL_VETO_CONFIDENCE" \
+        --arg veto_reason "$COUNCIL_VETO_REASON" \
+        --arg veto_source "$COUNCIL_VETO_SOURCE" \
         '{
           run_id: $run_id,
           command: "council",
@@ -1055,10 +1106,11 @@ council_write_summary_json() {
           },
           council: $council_roster,
           veto: {
-            triggered: ($fixture == "critical-veto"),
-            severity: (if $fixture == "critical-veto" then "critical" else null end),
-            confidence: (if $fixture == "critical-veto" then 1.0 else null end),
-            reason: (if $fixture == "critical-veto" then "fixture: implementation plan lacks tests for a high-risk change" else null end),
+            triggered: ($veto_triggered == "true"),
+            severity: (if $veto_severity == "" then null else $veto_severity end),
+            confidence: (if $veto_confidence == "" then null else ($veto_confidence | tonumber) end),
+            reason: (if $veto_reason == "" then null else $veto_reason end),
+            source: (if $veto_source == "" then null else $veto_source end),
             overridden: false
           },
           artifacts: {
@@ -1126,6 +1178,7 @@ council_run() {
     council_run_revision_phase
     council_write_synthesis
     council_write_implementation_plan
+    council_scan_veto_artifacts
 
     if council_needs_implementation_plan && council_veto_triggered; then
         council_write_summary_json "aborted" || return 1
