@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Start `/octo:council` as a new multi-LLM council command with command/skill registration, dry-run preflight artifacts, provider status, benchmark metadata, persona-aware roster selection, budget validation, and council summary tests.
+
 ## [9.39.1] - 2026-05-22
 
 ### Fixed

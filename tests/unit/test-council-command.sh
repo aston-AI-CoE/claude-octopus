@@ -173,6 +173,124 @@ test_council_critical_veto_fixture_marks_veto() {
     fi
 }
 
+test_council_dry_run_loads_fresh_benchmark_snapshot() {
+    test_case "Council dry-run loads fresh benchmark snapshot"
+    load_council_lib || return 1
+
+    local tmp_dir
+    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-benchmark.XXXXXX")"
+
+    council_run --dry-run --benchmark auto --output-dir "$tmp_dir" "Should we use Redis?"
+
+    local summary
+    summary="$(find "$tmp_dir" -name summary.json -type f | head -1)"
+    [[ -n "$summary" ]] || { test_fail "summary.json not written"; return 1; }
+
+    if jq -e '.benchmark.used == true and (.benchmark.freshness_days | type == "number")' "$summary" >/dev/null; then
+        test_pass
+    else
+        test_fail "benchmark snapshot not loaded"
+        return 1
+    fi
+}
+
+test_council_provider_fixture_records_status() {
+    test_case "Council provider fixture records availability"
+    load_council_lib || return 1
+
+    local tmp_dir
+    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-providers.XXXXXX")"
+
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:missing' \
+        council_run --dry-run --providers auto --output-dir "$tmp_dir" "Review auth"
+
+    local summary
+    summary="$(find "$tmp_dir" -name summary.json -type f | head -1)"
+    [[ -n "$summary" ]] || { test_fail "summary.json not written"; return 1; }
+
+    if jq -e '.provider_status.claude == "available" and .provider_status.gemini == "missing"' "$summary" >/dev/null; then
+        test_pass
+    else
+        test_fail "provider status fixture not recorded"
+        return 1
+    fi
+}
+
+test_council_rejects_unknown_provider() {
+    test_case "Council rejects unknown providers"
+    load_council_lib || return 1
+
+    local out_file="$TEST_TMP_DIR/council-provider.out"
+    set +e
+    council_parse_args --providers claude,not-a-provider "Review auth" >"$out_file" 2>&1
+    local status=$?
+    set -e
+
+    [[ $status -eq 2 ]] || { test_fail "expected exit code 2, got $status"; return 1; }
+    grep -q "unknown provider" "$out_file" || { test_fail "missing provider usage hint"; return 1; }
+    test_pass
+}
+
+test_council_roster_matches_resolved_members() {
+    test_case "Council roster matches resolved member count"
+    load_council_lib || return 1
+
+    local tmp_dir
+    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-roster.XXXXXX")"
+
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
+        council_run --dry-run --depth standard --output-dir "$tmp_dir" "Review auth"
+
+    local summary
+    summary="$(find "$tmp_dir" -name summary.json -type f | head -1)"
+    [[ -n "$summary" ]] || { test_fail "summary.json not written"; return 1; }
+
+    if jq -e '.members == 5 and (.council | length) == .members' "$summary" >/dev/null; then
+        test_pass
+    else
+        test_fail "roster length does not match resolved members"
+        return 1
+    fi
+}
+
+test_council_persona_pin_affects_roster() {
+    test_case "Persona pin affects council roster"
+    load_council_lib || return 1
+
+    local tmp_dir
+    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-persona.XXXXXX")"
+
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
+        council_run --dry-run --members 3 --persona finance-analyst --output-dir "$tmp_dir" "Review pricing"
+
+    local summary
+    summary="$(find "$tmp_dir" -name summary.json -type f | head -1)"
+    [[ -n "$summary" ]] || { test_fail "summary.json not written"; return 1; }
+
+    if jq -e '.personas_requested == "finance-analyst" and any(.council[]; .persona == "finance-analyst")' "$summary" >/dev/null; then
+        test_pass
+    else
+        test_fail "pinned persona missing from roster"
+        return 1
+    fi
+}
+
+test_council_skill_documents_gates() {
+    test_case "Council skill documents preflight, quorum, and gates"
+
+    local skill_file="$PROJECT_ROOT/skills/skill-council/SKILL.md"
+
+    if grep -q "Phase 0: Preflight" "$skill_file" &&
+       grep -q "Quorum" "$skill_file" &&
+       grep -q "Gate A" "$skill_file" &&
+       grep -q "Gate B" "$skill_file"; then
+        test_pass
+    else
+        test_fail "skill-council missing operational procedure"
+        return 1
+    fi
+}
+
 test_council_command_files_are_registered
 test_council_orchestrate_route_exists
 test_council_defaults_are_depth_aware
@@ -182,4 +300,10 @@ test_council_explicit_members_override_depth
 test_council_dry_run_maps_implementation_and_worktree
 test_council_dry_run_has_multi_seat_recommendation_and_cost
 test_council_critical_veto_fixture_marks_veto
+test_council_dry_run_loads_fresh_benchmark_snapshot
+test_council_provider_fixture_records_status
+test_council_rejects_unknown_provider
+test_council_roster_matches_resolved_members
+test_council_persona_pin_affects_roster
+test_council_skill_documents_gates
 test_summary
