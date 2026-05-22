@@ -32,6 +32,9 @@ COUNCIL_RESPONSES_RECEIVED=""
 COUNCIL_QUORUM_MET=""
 COUNCIL_IMPLEMENTATION_PLAN_WRITTEN=""
 COUNCIL_ABORTED_FOR_COST=""
+COUNCIL_DIVERSITY_REPLACED=""
+COUNCIL_DIVERSITY_WARNING=""
+COUNCIL_BENCHMARK_FRESHNESS_WEIGHT=""
 COUNCIL_VETO_TRIGGERED=""
 COUNCIL_VETO_SEVERITY=""
 COUNCIL_VETO_CONFIDENCE=""
@@ -93,6 +96,9 @@ council_reset_defaults() {
     COUNCIL_QUORUM_MET="false"
     COUNCIL_IMPLEMENTATION_PLAN_WRITTEN="false"
     COUNCIL_ABORTED_FOR_COST="false"
+    COUNCIL_DIVERSITY_REPLACED="false"
+    COUNCIL_DIVERSITY_WARNING=""
+    COUNCIL_BENCHMARK_FRESHNESS_WEIGHT="0"
     COUNCIL_VETO_TRIGGERED="false"
     COUNCIL_VETO_SEVERITY=""
     COUNCIL_VETO_CONFIDENCE=""
@@ -248,10 +254,25 @@ council_snapshot_age_days() {
     echo $(( (now_epoch - snapshot_epoch) / 86400 ))
 }
 
+council_benchmark_freshness_weight() {
+    local age_days="${1:-999}"
+
+    awk -v age="$age_days" 'BEGIN {
+        if (age <= 30) {
+            printf "%.4f", 1.0
+        } else if (age <= 90) {
+            printf "%.4f", (90 - age) / 60.0
+        } else {
+            printf "%.4f", 0.0
+        }
+    }'
+}
+
 council_load_benchmark_metadata() {
     COUNCIL_BENCHMARK_USED="false"
     COUNCIL_BENCHMARK_SNAPSHOT=""
     COUNCIL_BENCHMARK_FRESHNESS=""
+    COUNCIL_BENCHMARK_FRESHNESS_WEIGHT="0"
 
     if [[ "$COUNCIL_BENCHMARK" == "off" ]]; then
         return 0
@@ -293,6 +314,42 @@ council_load_benchmark_metadata() {
     COUNCIL_BENCHMARK_USED="true"
     COUNCIL_BENCHMARK_SNAPSHOT="$snapshot"
     COUNCIL_BENCHMARK_FRESHNESS="$freshness"
+    COUNCIL_BENCHMARK_FRESHNESS_WEIGHT="$(council_benchmark_freshness_weight "$freshness")"
+}
+
+council_benchmark_signal() {
+    local provider_org="$1"
+    local model="$2"
+
+    if [[ "$COUNCIL_BENCHMARK_USED" != "true" ]]; then
+        printf '0.0000'
+        return 0
+    fi
+
+    local root manifest csv model_name
+    root="$(council_plugin_root)"
+    manifest="$root/data/benchmarks/bullshitbench-v2-manifest.json"
+    csv="$(jq -r '.csv // empty' "$manifest" 2>/dev/null || true)"
+    [[ -n "$csv" && -f "$root/data/benchmarks/$csv" ]] || { printf '0.0000'; return 0; }
+
+    model_name="${model##*/}"
+    awk -F, \
+        -v provider="$provider_org" \
+        -v model="$model_name" \
+        -v weight="${COUNCIL_BENCHMARK_FRESHNESS_WEIGHT:-0}" \
+        'NR > 1 && $1 == provider && $2 == model {
+            signal = ($4 + 0) * (1.0 - ($5 + 0)) * (weight + 0)
+            if (signal < 0) signal = 0
+            if (signal > 1) signal = 1
+            printf "%.4f", signal
+            found = 1
+            exit
+        }
+        END {
+            if (!found) {
+                printf "0.0000"
+            }
+        }' "$root/data/benchmarks/$csv"
 }
 
 council_provider_command() {
@@ -317,7 +374,48 @@ council_provider_org() {
     esac
 }
 
+council_agent_config_value() {
+    local persona="$1"
+    local key="$2"
+    local config
+    config="$(council_plugin_root)/agents/config.yaml"
+    [[ -f "$config" ]] || return 0
+
+    awk -v persona="$persona" -v key="$key" '
+        $0 ~ "^  " persona ":" { in_agent = 1; next }
+        in_agent && $0 ~ /^  [A-Za-z0-9_-]+:/ { exit }
+        in_agent {
+            pattern = "^    " key ":"
+            if ($0 ~ pattern) {
+                sub("^[^:]*:[[:space:]]*", "")
+                sub("[[:space:]]+#.*$", "")
+                gsub(/^["'\'']|["'\'']$/, "")
+                print
+                exit
+            }
+        }
+    ' "$config"
+}
+
+council_cli_to_provider() {
+    case "$1" in
+        claude*|opus*|sonnet*) echo "claude" ;;
+        gemini*) echo "gemini" ;;
+        opencode*) echo "opencode" ;;
+        openrouter*) echo "openrouter" ;;
+        codex*|gpt*) echo "codex" ;;
+        *) echo "$1" ;;
+    esac
+}
+
 council_persona_default_provider() {
+    local config_cli
+    config_cli="$(council_agent_config_value "$1" "cli" | tr -d '"')"
+    if [[ -n "$config_cli" ]]; then
+        council_cli_to_provider "$config_cli"
+        return 0
+    fi
+
     case "$1" in
         strategy-analyst|exec-communicator) echo "claude" ;;
         research-synthesizer|business-analyst|finance-analyst|academic-writer|ux-researcher) echo "gemini" ;;
@@ -326,12 +424,184 @@ council_persona_default_provider() {
 }
 
 council_persona_model() {
+    local config_model
+    config_model="$(council_agent_config_value "$1" "model" | tr -d '"')"
+    if [[ -n "$config_model" ]]; then
+        echo "$config_model"
+        return 0
+    fi
+
     case "$1" in
         strategy-analyst|exec-communicator) echo "anthropic/claude-sonnet-4.6" ;;
         research-synthesizer|business-analyst|finance-analyst|academic-writer|ux-researcher) echo "gemini-3-pro-preview" ;;
         code-reviewer) echo "gpt-5.3-codex-spark" ;;
         *) echo "gpt-5.3-codex" ;;
     esac
+}
+
+council_persona_family() {
+    local persona="$1"
+    case "$persona" in
+        strategy-analyst|business-analyst|finance-analyst|exec-communicator|marketing-strategist) echo "strategy" ;;
+        research-synthesizer|academic-writer|ux-researcher) echo "research" ;;
+        backend-architect|database-architect|cloud-architect|graphql-architect|ai-engineer) echo "architecture" ;;
+        security-auditor|legal-compliance-advisor|incident-responder) echo "security" ;;
+        code-reviewer|test-automator|performance-engineer) echo "verification" ;;
+        typescript-pro|python-pro|frontend-developer|debugger|tdd-orchestrator|devops-troubleshooter|deployment-engineer) echo "implementation" ;;
+        docs-architect|product-writer) echo "docs" ;;
+        ui-ux-designer) echo "ux" ;;
+        *) echo "general" ;;
+    esac
+}
+
+council_persona_is_pinned() {
+    local persona="$1"
+    local pinned
+    [[ -n "$COUNCIL_PERSONAS" ]] || return 1
+    IFS=',' read -r -a pinned_personas <<< "$COUNCIL_PERSONAS"
+    for pinned in "${pinned_personas[@]}"; do
+        pinned="${pinned// /}"
+        [[ "$pinned" == "$persona" ]] && return 0
+    done
+    return 1
+}
+
+council_persona_tokens() {
+    local persona="$1"
+    local capabilities expertise
+    capabilities="$(council_agent_config_value "$persona" "capabilities" | tr -d '[],' | tr ' ' '\n')"
+    expertise="$(council_agent_config_value "$persona" "expertise" | tr -d '[],' | tr ' ' '\n')"
+    {
+        echo "$(council_persona_family "$persona")"
+        echo "$(council_persona_seat "$persona")"
+        printf '%s\n' "$capabilities"
+        printf '%s\n' "$expertise"
+    } | sed '/^$/d' | sort -u | tr '\n' ' '
+}
+
+council_persona_overlap_score() {
+    local left="$1"
+    local right="$2"
+    local left_tokens right_tokens
+    left_tokens="$(council_persona_tokens "$left")"
+    right_tokens="$(council_persona_tokens "$right")"
+
+    awk -v left="$left_tokens" -v right="$right_tokens" 'BEGIN {
+        split(left, a, /[[:space:]]+/)
+        split(right, b, /[[:space:]]+/)
+        for (i in a) {
+            if (a[i] != "") {
+                left_set[a[i]] = 1
+                union_set[a[i]] = 1
+            }
+        }
+        for (i in b) {
+            if (b[i] != "") {
+                if (left_set[b[i]]) intersection++
+                union_set[b[i]] = 1
+            }
+        }
+        for (token in union_set) union_count++
+        if (union_count == 0) {
+            printf "%.4f", 0
+        } else {
+            printf "%.4f", intersection / union_count
+        }
+    }'
+}
+
+council_roster_has_overlap() {
+    local persona="$1"
+    local threshold="${OCTOPUS_COUNCIL_DEDUP_THRESHOLD:-0.65}"
+    local existing overlap
+
+    council_persona_is_pinned "$persona" && return 1
+
+    while IFS= read -r existing; do
+        [[ -n "$existing" ]] || continue
+        council_persona_is_pinned "$existing" && continue
+        overlap="$(council_persona_overlap_score "$persona" "$existing")"
+        if awk -v overlap="$overlap" -v threshold="$threshold" 'BEGIN { exit !(overlap > threshold) }'; then
+            return 0
+        fi
+    done < <(jq -r '.[].persona' <<< "$COUNCIL_ROSTER_JSON")
+
+    return 1
+}
+
+council_role_fit_signal() {
+    local persona="$1"
+    local seat="$2"
+    local family
+    family="$(council_persona_family "$persona")"
+
+    case "$COUNCIL_DOMAIN:$family" in
+        architecture:architecture|security:security|business:strategy|research:research|docs:docs|product:ux) echo "1.00"; return 0 ;;
+    esac
+
+    case "$COUNCIL_GOAL:$seat" in
+        implement:implementer|review:verifier|decision:chair|plan:chair) echo "0.95"; return 0 ;;
+    esac
+
+    case "$seat" in
+        chair|skeptic|verifier) echo "0.85" ;;
+        implementer) echo "0.80" ;;
+        *) echo "0.70" ;;
+    esac
+}
+
+council_roster_has_provider_org() {
+    local provider_org="$1"
+    jq -e --arg org "$provider_org" 'any(.[]; .provider_org == $org)' <<< "$COUNCIL_ROSTER_JSON" >/dev/null
+}
+
+council_score_roster_entry() {
+    local persona="$1"
+    local provider="$2"
+    local provider_org="$3"
+    local model="$4"
+    local seat="$5"
+
+    local role_fit availability diversity cost_budget benchmark preference
+    role_fit="$(council_role_fit_signal "$persona" "$seat")"
+    availability="0.00"
+    council_provider_is_available "$provider" && availability="1.00"
+    diversity="1.00"
+    council_roster_has_provider_org "$provider_org" && diversity="0.40"
+    cost_budget="1.00"
+    benchmark="$(council_benchmark_signal "$provider_org" "$model")"
+    preference="0.50"
+    council_persona_is_pinned "$persona" && preference="1.00"
+
+    local family weights
+    family="$(council_persona_family "$persona")"
+    case "$seat:$family" in
+        chair:*|skeptic:*|verifier:*|*:security|*:strategy)
+            weights="0.20 0.15 0.15 0.10 0.30 0.10"
+            ;;
+        implementer:*|*:implementation|*:docs|*:ux)
+            weights="0.35 0.20 0.15 0.15 0.05 0.10"
+            ;;
+        *)
+            weights="0.30 0.15 0.20 0.10 0.15 0.10"
+            ;;
+    esac
+
+    awk \
+        -v weights="$weights" \
+        -v role_fit="$role_fit" \
+        -v availability="$availability" \
+        -v diversity="$diversity" \
+        -v cost_budget="$cost_budget" \
+        -v benchmark="$benchmark" \
+        -v preference="$preference" \
+        'BEGIN {
+            split(weights, w, " ")
+            score = (w[1] * role_fit) + (w[2] * availability) + (w[3] * diversity) + (w[4] * cost_budget) + (w[5] * benchmark) + (w[6] * preference)
+            if (score < 0) score = 0
+            if (score > 1) score = 1
+            printf "%.4f", score
+        }'
 }
 
 council_persona_seat() {
@@ -377,6 +647,45 @@ council_roster_contains() {
     jq -e --arg persona "$persona" 'any(.[]; .persona == $persona)' <<< "$COUNCIL_ROSTER_JSON" >/dev/null
 }
 
+council_roster_entry_json() {
+    local persona="$1"
+    local provider="${2:-}"
+    local preferred_provider provider_org model seat benchmark_signal score permission_mode family
+
+    preferred_provider="$(council_persona_default_provider "$persona")"
+    [[ -n "$provider" ]] || provider="$(council_pick_provider "$preferred_provider")"
+    provider_org="$(council_provider_org "$provider")"
+    model="$(council_persona_model "$persona")"
+    seat="$(council_persona_seat "$persona")"
+    family="$(council_persona_family "$persona")"
+    permission_mode="$(council_agent_config_value "$persona" "permissionMode" | tr -d '"')"
+    [[ -n "$permission_mode" ]] || permission_mode="plan"
+    benchmark_signal="$(council_benchmark_signal "$provider_org" "$model")"
+    score="$(council_score_roster_entry "$persona" "$provider" "$provider_org" "$model" "$seat")"
+
+    jq -nc \
+        --arg seat "$seat" \
+        --arg persona "$persona" \
+        --arg provider "$provider" \
+        --arg model "$model" \
+        --arg provider_org "$provider_org" \
+        --arg permission_mode "$permission_mode" \
+        --arg family "$family" \
+        --arg score "$score" \
+        --argjson benchmark_signal "$benchmark_signal" \
+        '{
+            seat: $seat,
+            persona: $persona,
+            provider: $provider,
+            model: $model,
+            provider_org: $provider_org,
+            permission_mode: $permission_mode,
+            family: $family,
+            score: ($score | tonumber),
+            benchmark_signal: $benchmark_signal
+        }'
+}
+
 council_add_roster_persona() {
     local persona="$1"
     local max="${COUNCIL_RESOLVED_MEMBERS:-3}"
@@ -386,44 +695,125 @@ council_add_roster_persona() {
         return 0
     fi
 
+    if council_roster_has_overlap "$persona"; then
+        return 0
+    fi
+
     local current_len
     current_len="$(jq 'length' <<< "$COUNCIL_ROSTER_JSON")"
     if (( current_len >= max )); then
         return 0
     fi
 
-    local preferred_provider provider provider_org model seat benchmark_signal
-    preferred_provider="$(council_persona_default_provider "$persona")"
-    provider="$(council_pick_provider "$preferred_provider")"
-    provider_org="$(council_provider_org "$provider")"
-    model="$(council_persona_model "$persona")"
-    seat="$(council_persona_seat "$persona")"
-    benchmark_signal="null"
+    local entry
+    entry="$(council_roster_entry_json "$persona")"
+    COUNCIL_ROSTER_JSON="$(jq -c --argjson entry "$entry" '. + [$entry]' <<< "$COUNCIL_ROSTER_JSON")"
+}
 
-    if [[ "$COUNCIL_BENCHMARK_USED" == "true" ]]; then
-        benchmark_signal="0.75"
+council_candidate_personas() {
+    printf '%s\n' \
+        strategy-analyst research-synthesizer business-analyst exec-communicator \
+        backend-architect database-architect cloud-architect graphql-architect \
+        security-auditor legal-compliance-advisor code-reviewer test-automator \
+        typescript-pro python-pro tdd-orchestrator frontend-developer \
+        docs-architect product-writer ux-researcher academic-writer finance-analyst
+}
+
+council_available_provider_orgs_json() {
+    local providers="$COUNCIL_PROVIDERS"
+    [[ "$providers" == "auto" ]] && providers="claude,codex,gemini,opencode,openrouter"
+
+    local json='[]' provider org
+    IFS=',' read -r -a provider_list <<< "$providers"
+    for provider in "${provider_list[@]}"; do
+        provider="${provider// /}"
+        council_provider_is_available "$provider" || continue
+        org="$(council_provider_org "$provider")"
+        json="$(jq -c --arg org "$org" 'if index($org) then . else . + [$org] end' <<< "$json")"
+    done
+    echo "$json"
+}
+
+council_provider_for_org() {
+    local wanted_org="$1"
+    local providers="$COUNCIL_PROVIDERS"
+    [[ "$providers" == "auto" ]] && providers="claude,codex,gemini,opencode,openrouter"
+
+    local provider
+    IFS=',' read -r -a provider_list <<< "$providers"
+    for provider in "${provider_list[@]}"; do
+        provider="${provider// /}"
+        if council_provider_is_available "$provider" && [[ "$(council_provider_org "$provider")" == "$wanted_org" ]]; then
+            echo "$provider"
+            return 0
+        fi
+    done
+    return 1
+}
+
+council_candidate_for_provider_org() {
+    local wanted_org="$1"
+    local provider candidate preferred org
+    provider="$(council_provider_for_org "$wanted_org")" || return 1
+
+    while IFS= read -r candidate; do
+        [[ -n "$candidate" ]] || continue
+        council_roster_contains "$candidate" && continue
+        council_persona_is_pinned "$candidate" && continue
+        preferred="$(council_persona_default_provider "$candidate")"
+        org="$(council_provider_org "$preferred")"
+        [[ "$org" == "$wanted_org" ]] || continue
+        echo "$candidate|$provider"
+        return 0
+    done < <(council_candidate_personas)
+
+    return 1
+}
+
+council_enforce_provider_diversity() {
+    [[ "$COUNCIL_DEPTH" == "quick" ]] && return 0
+
+    local available_orgs available_count roster_count missing_org replacement provider candidate entry replace_index
+    available_orgs="$(council_available_provider_orgs_json)"
+    available_count="$(jq 'length' <<< "$available_orgs")"
+    (( available_count >= 2 )) || return 0
+
+    roster_count="$(jq '[.[].provider_org] | unique | length' <<< "$COUNCIL_ROSTER_JSON")"
+    (( roster_count >= 2 )) && return 0
+
+    missing_org="$(jq -r --argjson roster "$COUNCIL_ROSTER_JSON" '.[] as $org | select(($roster | map(.provider_org) | index($org)) | not) | $org' <<< "$available_orgs" | head -1)"
+    if [[ -z "$missing_org" ]]; then
+        return 0
     fi
 
-    COUNCIL_ROSTER_JSON="$(jq -c \
-        --arg seat "$seat" \
-        --arg persona "$persona" \
-        --arg provider "$provider" \
-        --arg model "$model" \
-        --arg provider_org "$provider_org" \
-        --argjson benchmark_signal "$benchmark_signal" \
-        '. + [{
-            seat: $seat,
-            persona: $persona,
-            provider: $provider,
-            model: $model,
-            provider_org: $provider_org,
-            score: null,
-            benchmark_signal: $benchmark_signal
-        }]' <<< "$COUNCIL_ROSTER_JSON")"
+    replacement="$(council_candidate_for_provider_org "$missing_org" || true)"
+    if [[ -z "$replacement" ]]; then
+        COUNCIL_DIVERSITY_WARNING="available provider diversity could not be represented by configured personas"
+        return 0
+    fi
+
+    candidate="${replacement%%|*}"
+    provider="${replacement#*|}"
+    entry="$(council_roster_entry_json "$candidate" "$provider")"
+
+    replace_index="$(jq -r '
+        [to_entries[] | select(.value.seat != "chair")] |
+        if length == 0 then empty else min_by(.value.score).key end
+    ' <<< "$COUNCIL_ROSTER_JSON")"
+
+    if [[ -z "$replace_index" ]]; then
+        COUNCIL_DIVERSITY_WARNING="provider diversity required but no replaceable non-chair seat was available"
+        return 0
+    fi
+
+    COUNCIL_ROSTER_JSON="$(jq -c --argjson entry "$entry" --argjson index "$replace_index" '.[$index] = $entry' <<< "$COUNCIL_ROSTER_JSON")"
+    COUNCIL_DIVERSITY_REPLACED="true"
 }
 
 council_build_roster() {
     COUNCIL_ROSTER_JSON='[]'
+    COUNCIL_DIVERSITY_REPLACED="false"
+    COUNCIL_DIVERSITY_WARNING=""
 
     council_add_roster_persona "strategy-analyst"
 
@@ -465,6 +855,8 @@ council_build_roster() {
     for persona in "${filler[@]}"; do
         council_add_roster_persona "$persona"
     done
+
+    council_enforce_provider_diversity
 }
 
 council_required_non_chair() {
@@ -1060,6 +1452,8 @@ council_write_summary_json() {
         --arg worktree "$COUNCIL_WORKTREE" \
         --arg fixture "$COUNCIL_FIXTURE" \
         --arg member_override_warning "$COUNCIL_MEMBER_OVERRIDE_WARNING" \
+        --arg diversity_replaced "$COUNCIL_DIVERSITY_REPLACED" \
+        --arg diversity_warning "$COUNCIL_DIVERSITY_WARNING" \
         --arg task "$COUNCIL_TASK" \
         --arg personas_requested "$COUNCIL_PERSONAS" \
         --argjson council_roster "$COUNCIL_ROSTER_JSON" \
@@ -1102,7 +1496,9 @@ council_write_summary_json() {
           providers: $providers,
           provider_status: $provider_status,
           warnings: {
-            member_override: ($member_override_warning == "true")
+            member_override: ($member_override_warning == "true"),
+            provider_diversity_replaced: ($diversity_replaced == "true"),
+            provider_diversity: (if $diversity_warning == "" then null else $diversity_warning end)
           },
           council: $council_roster,
           veto: {

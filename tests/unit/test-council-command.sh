@@ -275,6 +275,86 @@ test_council_persona_pin_affects_roster() {
     fi
 }
 
+test_council_enforces_provider_diversity_when_available() {
+    test_case "Council enforces provider diversity when another provider org is available"
+    load_council_lib || return 1
+
+    local tmp_dir
+    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-diversity.XXXXXX")"
+
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:missing,codex:available,gemini:available' \
+        council_run --dry-run --depth standard --domain security --output-dir "$tmp_dir" "Review auth"
+
+    local summary
+    summary="$(find "$tmp_dir" -name summary.json -type f | head -1)"
+    [[ -n "$summary" ]] || { test_fail "summary.json not written"; return 1; }
+
+    if jq -e '([.council[].provider_org] | unique | length) >= 2 and (.warnings.provider_diversity_replaced == true)' "$summary" >/dev/null; then
+        test_pass
+    else
+        test_fail "provider diversity replacement did not happen"
+        return 1
+    fi
+}
+
+test_council_scores_roster_with_benchmark_signal() {
+    test_case "Council roster has normalized scores and benchmark signals"
+    load_council_lib || return 1
+
+    local tmp_dir
+    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-score.XXXXXX")"
+
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
+        council_run --dry-run --depth quick --output-dir "$tmp_dir" "Review auth"
+
+    local summary
+    summary="$(find "$tmp_dir" -name summary.json -type f | head -1)"
+    [[ -n "$summary" ]] || { test_fail "summary.json not written"; return 1; }
+
+    if jq -e '
+      all(.council[]; (.score | type) == "number" and .score >= 0 and .score <= 1) and
+      any(.council[]; .benchmark_signal != null and .benchmark_signal > 0)
+    ' "$summary" >/dev/null; then
+        test_pass
+    else
+        test_fail "roster score or benchmark signal missing"
+        return 1
+    fi
+}
+
+test_council_benchmark_freshness_decays() {
+    test_case "Benchmark freshness decays after 30 days and reaches zero after 90"
+    load_council_lib || return 1
+
+    local day_10 day_60 day_91
+    day_10="$(council_benchmark_freshness_weight 10)"
+    day_60="$(council_benchmark_freshness_weight 60)"
+    day_91="$(council_benchmark_freshness_weight 91)"
+
+    if awk -v d10="$day_10" -v d60="$day_60" -v d91="$day_91" 'BEGIN { exit !((d10 == 1.0 || d10 == 1) && d60 > 0 && d60 < 1 && d91 == 0) }'; then
+        test_pass
+    else
+        test_fail "freshness weights unexpected: 10=$day_10 60=$day_60 91=$day_91"
+        return 1
+    fi
+}
+
+test_council_refresh_benchmarks_fetches_upstream_sources() {
+    test_case "Benchmark refresh script fetches upstream snapshot sources"
+
+    local script="$PROJECT_ROOT/scripts/refresh-benchmarks.sh"
+    [[ -x "$script" ]] || { test_fail "refresh script missing or not executable"; return 1; }
+
+    if grep -q "raw.githubusercontent.com/petergpt/bullshit-benchmark" "$script" &&
+       grep -q "curl" "$script" &&
+       grep -q "leaderboard_with_launch.csv" "$script"; then
+        test_pass
+    else
+        test_fail "refresh script does not fetch upstream BullshitBench sources"
+        return 1
+    fi
+}
+
 test_council_skill_documents_gates() {
     test_case "Council skill documents preflight, quorum, and gates"
 
@@ -565,6 +645,10 @@ test_council_provider_fixture_records_status
 test_council_rejects_unknown_provider
 test_council_roster_matches_resolved_members
 test_council_persona_pin_affects_roster
+test_council_enforces_provider_diversity_when_available
+test_council_scores_roster_with_benchmark_signal
+test_council_benchmark_freshness_decays
+test_council_refresh_benchmarks_fetches_upstream_sources
 test_council_skill_documents_gates
 test_council_pass_parser_accepts_variants
 test_council_fixture_run_writes_phase_artifacts
