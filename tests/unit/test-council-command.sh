@@ -340,6 +340,77 @@ test_council_fixture_run_writes_phase_artifacts() {
     fi
 }
 
+test_council_plan_only_writes_implementation_plan_without_handoff() {
+    test_case "Council plan-only writes implementation plan without handoff"
+    load_council_lib || return 1
+
+    local tmp_dir
+    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-plan.XXXXXX")"
+
+    OCTOPUS_COUNCIL_FIXTURE=full-success \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
+        council_run --goal implement --implement plan-only --depth standard --output-dir "$tmp_dir" "Refactor auth flow"
+
+    local run_dir summary
+    run_dir="$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d | head -1)"
+    summary="$run_dir/summary.json"
+
+    [[ -f "$run_dir/implementation-plan.md" ]] || { test_fail "implementation-plan.md not written"; return 1; }
+
+    if jq -e '.status == "completed" and .implementation.permission == "plan-only" and .implementation.handoff == null and .artifacts.implementation_plan == "implementation-plan.md"' "$summary" >/dev/null; then
+        test_pass
+    else
+        test_fail "implementation plan summary mismatch"
+        return 1
+    fi
+}
+
+test_council_after_approval_does_not_handoff_without_gate() {
+    test_case "Council after-approval does not hand off without gate approval"
+    load_council_lib || return 1
+
+    local tmp_dir
+    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-gate.XXXXXX")"
+
+    OCTOPUS_COUNCIL_FIXTURE=full-success \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
+        council_run --goal implement --implement after-approval --depth standard --output-dir "$tmp_dir" "Refactor auth flow"
+
+    local summary
+    summary="$(find "$tmp_dir" -name summary.json -type f | head -1)"
+    [[ -n "$summary" ]] || { test_fail "summary.json not written"; return 1; }
+
+    if jq -e '.status == "completed" and .implementation.gate_a_approved == false and .implementation.gate_b_approved == false and .implementation.handoff == null' "$summary" >/dev/null; then
+        test_pass
+    else
+        test_fail "implementation gates should remain closed"
+        return 1
+    fi
+}
+
+test_council_critical_veto_aborts_implementation_run() {
+    test_case "Council critical veto aborts implementation run"
+    load_council_lib || return 1
+
+    local tmp_dir
+    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-veto-run.XXXXXX")"
+
+    OCTOPUS_COUNCIL_FIXTURE=critical-veto \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
+        council_run --goal implement --implement after-approval --depth standard --output-dir "$tmp_dir" "Ship this without tests"
+
+    local summary
+    summary="$(find "$tmp_dir" -name summary.json -type f | head -1)"
+    [[ -n "$summary" ]] || { test_fail "summary.json not written"; return 1; }
+
+    if jq -e '.status == "aborted" and .veto.triggered == true and .implementation.handoff == null' "$summary" >/dev/null; then
+        test_pass
+    else
+        test_fail "critical veto should abort without handoff"
+        return 1
+    fi
+}
+
 test_council_command_files_are_registered
 test_council_orchestrate_route_exists
 test_council_defaults_are_depth_aware
@@ -357,4 +428,7 @@ test_council_persona_pin_affects_roster
 test_council_skill_documents_gates
 test_council_pass_parser_accepts_variants
 test_council_fixture_run_writes_phase_artifacts
+test_council_plan_only_writes_implementation_plan_without_handoff
+test_council_after_approval_does_not_handoff_without_gate
+test_council_critical_veto_aborts_implementation_run
 test_summary

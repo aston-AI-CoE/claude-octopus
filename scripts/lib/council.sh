@@ -30,6 +30,7 @@ COUNCIL_PROVIDER_STATUS_JSON=""
 COUNCIL_ROSTER_JSON=""
 COUNCIL_RESPONSES_RECEIVED=""
 COUNCIL_QUORUM_MET=""
+COUNCIL_IMPLEMENTATION_PLAN_WRITTEN=""
 
 council_usage() {
     cat << EOF
@@ -84,6 +85,7 @@ council_reset_defaults() {
     COUNCIL_ROSTER_JSON='[]'
     COUNCIL_RESPONSES_RECEIVED="0"
     COUNCIL_QUORUM_MET="false"
+    COUNCIL_IMPLEMENTATION_PLAN_WRITTEN="false"
 }
 
 council_plugin_root() {
@@ -690,6 +692,44 @@ Review \`summary.json\` and approve, revise, debate, or stop.
 EOF
 }
 
+council_needs_implementation_plan() {
+    [[ "$COUNCIL_GOAL" == "implement" || "$COUNCIL_IMPLEMENT" != "never" ]]
+}
+
+council_veto_triggered() {
+    [[ "$COUNCIL_FIXTURE" == "critical-veto" ]]
+}
+
+council_write_implementation_plan() {
+    council_needs_implementation_plan || return 0
+
+    local plan_path="${COUNCIL_RUN_DIR}/implementation-plan.md"
+    cat > "$plan_path" << EOF
+# Council Implementation Plan
+
+## Task
+
+$COUNCIL_TASK
+
+## Recommended Path
+
+Use the council synthesis as Gate A input. Convert the accepted synthesis into implementation steps for Gate B before any file edits.
+
+## Guardrails
+
+- Do not implement without explicit approval.
+- Preserve the veto if any critical risk is present.
+- Run the existing Octopus implementation workflow after approval.
+
+## Suggested Workflow
+
+- Gate A: accept or revise council synthesis.
+- Gate B: accept this concrete implementation plan.
+- Gate C: hand off to \`tangle\` / \`flow-develop\` with existing safety hooks.
+EOF
+    COUNCIL_IMPLEMENTATION_PLAN_WRITTEN="true"
+}
+
 council_detect_providers() {
     local providers="$COUNCIL_PROVIDERS"
     if [[ "$providers" == "auto" ]]; then
@@ -887,6 +927,7 @@ council_write_summary_json() {
         --argjson council_roster "$COUNCIL_ROSTER_JSON" \
         --arg responses_received "$COUNCIL_RESPONSES_RECEIVED" \
         --arg quorum_met "$COUNCIL_QUORUM_MET" \
+        --arg implementation_plan_written "$COUNCIL_IMPLEMENTATION_PLAN_WRITTEN" \
         '{
           run_id: $run_id,
           command: "council",
@@ -930,7 +971,8 @@ council_write_summary_json() {
           artifacts: {
             synthesis: "synthesis.md",
             responses_dir: "responses",
-            critiques_dir: "critiques"
+            critiques_dir: "critiques",
+            implementation_plan: (if $implementation_plan_written == "true" then "implementation-plan.md" else null end)
           },
           implementation: {
             permission: $implement,
@@ -980,6 +1022,14 @@ council_run() {
 
     council_run_critique_phase
     council_write_synthesis
+    council_write_implementation_plan
+
+    if council_needs_implementation_plan && council_veto_triggered; then
+        council_write_summary_json "aborted" || return 1
+        echo "Council stopped by critical veto: ${COUNCIL_RUN_DIR}/summary.json"
+        return 0
+    fi
+
     council_write_summary_json "completed" || return 1
     echo "Council complete: ${COUNCIL_RUN_DIR}/summary.json"
 }
