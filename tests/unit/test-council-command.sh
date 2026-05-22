@@ -291,6 +291,55 @@ test_council_skill_documents_gates() {
     fi
 }
 
+test_council_pass_parser_accepts_variants() {
+    test_case "Council PASS parser accepts variants"
+    load_council_lib || return 1
+
+    council_is_pass "PASS" || { test_fail "PASS not accepted"; return 1; }
+    council_is_pass " pass. " || { test_fail "pass. not accepted"; return 1; }
+    council_is_pass "PASS - nothing to add" || { test_fail "PASS suffix not accepted"; return 1; }
+
+    if council_is_pass "PASS but this implementation is risky"; then
+        test_fail "substantive PASS response should not be accepted"
+        return 1
+    fi
+
+    test_pass
+}
+
+test_council_fixture_run_writes_phase_artifacts() {
+    test_case "Council fixture run writes phase artifacts"
+    load_council_lib || return 1
+
+    local tmp_dir
+    tmp_dir="$(mktemp -d "$TEST_TMP_DIR/council-full.XXXXXX")"
+
+    OCTOPUS_COUNCIL_FIXTURE=full-success \
+    OCTOPUS_COUNCIL_PROVIDER_FIXTURE='claude:available,codex:available,gemini:available' \
+        council_run --goal advice --depth standard --output-dir "$tmp_dir" "Should we use Redis?"
+
+    local run_dir summary
+    run_dir="$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d | head -1)"
+    summary="$run_dir/summary.json"
+
+    [[ -f "$run_dir/config.json" ]] || { test_fail "config.json not written"; return 1; }
+    [[ -f "$run_dir/synthesis.md" ]] || { test_fail "synthesis.md not written"; return 1; }
+    [[ -f "$summary" ]] || { test_fail "summary.json not written"; return 1; }
+
+    local response_count critique_count
+    response_count="$(find "$run_dir/responses" -type f -name '*.md' | wc -l | tr -d ' ')"
+    critique_count="$(find "$run_dir/critiques" -type f -name '*.md' | wc -l | tr -d ' ')"
+
+    if [[ "$response_count" -eq 5 ]] &&
+       [[ "$critique_count" -eq 5 ]] &&
+       jq -e '.status == "completed" and .quorum.met == true and .quorum.received_non_chair == 4' "$summary" >/dev/null; then
+        test_pass
+    else
+        test_fail "phase artifacts or quorum summary mismatch"
+        return 1
+    fi
+}
+
 test_council_command_files_are_registered
 test_council_orchestrate_route_exists
 test_council_defaults_are_depth_aware
@@ -306,4 +355,6 @@ test_council_rejects_unknown_provider
 test_council_roster_matches_resolved_members
 test_council_persona_pin_affects_roster
 test_council_skill_documents_gates
+test_council_pass_parser_accepts_variants
+test_council_fixture_run_writes_phase_artifacts
 test_summary

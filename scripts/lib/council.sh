@@ -28,6 +28,8 @@ COUNCIL_BENCHMARK_SNAPSHOT=""
 COUNCIL_BENCHMARK_FRESHNESS=""
 COUNCIL_PROVIDER_STATUS_JSON=""
 COUNCIL_ROSTER_JSON=""
+COUNCIL_RESPONSES_RECEIVED=""
+COUNCIL_QUORUM_MET=""
 
 council_usage() {
     cat << EOF
@@ -80,6 +82,8 @@ council_reset_defaults() {
     COUNCIL_BENCHMARK_FRESHNESS=""
     COUNCIL_PROVIDER_STATUS_JSON='{}'
     COUNCIL_ROSTER_JSON='[]'
+    COUNCIL_RESPONSES_RECEIVED="0"
+    COUNCIL_QUORUM_MET="false"
 }
 
 council_plugin_root() {
@@ -444,6 +448,248 @@ council_build_roster() {
     done
 }
 
+council_required_non_chair() {
+    case "$COUNCIL_DEPTH" in
+        quick) echo "1" ;;
+        *) echo "2" ;;
+    esac
+}
+
+council_is_pass() {
+    local value="$1"
+    value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+
+    case "$value" in
+        pass|pass.) return 0 ;;
+        "pass - nothing to add"|"pass- nothing to add"|"pass - no new issues"|"pass- no new issues") return 0 ;;
+    esac
+
+    return 1
+}
+
+council_slug() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-//; s/-$//'
+}
+
+council_prompt_for_member() {
+    local persona="$1"
+    local phase="$2"
+    cat << EOF
+You are participating in an Octopus council.
+
+Task:
+<<<COUNCIL_TASK
+$COUNCIL_TASK
+COUNCIL_TASK
+
+Role persona: $persona
+Goal: $COUNCIL_GOAL
+Domain: $COUNCIL_DOMAIN
+Style: $COUNCIL_STYLE
+Depth: $COUNCIL_DEPTH
+Phase: $phase
+
+Return concise Markdown with recommendation, assumptions, risks, implementation notes, and confidence.
+EOF
+}
+
+council_fixture_response() {
+    local persona="$1"
+    local phase="$2"
+
+    cat << EOF
+## Recommendation
+
+$persona recommends a cautious, testable path for: $COUNCIL_TASK
+
+## Assumptions
+
+- Fixture response for $phase.
+- Provider dispatch contract is being exercised without live API calls.
+
+## Risks
+
+- Validate provider output before implementation.
+
+## Implementation Notes
+
+- Keep gates explicit.
+- Preserve dissent in synthesis.
+
+## Confidence
+
+Medium
+EOF
+}
+
+council_live_response() {
+    local provider="$1"
+    local persona="$2"
+    local prompt="$3"
+
+    if ! council_provider_is_available "$provider"; then
+        return 1
+    fi
+
+    if declare -f run_agent_sync >/dev/null 2>&1; then
+        local agent_type="$provider"
+        local old_codex_sandbox="${OCTOPUS_CODEX_SANDBOX:-}"
+        export OCTOPUS_CODEX_SANDBOX="read-only"
+        run_agent_sync "$agent_type" "$prompt" "${OCTOPUS_COUNCIL_AGENT_TIMEOUT:-120}" "$persona" "council" || {
+            if [[ -n "$old_codex_sandbox" ]]; then
+                export OCTOPUS_CODEX_SANDBOX="$old_codex_sandbox"
+            else
+                unset OCTOPUS_CODEX_SANDBOX
+            fi
+            return 1
+        }
+        if [[ -n "$old_codex_sandbox" ]]; then
+            export OCTOPUS_CODEX_SANDBOX="$old_codex_sandbox"
+        else
+            unset OCTOPUS_CODEX_SANDBOX
+        fi
+        return 0
+    fi
+
+    return 1
+}
+
+council_dispatch_member() {
+    local member_json="$1"
+    local phase="$2"
+    local persona provider prompt
+
+    persona="$(jq -r '.persona' <<< "$member_json")"
+    provider="$(jq -r '.provider' <<< "$member_json")"
+    prompt="$(council_prompt_for_member "$persona" "$phase")"
+
+    if [[ -n "$COUNCIL_FIXTURE" ]]; then
+        council_fixture_response "$persona" "$phase"
+        return 0
+    fi
+
+    council_live_response "$provider" "$persona" "$prompt"
+}
+
+council_write_config_json() {
+    local config_path="${COUNCIL_RUN_DIR}/config.json"
+    jq -n \
+        --arg goal "$COUNCIL_GOAL" \
+        --arg domain "$COUNCIL_DOMAIN" \
+        --arg style "$COUNCIL_STYLE" \
+        --arg depth "$COUNCIL_DEPTH" \
+        --arg members "$COUNCIL_RESOLVED_MEMBERS" \
+        --arg providers "$COUNCIL_PROVIDERS" \
+        --arg implement "$COUNCIL_IMPLEMENT" \
+        --arg worktree "$COUNCIL_WORKTREE" \
+        --arg max_cost "$COUNCIL_MAX_COST" \
+        --argjson council "$COUNCIL_ROSTER_JSON" \
+        '{
+          goal: $goal,
+          domain: $domain,
+          style: $style,
+          depth: $depth,
+          members: ($members | tonumber),
+          providers: $providers,
+          implement: $implement,
+          worktree: $worktree,
+          max_cost_usd: ($max_cost | tonumber),
+          council: $council
+        }' > "$config_path"
+}
+
+council_run_advice_phase() {
+    COUNCIL_RESPONSES_RECEIVED="0"
+
+    local index=0 member persona slug output_path
+    while IFS= read -r member; do
+        persona="$(jq -r '.persona' <<< "$member")"
+        slug="$(council_slug "$persona")"
+        output_path="${COUNCIL_RUN_DIR}/responses/$(printf '%02d' "$index")-${slug}.md"
+        if council_dispatch_member "$member" "independent-advice" > "$output_path"; then
+            COUNCIL_RESPONSES_RECEIVED=$((COUNCIL_RESPONSES_RECEIVED + 1))
+        else
+            rm -f "$output_path"
+        fi
+        index=$((index + 1))
+    done < <(jq -c '.[]' <<< "$COUNCIL_ROSTER_JSON")
+
+    local required received_non_chair
+    required="$(council_required_non_chair)"
+    received_non_chair="$(( COUNCIL_RESPONSES_RECEIVED > 0 ? COUNCIL_RESPONSES_RECEIVED - 1 : 0 ))"
+    if (( received_non_chair >= required )); then
+        COUNCIL_QUORUM_MET="true"
+    else
+        COUNCIL_QUORUM_MET="false"
+    fi
+}
+
+council_run_critique_phase() {
+    if [[ "$COUNCIL_DEPTH" == "quick" ]]; then
+        return 0
+    fi
+
+    local index=0 member persona slug output_path
+    while IFS= read -r member; do
+        persona="$(jq -r '.persona' <<< "$member")"
+        slug="$(council_slug "$persona")"
+        output_path="${COUNCIL_RUN_DIR}/critiques/$(printf '%02d' "$index")-${slug}.md"
+        if [[ -n "$COUNCIL_FIXTURE" ]]; then
+            cat > "$output_path" << EOF
+PASS - nothing to add
+EOF
+        else
+            council_dispatch_member "$member" "cross-critique" > "$output_path" || rm -f "$output_path"
+        fi
+        index=$((index + 1))
+    done < <(jq -c '.[]' <<< "$COUNCIL_ROSTER_JSON")
+}
+
+council_write_synthesis() {
+    local synthesis_path="${COUNCIL_RUN_DIR}/synthesis.md"
+    cat > "$synthesis_path" << EOF
+# Council Synthesis
+
+## Council Recommendation
+
+Proceed with the lowest-risk path identified by the council for:
+
+> $COUNCIL_TASK
+
+## Why This Council Was Selected
+
+- Goal: $COUNCIL_GOAL
+- Domain: $COUNCIL_DOMAIN
+- Style: $COUNCIL_STYLE
+- Depth: $COUNCIL_DEPTH
+- Members: $COUNCIL_RESOLVED_MEMBERS
+
+## Agreement
+
+The council responses are saved in \`responses/\`.
+
+## Disagreement
+
+Material disagreement is preserved in member artifacts and critique files.
+
+## Risks And Unknowns
+
+Review provider-specific risks before implementation.
+
+## Implementation Path
+
+Use Gate A and Gate B before any handoff to implementation workflows.
+
+## Confidence
+
+Medium
+
+## Next Step
+
+Review \`summary.json\` and approve, revise, debate, or stop.
+EOF
+}
+
 council_detect_providers() {
     local providers="$COUNCIL_PROVIDERS"
     if [[ "$providers" == "auto" ]]; then
@@ -639,6 +885,8 @@ council_write_summary_json() {
         --arg task "$COUNCIL_TASK" \
         --arg personas_requested "$COUNCIL_PERSONAS" \
         --argjson council_roster "$COUNCIL_ROSTER_JSON" \
+        --arg responses_received "$COUNCIL_RESPONSES_RECEIVED" \
+        --arg quorum_met "$COUNCIL_QUORUM_MET" \
         '{
           run_id: $run_id,
           command: "council",
@@ -663,8 +911,8 @@ council_write_summary_json() {
           },
           quorum: {
             required_non_chair: (if $depth == "quick" then 1 else 2 end),
-            received_non_chair: 0,
-            met: false
+            received_non_chair: (if ($responses_received | tonumber) > 0 then (($responses_received | tonumber) - 1) else 0 end),
+            met: ($quorum_met == "true")
           },
           providers: $providers,
           provider_status: $provider_status,
@@ -720,6 +968,18 @@ council_run() {
         return 0
     fi
 
-    council_write_summary_json "partial" || return 1
-    echo "Council first slice is installed. Use --dry-run for deterministic preflight until provider fanout ships."
+    council_build_roster
+    council_write_config_json || return 1
+    council_run_advice_phase
+
+    if [[ "$COUNCIL_QUORUM_MET" != "true" ]]; then
+        council_write_summary_json "partial" || return 1
+        echo "Council stopped before synthesis: quorum was not met. See ${COUNCIL_RUN_DIR}/summary.json"
+        return 1
+    fi
+
+    council_run_critique_phase
+    council_write_synthesis
+    council_write_summary_json "completed" || return 1
+    echo "Council complete: ${COUNCIL_RUN_DIR}/summary.json"
 }
