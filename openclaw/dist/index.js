@@ -33,7 +33,7 @@ async function executeOrchestrate(command, prompt, flags = [], postFlags = []) {
     try {
         const { stdout, stderr } = await execFileAsync(orchestrateSh, args, {
             cwd: PLUGIN_ROOT,
-            timeout: 300000,
+            timeout: 300_000,
             env: {
                 // Security: only forward required env vars, not the full process.env
                 PATH: process.env.PATH,
@@ -152,6 +152,93 @@ const WORKFLOW_DEFS = [
         ]),
     },
     {
+        name: "octopus_council",
+        label: "Octopus Council",
+        description: "Configurable multi-LLM council with personas, budget caps, synthesis, veto gates, and optional implementation handoff.",
+        parameters: Type.Object({
+            prompt: Type.String({ description: "Task, question, or decision for the council" }),
+            goal: Type.Optional(Type.Union([
+                Type.Literal("advice"),
+                Type.Literal("decision"),
+                Type.Literal("plan"),
+                Type.Literal("implement"),
+                Type.Literal("review"),
+            ], { description: "Council goal" })),
+            domain: Type.Optional(Type.Union([
+                Type.Literal("auto"),
+                Type.Literal("architecture"),
+                Type.Literal("product"),
+                Type.Literal("security"),
+                Type.Literal("business"),
+                Type.Literal("research"),
+                Type.Literal("docs"),
+            ], { description: "Domain used for persona recommendation" })),
+            style: Type.Optional(Type.Union([
+                Type.Literal("balanced"),
+                Type.Literal("adversarial"),
+                Type.Literal("implementation"),
+                Type.Literal("executive"),
+                Type.Literal("red-team"),
+            ], { description: "Council discussion style" })),
+            depth: Type.Optional(Type.Union([
+                Type.Literal("quick"),
+                Type.Literal("standard"),
+                Type.Literal("deep"),
+            ], { description: "Depth preset" })),
+            members: Type.Optional(Type.Union([
+                Type.Literal("auto"),
+                Type.Literal("3"),
+                Type.Literal("5"),
+                Type.Literal("7"),
+            ], { description: "Council size; explicit values override depth defaults" })),
+            persona: Type.Optional(Type.String({ description: "Comma-separated pinned persona names" })),
+            implement: Type.Optional(Type.Union([
+                Type.Literal("never"),
+                Type.Literal("after-approval"),
+                Type.Literal("plan-only"),
+            ], { description: "Implementation permission gate" })),
+            worktree: Type.Optional(Type.Union([
+                Type.Literal("auto"),
+                Type.Literal("on"),
+                Type.Literal("off"),
+            ], { description: "Implementation worktree preference" })),
+            benchmark: Type.Optional(Type.Union([
+                Type.Literal("auto"),
+                Type.Literal("on"),
+                Type.Literal("off"),
+            ], { description: "BullshitBench snapshot usage" })),
+            providers: Type.Optional(Type.String({ description: "auto or comma-separated provider list: claude,codex,gemini,opencode,openrouter" })),
+            max_cost: Type.Optional(Type.String({ description: "USD decimal budget cap, for example 2.00" })),
+            dry_run: Type.Optional(Type.Boolean({ description: "Preview council selection and cost without dispatching providers" })),
+            json: Type.Optional(Type.Boolean({ description: "Print summary.json to stdout" })),
+            output_dir: Type.Optional(Type.String({ description: "Parent directory for council run artifacts" })),
+        }),
+        run: async (params) => {
+            const postFlags = [];
+            const add = (flag, value) => {
+                if (typeof value === "string" && value !== "")
+                    postFlags.push(flag, value);
+            };
+            add("--goal", params.goal);
+            add("--domain", params.domain);
+            add("--style", params.style);
+            add("--depth", params.depth);
+            add("--members", params.members);
+            add("--persona", params.persona);
+            add("--implement", params.implement);
+            add("--worktree", params.worktree);
+            add("--benchmark", params.benchmark);
+            add("--providers", params.providers);
+            add("--max-cost", params.max_cost);
+            add("--output-dir", params.output_dir);
+            if (params.dry_run === true)
+                postFlags.push("--dry-run");
+            if (params.json === true)
+                postFlags.push("--json");
+            return executeOrchestrate("council", params.prompt, [], postFlags);
+        },
+    },
+    {
         name: "octopus_review",
         label: "Octopus Review",
         description: "Multi-LLM code review pipeline (Codex + Gemini + Claude + Perplexity fleet). Loads REVIEW.md customization, supports inline PR comment publishing.",
@@ -219,6 +306,7 @@ export default function register(api) {
         "deliver",
         "embrace",
         "debate",
+        "council",
         "review",
         "security",
     ];

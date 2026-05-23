@@ -18,6 +18,16 @@ HUD="$PROJECT_ROOT/hooks/octopus-hud.mjs"
 SESSION_START="$PROJECT_ROOT/hooks/session-start-memory.sh"
 README="$PROJECT_ROOT/README.md"
 
+read_repo_file() {
+    local file="$1"
+    if [[ -f "$PROJECT_ROOT/$file" ]]; then
+        cat "$PROJECT_ROOT/$file"
+    elif git -C "$PROJECT_ROOT" cat-file -e "HEAD:$file" 2>/dev/null; then
+        git -C "$PROJECT_ROOT" show "HEAD:$file"
+    fi
+    return 0
+}
+
 if grep -q 'CLAUDE_CODE_REMOTE' "$ORCHESTRATE" && grep -q 'OCTOPUS_REMOTE_SESSION' "$ORCHESTRATE"; then
     pass "orchestrate.sh detects Claude Code remote sessions"
 else
@@ -98,13 +108,18 @@ else
     fail "SessionStart preserves explicit remote autonomy" "explicit autonomy was not preserved"
 fi
 
-if grep -q '## Claude Code Web and Remote Sessions' "$README" && grep -q 'OCTOPUS_REMOTE_SESSION=true' "$README"; then
+readme_content=$(read_repo_file "README.md")
+if grep -q '## Claude Code Web and Remote Sessions' <<<"$readme_content" &&
+   grep -q 'OCTOPUS_REMOTE_SESSION=true' <<<"$readme_content"; then
     pass "README documents Claude Code web and remote workflow"
 else
     fail "README documents Claude Code web and remote workflow" "remote docs missing"
 fi
 
-if ! grep -R -q 'claude --remote\|claude --teleport' "$README" "$PROJECT_ROOT/.cursor-plugin/commands" "$PROJECT_ROOT/.claude/commands"; then
+if ! {
+    grep -q 'claude --remote\|claude --teleport' <<<"$readme_content" ||
+    grep -R -q 'claude --remote\|claude --teleport' "$PROJECT_ROOT/.cursor-plugin/commands" "$PROJECT_ROOT/.claude/commands"
+}; then
     pass "remote docs avoid unsupported Claude CLI flags"
 else
     fail "remote docs avoid unsupported Claude CLI flags" "unsupported CLI flag documented"

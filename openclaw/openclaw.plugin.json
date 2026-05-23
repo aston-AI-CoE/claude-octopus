@@ -3,7 +3,7 @@
   "name": "octo-claw",
   "displayName": "Claude Octopus",
   "version": "1.0.0",
-  "description": "Multi-agent orchestration with Double Diamond methodology. Brings 48 skills, expert code review, structured AI debates, and multi-provider workflows to OpenClaw.",
+  "description": "Multi-agent orchestration with Double Diamond methodology. Brings expert code review, structured AI debates, configurable councils, and multi-provider workflows to OpenClaw.",
   "category": "tools",
   "configSchema": {
     "type": "object",
@@ -28,10 +28,10 @@
         "type": "array",
         "items": {
           "type": "string",
-          "enum": ["discover", "define", "develop", "deliver", "embrace", "debate", "review", "security"]
+          "enum": ["discover", "define", "develop", "deliver", "embrace", "debate", "council", "review", "security"]
         },
         "description": "Which Octopus workflows to expose as OpenClaw tools.",
-        "default": ["discover", "define", "develop", "deliver", "embrace", "debate", "review"]
+        "default": ["discover", "define", "develop", "deliver", "embrace", "debate", "council", "review"]
       },
       "mcpServerUrl": {
         "type": "string",

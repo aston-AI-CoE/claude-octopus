@@ -60,8 +60,8 @@ check_readme_version() {
 # Check if README body text matches actual command/skill/persona counts
 check_readme_counts() {
   local actual_commands actual_skills actual_personas
-  actual_commands=$(find .claude/commands -name "*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
-  actual_skills=$(find .claude/skills -name "*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
+  actual_commands=$(python3 -c 'import json; print(len(json.load(open(".claude-plugin/plugin.json")).get("commands", [])))')
+  actual_skills=$(python3 -c 'import json; print(len(json.load(open(".claude-plugin/plugin.json")).get("skills", [])))')
   actual_personas=$(find agents/personas -name "*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
 
   if grep -q "${actual_commands} commands" README.md; then
@@ -109,7 +109,7 @@ check_readme_structure() {
   local required_sections=(
     "# Claude Octopus"
     "## Quickstart"
-    "## 8 Commands That Matter Most"
+    "## [0-9]+ Commands That Matter Most"
     "## How It Works"
     "## Documentation"
     "## Attribution"
@@ -120,7 +120,7 @@ check_readme_structure() {
   for section in "${required_sections[@]}"; do
     # Allow emoji prefixes in section headers (e.g., "# 🐙 Claude Octopus")
     local section_text="${section#\#* }"
-    if grep -q "^${section}" "$readme" || grep -qE "^#+ .*${section_text}" "$readme"; then
+    if grep -Eq "^${section}" "$readme" || grep -qE "^#+ .*${section_text}" "$readme"; then
       pass "README has section: $section"
     else
       fail "README missing section: $section"

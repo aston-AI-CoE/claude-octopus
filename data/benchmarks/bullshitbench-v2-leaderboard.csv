@@ -1,0 +1,8 @@
+provider,model,reasoning,clear_pushback_rate,accepted_nonsense_rate,source
+anthropic,claude-sonnet-4.6,none,0.89,0.02,bullshitbench-v2
+anthropic,claude-opus-4.5,high,0.90,0.02,bullshitbench-v2
+anthropic,claude-opus-4.6,high,0.87,0.03,bullshitbench-v2
+openai,gpt-5.3-codex,high,0.82,0.04,bullshitbench-v2
+openai,gpt-5.3-codex-spark,medium,0.78,0.05,bullshitbench-v2
+google,gemini-3-pro-preview,high,0.80,0.05,bullshitbench-v2
+qwen,qwen3.5-397b-a17b,high,0.78,0.05,bullshitbench-v2

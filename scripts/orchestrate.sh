@@ -166,6 +166,7 @@ source "${SCRIPT_DIR}/lib/validation.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/embrace.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/heuristics.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/provider-routing.sh" 2>/dev/null || true
+source "${SCRIPT_DIR}/lib/council.sh" 2>/dev/null || true
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECURITY: Path validation for workspace directory
@@ -2857,6 +2858,13 @@ case "$COMMAND" in
         ;;
     cost-archive)
         echo "cost-archive has been removed. Usage data is managed automatically."
+        ;;
+    council)
+        if ! declare -f council_run >/dev/null 2>&1; then
+            log ERROR "Council command unavailable: scripts/lib/council.sh failed to load"
+            exit 1
+        fi
+        council_run "$@"
         ;;
     # ═══════════════════════════════════════════════════════════════════════════
     # REVIEW & AUDIT COMMANDS (v4.4 - Human-in-the-loop)

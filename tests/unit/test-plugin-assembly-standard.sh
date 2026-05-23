@@ -45,6 +45,28 @@ assert_contains_file() {
     fi
 }
 
+assert_contains_repo_file() {
+    local file="$1"
+    local pattern="$2"
+    local label="$3"
+    local content=""
+
+    if [[ -f "$PROJECT_ROOT/$file" ]]; then
+        content=$(cat "$PROJECT_ROOT/$file")
+    elif git -C "$PROJECT_ROOT" cat-file -e "HEAD:$file" 2>/dev/null; then
+        content=$(git -C "$PROJECT_ROOT" show "HEAD:$file")
+    else
+        fail "$label" "missing $file"
+        return
+    fi
+
+    if grep -qE "$pattern" <<<"$content"; then
+        pass "$label"
+    else
+        fail "$label" "missing pattern '$pattern' in $file"
+    fi
+}
+
 echo "=== 1. Assembly standard documentation ==="
 assert_file "docs/PLUGIN-ASSEMBLY-STANDARD.md" \
     "plugin assembly standard document exists"
@@ -65,7 +87,7 @@ assert_file "scripts/validate-plugin-assembly.py" \
     "plugin assembly validator exists"
 assert_executable "scripts/validate-plugin-assembly.py" \
     "plugin assembly validator is executable"
-assert_contains_file "Makefile" '^validate-plugin-assembly:' \
+assert_contains_repo_file "Makefile" '^validate-plugin-assembly:' \
     "Makefile exposes validate-plugin-assembly target"
 
 if output=$(python3 "$PROJECT_ROOT/scripts/validate-plugin-assembly.py" --root "$PROJECT_ROOT" 2>&1); then

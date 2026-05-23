@@ -1,7 +1,7 @@
 {
   "name": "octo",
-  "version": "9.39.1",
-  "description": "v9.39.1 — Dispatch timeout and oversize-provider handling fixes for multi-LLM orchestration. Run /octo:setup.",
+  "version": "9.40.0",
+  "description": "v9.40.0 — Configurable multi-LLM council with persona scoring, benchmark-aware routing, diversity, veto, quorum, and implementation gates. Run /octo:setup.",
   "author": {
     "name": "nyldn",
     "url": "https://github.com/nyldn"
@@ -39,6 +39,7 @@
     "./skills/skill-content-pipeline",
     "./skills/skill-context-detection",
     "./skills/skill-copilot-provider",
+    "./skills/skill-council",
     "./skills/skill-cost-projections",
     "./skills/skill-coverage-audit",
     "./skills/skill-debate",
@@ -122,6 +123,7 @@
     "./.claude/commands/guard.md",
     "./.claude/commands/unfreeze.md",
     "./.claude/commands/costs.md",
+    "./.claude/commands/council.md",
     "./.claude/commands/retro.md",
     "./.claude/commands/history.md",
     "./.claude/commands/discipline.md"

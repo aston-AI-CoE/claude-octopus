@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+## [9.40.0] - 2026-05-22
+
+### Added
+
+- Add `/octo:council` as a configurable multi-LLM council command with command/skill registration, dry-run preflight artifacts, provider status, benchmark metadata, persona-aware roster selection, provider diversity, budget validation, quorum tracking, critical veto handling, and gated implementation handoff metadata.
+- Add checked-in BullshitBench v2 snapshot data and a refresh script for benchmark-aware council routing.
+
 ## [9.39.1] - 2026-05-22
 
 ### Fixed

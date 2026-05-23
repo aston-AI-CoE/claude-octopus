@@ -482,6 +482,29 @@ ${YELLOW}Output:${NC}
   Results saved to: ~/.claude-octopus/results/grapple-*.md
 EOF
             ;;
+        council)
+            cat << EOF
+${YELLOW}council${NC} - Multi-LLM council advice and gated implementation
+
+${YELLOW}Usage:${NC} $(basename "$0") council [OPTIONS] <task>
+
+${YELLOW}Options:${NC}
+  --goal advice|decision|plan|implement|review
+  --domain auto|architecture|product|security|business|research|docs
+  --style balanced|adversarial|implementation|executive|red-team
+  --depth quick|standard|deep
+  --members auto|3|5|7
+  --persona <name>[,<name>]
+  --implement never|after-approval|plan-only
+  --worktree auto|on|off
+  --benchmark auto|on|off
+  --providers auto|claude,codex,gemini,opencode,openrouter
+  --max-cost <usd>
+  --dry-run
+  --json
+  --output-dir <path>
+EOF
+            ;;
         squeeze|red-team)
             cat << EOF
 ${YELLOW}squeeze${NC} (alias: red-team) - Security testing workflow
