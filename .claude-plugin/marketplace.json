@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "nyldn plugins for Claude Code workflows.",
-    "version": "9.40.3"
+    "version": "9.41.0"
   },
   "plugins": [
     {
@@ -15,8 +15,8 @@
         "source": "url",
         "url": "https://github.com/nyldn/claude-octopus.git"
       },
-      "description": "v9.40.3 - Hardened multi-LLM council with extracted benchmark routing, capability-aware role fit, CLI-visible warnings, diversity, veto, quorum, and implementation gates. 32 personas, 49 commands, 54 skills. Run /octo:setup.",
-      "version": "9.40.3",
+      "description": "v9.41.0 - /octo:council promoted to first-class workflow: structured 3/5/7-persona deliberation across Claude, Codex, Gemini, OpenCode with goal modes, adversarial styles, benchmark-aware routing, quorum/veto gates, and gated implementation handoff. 32 personas, 48 commands, 54 skills. Run /octo:setup.",
+      "version": "9.41.0",
       "author": {
         "name": "nyldn",
         "url": "https://github.com/nyldn"

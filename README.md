@@ -12,7 +12,7 @@ Every AI model has blind spots. Claude Octopus puts up to eight of them on every
   <a href="https://claude.ai"><img src="https://img.shields.io/badge/Claude-Built_with_AI-c96442?logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZiIgZD0iTTEyIDJhMTAgMTAgMCAxIDAgMCAyMCAxMCAxMCAwIDAgMCAwLTIwbTAgMS44YTEuMiAxLjIgMCAwIDEgLjg1LjM1bDEuNSA0LjVhLjYuNiAwIDAgMCAuMzUuMzVsNC41IDEuNWExLjIgMS4yIDAgMCAxIDAgMi4yN2wtNC41IDEuNWEuNi42IDAgMCAwLS4zNS4zNWwtMS41IDQuNWExLjIgMS4yIDAgMCAxLTIuMjcgMGwtMS41LTQuNWEuNi42IDAgMCAwLS4zNS0uMzVsLTQuNS0xLjVhMS4yIDEuMiAwIDAgMSAwLTIuMjdsNC41LTEuNWEuNi42IDAgMCAwIC4zNS0uMzVsMS41LTQuNUExLjIgMS4yIDAgMCAxIDEyIDMuOCIvPjwvc3ZnPg==&labelColor=333" alt="Built with Claude"></a>
   <a href="https://github.com/nyldn/claude-octopus/actions/workflows/test.yml"><img src="https://github.com/nyldn/claude-octopus/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
   <img src="https://img.shields.io/badge/Tests-117_suites_passing-brightgreen" alt="117 suites passing">
-  <img src="https://img.shields.io/badge/Version-9.40.3-blue" alt="Version 9.40.3">
+  <img src="https://img.shields.io/badge/Version-9.41.0-blue" alt="Version 9.41.0">
   <img src="https://img.shields.io/badge/Claude_Code-v2.1.14+_required-blueviolet" alt="Requires Claude Code v2.1.14+">
   <img src="https://img.shields.io/badge/License-MIT-green" alt="MIT License">
 </p>
@@ -25,7 +25,7 @@ Every AI model has blind spots. Claude Octopus puts up to eight of them on every
 
 🔄 **Four-phase methodology, not just tools.** Every task moves through Discover → Define → Develop → Deliver, with quality gates between phases. Other orchestrators give you infrastructure. Octopus gives you the workflows.
 
-🐙 **32 specialized personas** (role-specific AI agents like security-auditor, backend-architect), **49 commands** (slash commands you type), **54 skills** (reusable workflow modules). Say "audit my API" and the right expert activates. Don't know the command? The smart router figures it out.
+🐙 **32 specialized personas** (role-specific AI agents like security-auditor, backend-architect), **48 commands** (slash commands you type), **54 skills** (reusable workflow modules). Say "audit my API" and the right expert activates. Don't know the command? The smart router figures it out.
 
 🐙 **Works with just Claude. Scales to eight.** Zero providers needed to start. Add them one at a time — each activates automatically when detected.
 
@@ -35,8 +35,16 @@ Every AI model has blind spots. Claude Octopus puts up to eight of them on every
 
 ## What's New
 
+> 🆕 **v9.41 — Multi-LLM Council.** `/octo:council` runs a structured 3/5/7-persona deliberation across Claude, Codex, Gemini, and OpenCode with goal modes (`advice`, `decision`, `plan`, `implement`, `review`), styles (`balanced`, `adversarial`, `red-team`, `executive`, `implementation`), benchmark-aware role routing, quorum + critical-veto gates, budget caps, and gated worktree handoff for approved plans. Use it when one model's opinion isn't enough.
+>
+> ```bash
+> /octo:council --goal decision --style adversarial "Should this service stay monolithic?"
+> /octo:council --goal implement --implement plan-only "Refactor the auth flow"
+> ```
+
 | Version | Best Features |
 |---------|--------------|
+| **v9.41** (new) | **`/octo:council`** promoted to first-class workflow — structured multi-LLM deliberation with goal modes, adversarial/red-team styles, benchmark-aware persona routing, quorum and critical-veto gates, budget preflight, and gated worktree handoff for approved implementation plans. |
 | **v9** (current) | Up to 8 providers (Codex, Gemini, Copilot, Qwen, Ollama, Perplexity, OpenRouter, OpenCode). Four-way AI debates and configurable multi-LLM councils. Smart router — just say what you need. Agent summary tables show which providers actually contributed. Provider-aware prompt preflight prevents silent oversize failures. Research breadth modes fan out light, standard, or exhaustive investigations. Setup aliases and fuzzy `/octo:*` corrections reduce command friction. Discipline mode with 8 auto-invoke gates. Two-stage review. Circuit breakers with automatic provider recovery. Cursor + OpenCode + Codex cross-compatibility. Token compression: `bin/octo-compress` pipe + auto PostToolUse hook save ~7,300 tokens/session. PostCompact context recovery. `bin/octopus` CLI. 170+ CC feature flags through v2.1.132. |
 | **v8** | Multi-LLM code review with inline PR comments. Parallel workstreams in isolated git worktrees. Reaction engine — auto-responds to CI failures. 32 specialized personas. Dark Factory autonomous pipeline. |
 | **v7** | Double Diamond workflow. Multi-provider dispatch. Quality gates and consensus scoring. Configurable sandbox modes. |

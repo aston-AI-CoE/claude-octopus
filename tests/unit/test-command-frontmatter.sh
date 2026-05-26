@@ -30,6 +30,32 @@ if [ ! -d "$COMMANDS_DIR" ]; then
     exit 1
 fi
 
+echo "Testing: Octopus does not shadow Claude Code native /doctor..."
+if [ -f "$COMMANDS_DIR/doctor.md" ]; then
+    echo -e "${RED}✗${NC} doctor.md must not be registered as an Octopus slash command"
+    echo -e "   ${YELLOW}FIX:${NC} Keep Octopus diagnostics in skills/runtime only so native /doctor remains accessible"
+    FAILED=$((FAILED + 1))
+else
+    echo -e "${GREEN}✓${NC} no doctor.md command file present"
+    PASSED=$((PASSED + 1))
+fi
+
+if jq -e '.commands[]? | select(. == "./.claude/commands/doctor.md")' "$PROJECT_ROOT/.claude-plugin/plugin.json" >/dev/null; then
+    echo -e "${RED}✗${NC} plugin.json must not register .claude/commands/doctor.md"
+    FAILED=$((FAILED + 1))
+else
+    echo -e "${GREEN}✓${NC} plugin.json does not register doctor.md"
+    PASSED=$((PASSED + 1))
+fi
+
+if grep -R "^command:[[:space:]]*doctor$" "$COMMANDS_DIR" >/dev/null 2>&1; then
+    echo -e "${RED}✗${NC} no Octopus command may use frontmatter 'command: doctor'"
+    FAILED=$((FAILED + 1))
+else
+    echo -e "${GREEN}✓${NC} no command frontmatter claims doctor"
+    PASSED=$((PASSED + 1))
+fi
+
 for cmd_file in "$COMMANDS_DIR"/*.md; do
     if [ ! -f "$cmd_file" ]; then
         continue

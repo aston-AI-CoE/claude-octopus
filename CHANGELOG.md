@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [9.41.0] - 2026-05-24
+
+### Added
+
+- Promote `/octo:council` to a first-class workflow in plugin metadata and README docs.
+
+### Fixed
+
+- Stop registering `doctor` as an Octopus slash command so Claude Code's native `/doctor` remains accessible.
+
 ## [9.40.3] - 2026-05-24
 
 ### Changed

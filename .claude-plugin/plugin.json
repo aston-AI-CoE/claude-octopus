@@ -1,7 +1,7 @@
 {
   "name": "octo",
-  "version": "9.40.3",
-  "description": "v9.40.3 \u2014 Hardened multi-LLM council with extracted benchmark routing, capability-aware role fit, CLI-visible warnings, diversity, veto, quorum, and implementation gates. Run /octo:setup.",
+  "version": "9.41.0",
+  "description": "v9.41.0 \u2014 /octo:council promoted to first-class workflow: structured 3/5/7-persona deliberation across Claude, Codex, Gemini, OpenCode with goal modes, adversarial styles, benchmark-aware routing, quorum/veto gates, and gated implementation handoff. Run /octo:setup.",
   "author": {
     "name": "nyldn",
     "url": "https://github.com/nyldn"
@@ -111,7 +111,6 @@
     "./.claude/commands/parallel.md",
     "./.claude/commands/sentinel.md",
     "./.claude/commands/claw.md",
-    "./.claude/commands/doctor.md",
     "./.claude/commands/factory.md",
     "./.claude/commands/staged-review.md",
     "./.claude/commands/design-ui-ux.md",
