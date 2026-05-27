@@ -8,11 +8,9 @@ set -euo pipefail
 #   bash scripts/helpers/preflight.sh --exit-code # exits 0 if Claude available (always)
 #   bash scripts/helpers/preflight.sh --json      # JSON output for scripting
 
-PROVIDERS_READY=0
-PROVIDERS_DEGRADED=0
-declare -a RESULT_LINES
-declare -a RESULT_NAMES
-declare -a RESULT_STATUSES
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+CHECK_VERSIONS="${SCRIPT_DIR}/check-versions.sh"
+CHECK_OLLAMA_MODELS="${SCRIPT_DIR}/check-ollama-models.sh"
 
 TIMEOUT_CMD=""
 if command -v gtimeout &>/dev/null; then
@@ -21,13 +19,19 @@ elif command -v timeout &>/dev/null; then
   TIMEOUT_CMD="timeout"
 fi
 
+PROVIDERS_READY=0
+PROVIDERS_DEGRADED=0
+declare -a RESULT_LINES
+declare -a RESULT_NAMES
+declare -a RESULT_STATUSES
+
 check_provider() {
   local name="$1"
   local check_cmd="$2"
   local timeout_s="${3:-2}"
   local icon
-
   local available=false
+
   if [[ -n "$TIMEOUT_CMD" ]]; then
     "$TIMEOUT_CMD" "$timeout_s" bash -c "$check_cmd" &>/dev/null && available=true
   else
@@ -64,9 +68,22 @@ if [[ "${1:-}" == "--exit-code" ]]; then
 fi
 
 print_json_output() {
+  local ver_json ollama_json
+  ver_json="{}"
+  if [[ -f "$CHECK_VERSIONS" ]]; then
+    ver_json=$(bash "$CHECK_VERSIONS" --json 2>/dev/null) || ver_json='{"any_below_floor":false,"results":[]}'
+  fi
+  ollama_json='{"reachable":false,"models":[]}'
+  if [[ -f "$CHECK_OLLAMA_MODELS" ]]; then
+    ollama_json=$(bash "$CHECK_OLLAMA_MODELS" --json 2>/dev/null) || ollama_json='{"reachable":false,"models":[]}'
+  fi
+
   OCTO_PREFLIGHT_NAMES="$(printf '%s\n' "${RESULT_NAMES[@]}")"
   OCTO_PREFLIGHT_STATUSES="$(printf '%s\n' "${RESULT_STATUSES[@]}")"
-  export OCTO_PREFLIGHT_NAMES OCTO_PREFLIGHT_STATUSES
+  OCTO_PREFLIGHT_VERSIONS="$ver_json"
+  OCTO_PREFLIGHT_OLLAMA="$ollama_json"
+  export OCTO_PREFLIGHT_NAMES OCTO_PREFLIGHT_STATUSES OCTO_PREFLIGHT_VERSIONS OCTO_PREFLIGHT_OLLAMA
+
   python3 - "$PROVIDERS_READY" "$PROVIDERS_DEGRADED" <<'PYEOF'
 import json
 import os
@@ -82,6 +99,15 @@ while names and names[-1] == "":
     names.pop()
 while statuses and statuses[-1] == "":
     statuses.pop()
+try:
+    versions = json.loads(os.environ.get("OCTO_PREFLIGHT_VERSIONS", "{}"))
+except json.JSONDecodeError:
+    versions = {"any_below_floor": False, "results": []}
+try:
+    ollama = json.loads(os.environ.get("OCTO_PREFLIGHT_OLLAMA", "{}"))
+except json.JSONDecodeError:
+    ollama = {"reachable": False, "models": []}
+
 print(json.dumps({
     "providers_ready": int(sys.argv[1]),
     "providers_degraded": int(sys.argv[2]),
@@ -89,6 +115,8 @@ print(json.dumps({
         {"name": name, "status": status}
         for name, status in zip(names, statuses)
     ],
+    "versions": versions,
+    "ollama_models": ollama,
 }, indent=2))
 PYEOF
 }
@@ -112,5 +140,16 @@ if [[ $PROVIDERS_READY -eq 1 ]]; then
 elif [[ $PROVIDERS_READY -ge 3 ]]; then
   echo "  🚀 Multi-provider mode active. Run /octo:embrace for full orchestration."
 fi
+
+# Version floor section
+if [[ -f "$CHECK_VERSIONS" ]]; then
+  bash "$CHECK_VERSIONS" 2>/dev/null || true
+fi
+
+# Ollama model staleness section
+if [[ -f "$CHECK_OLLAMA_MODELS" ]]; then
+  bash "$CHECK_OLLAMA_MODELS" 2>/dev/null || true
+fi
+
 echo ""
 exit 0

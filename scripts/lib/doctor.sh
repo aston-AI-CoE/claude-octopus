@@ -2,6 +2,7 @@
 # Claude Octopus — Environment Doctor Diagnostics
 # Extracted from orchestrate.sh
 # Source-safe: no main execution block.
+set -eo pipefail
 
 if ! declare -f _is_cursor_agent_binary >/dev/null 2>&1; then
     _doctor_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -77,6 +78,29 @@ cmd_update_clis() {
 }
 
 doctor_check_providers() {
+    local _doctor_lib_dir
+    _doctor_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local _octo_root="${OCTO_ROOT:-}"
+    if [[ -z "$_octo_root" ]]; then
+        _octo_root="$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null || true)"
+    fi
+    if [[ -z "$_octo_root" || ! -r "$_octo_root/scripts/lib/provider-versions.sh" ]]; then
+        _octo_root="$(cd "${_doctor_lib_dir}/../.." && pwd)"
+    fi
+
+    if [[ -r "$_octo_root/scripts/lib/provider-versions.sh" ]]; then
+        source "${_octo_root}/scripts/lib/provider-versions.sh"
+    fi
+    if ! type -t octo_version_ok >/dev/null 2>&1; then
+        # shellcheck disable=SC2317  # fallback stub
+        octo_version_ok() { return 0; }
+    fi
+    local _timeout_cmd=""
+    if command -v gtimeout &>/dev/null; then
+        _timeout_cmd="gtimeout"
+    elif command -v timeout &>/dev/null; then
+        _timeout_cmd="timeout"
+    fi
     # Claude Code version + compatibility
     local cc_ver="${CLAUDE_CODE_VERSION:-}"
     if [[ -n "$cc_ver" ]]; then
@@ -92,9 +116,9 @@ doctor_check_providers() {
         local codex_ver codex_path
         codex_ver=$(codex --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
         codex_path=$(command -v codex)
-        if [[ "$codex_ver" != "unknown" ]] && [[ "$codex_ver" =~ ^0\.(([0-9]{1,2})|9[0-9])\. ]]; then
+        if ! octo_version_ok "${codex_ver}" "${OCTO_CODEX_MIN_VERSION:-0.100.0}"; then
             doctor_add "codex-cli" "providers" "warn" \
-                "Codex CLI v${codex_ver} (outdated)" \
+                "Codex CLI v${codex_ver} (outdated, min: v${OCTO_CODEX_MIN_VERSION:-0.100.0})" \
                 "${codex_path} — run orchestrate.sh update-clis or: npm install -g @openai/codex"
         else
             doctor_add "codex-cli" "providers" "pass" \
@@ -110,8 +134,14 @@ doctor_check_providers() {
         local gemini_ver gemini_path
         gemini_ver=$(gemini --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
         gemini_path=$(command -v gemini)
-        doctor_add "gemini-cli" "providers" "pass" \
-            "Gemini CLI v${gemini_ver}" "$gemini_path"
+        if ! octo_version_ok "${gemini_ver}" "${OCTO_GEMINI_MIN_VERSION:-1.0.0}"; then
+            doctor_add "gemini-cli" "providers" "warn" \
+               "Gemini CLI v${gemini_ver} (outdated, min: v${OCTO_GEMINI_MIN_VERSION:-1.0.0})" \
+               "${gemini_path} — npm install -g @google/gemini-cli"
+        else
+            doctor_add "gemini-cli" "providers" "pass" \
+               "Gemini CLI v${gemini_ver}" "$gemini_path"
+        fi
     else
         doctor_add "gemini-cli" "providers" "warn" \
             "Gemini CLI not installed" "npm install -g @google/gemini-cli"
@@ -131,10 +161,25 @@ doctor_check_providers() {
         local ollama_health
         ollama_health=$(curl -sf http://localhost:11434/api/tags 2>/dev/null) || true
         if [[ -n "$ollama_health" ]]; then
-            local model_count
-            model_count=$(printf '%s' "$ollama_health" | grep -c '"name"' 2>/dev/null || echo "0")
-            doctor_add "ollama" "providers" "pass" \
-                "Ollama running (${model_count} models)" "http://localhost:11434"
+            local model_count stale_count
+            model_count=$(printf '%s' "$ollama_health" | grep -c '"name"' 2>/dev/null || true)
+            [[ "$model_count" =~ ^[0-9]+$ ]] || model_count=0
+            # Check model staleness via check-ollama-models.sh (Pre-mortem F2: sanitize to integer)
+            stale_count=0
+            local _check="${_octo_root}/scripts/helpers/check-ollama-models.sh"
+            if [[ -r "$_check" ]]; then
+                stale_count=$(bash "$_check" --count-stale 2>/dev/null)
+                stale_count=$(printf '%s' "$stale_count" | grep -oE '^[0-9]+$' || echo "0")
+                stale_count="${stale_count:-0}"
+            fi
+            if [[ "$stale_count" -gt 0 ]]; then
+                doctor_add "ollama" "providers" "warn" \
+                    "Ollama running (${model_count} models, ${stale_count} stale)" \
+                    "Run: ollama pull <model> to refresh stale models (threshold: ${OCTO_OLLAMA_STALE_DAYS:-30}d)"
+            else
+                doctor_add "ollama" "providers" "pass" \
+                    "Ollama running (${model_count} models)" "http://localhost:11434"
+            fi
         else
             doctor_add "ollama" "providers" "warn" \
                 "Ollama installed but server not running" "Run: ollama serve"
@@ -158,7 +203,17 @@ doctor_check_providers() {
         elif command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
             copilot_auth="gh-cli"
         fi
-        if [[ "$copilot_auth" != "none" ]]; then
+        local gh_ver
+        if [[ -n "$_timeout_cmd" ]]; then
+            gh_ver=$("$_timeout_cmd" 3 gh --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+        else
+            gh_ver=$(gh --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+        fi
+        if ! octo_version_ok "${gh_ver}" "${OCTO_GH_MIN_VERSION:-2.0.0}"; then
+            doctor_add "copilot-cli" "providers" "warn" \
+               "gh CLI v${gh_ver} (outdated, min: v${OCTO_GH_MIN_VERSION:-2.0.0})" \
+               "$(command -v gh) — gh extension upgrade --all"
+        elif [[ "$copilot_auth" != "none" ]]; then
             doctor_add "copilot-cli" "providers" "pass" \
                 "Copilot CLI installed (auth: ${copilot_auth})" "$(command -v copilot) — research/exploration via copilot -p"
         else
@@ -180,9 +235,19 @@ doctor_check_providers() {
         elif [[ -n "${QWEN_API_KEY:-}" ]]; then
             qwen_auth="env:QWEN_API_KEY"
         fi
-        if [[ "$qwen_auth" != "none" ]]; then
+        local qwen_ver
+        if [[ -n "$_timeout_cmd" ]]; then
+            qwen_ver=$("$_timeout_cmd" 3 qwen --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+        else
+            qwen_ver=$(qwen --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+        fi
+        if ! octo_version_ok "${qwen_ver}" "${OCTO_QWEN_MIN_VERSION:-9.10.0}"; then
+            doctor_add "qwen-cli" "providers" "warn" \
+               "Qwen CLI v${qwen_ver} (outdated, min: v${OCTO_QWEN_MIN_VERSION:-9.10.0})" \
+               "$(command -v qwen) — npm install -g @qwen-code/qwen-code"
+        elif [[ "$qwen_auth" != "none" ]]; then
             doctor_add "qwen-cli" "providers" "pass" \
-                "Qwen CLI installed (auth: ${qwen_auth})" "$(command -v qwen) — free-tier research via Qwen OAuth"
+                "Qwen CLI v${qwen_ver} (auth: ${qwen_auth})" "$(command -v qwen) — free-tier research via Qwen OAuth"
         else
             doctor_add "qwen-cli" "providers" "warn" \
                 "Qwen CLI installed but not authenticated" "Run: qwen (to trigger OAuth) or set QWEN_API_KEY"
@@ -236,12 +301,20 @@ doctor_check_providers() {
 
     # OpenCode CLI (optional — multi-provider router, v9.11.0)
     if command -v opencode &>/dev/null; then
+        local opencode_ver
+        if [[ -n "$_timeout_cmd" ]]; then
+            opencode_ver=$("$_timeout_cmd" 3 opencode --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+        else
+            opencode_ver=$(opencode --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+        fi
+        if ! octo_version_ok "${opencode_ver}" "${OCTO_OPENCODE_MIN_VERSION:-0.1.0}"; then
+            doctor_add "opencode-version" "providers" "warn" "OpenCode v${opencode_ver} (below floor v${OCTO_OPENCODE_MIN_VERSION:-0.1.0})" "$(command -v opencode) — npm install -g opencode-ai"
+        fi
         local opencode_auth="none"
-        # Portable timeout: prefer gtimeout (macOS via coreutils), fallback to timeout
-        local _timeout_cmd="timeout"
-        command -v gtimeout &>/dev/null && _timeout_cmd="gtimeout"
         if [[ -f "${HOME}/.local/share/opencode/auth.json" ]]; then
-            if "$_timeout_cmd" 3 opencode auth list &>/dev/null; then
+            if [[ -n "$_timeout_cmd" ]] && "$_timeout_cmd" 3 opencode auth list &>/dev/null; then
+                opencode_auth="multi"
+            elif [[ -z "$_timeout_cmd" ]] && opencode auth list &>/dev/null; then
                 opencode_auth="multi"
             else
                 opencode_auth="expired"
