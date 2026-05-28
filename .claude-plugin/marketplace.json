@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "nyldn plugins for Claude Code workflows.",
-    "version": "9.41.0"
+    "version": "9.41.1"
   },
   "plugins": [
     {
@@ -15,8 +15,8 @@
         "source": "url",
         "url": "https://github.com/nyldn/claude-octopus.git"
       },
-      "description": "v9.41.0 - /octo:council promoted to first-class workflow: structured 3/5/7-persona deliberation across Claude, Codex, Gemini, OpenCode with goal modes, adversarial styles, benchmark-aware routing, quorum/veto gates, and gated implementation handoff. 32 personas, 48 commands, 54 skills. Run /octo:setup.",
-      "version": "9.41.0",
+      "description": "v9.41.1 - Patch release for debate Gemini CLI model selection and provider version-floor/onboarding hardening. 32 personas, 48 commands, 54 skills. Run /octo:setup.",
+      "version": "9.41.1",
       "author": {
         "name": "nyldn",
         "url": "https://github.com/nyldn"

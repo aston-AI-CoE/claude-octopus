@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [9.41.1] - 2026-05-27
+
+### Fixed
+
+- Add the Gemini model flag to debate skill calls so selected Gemini models are honored (#422).
+
+### Changed
+
+- Include provider CLI version-floor enforcement and onboarding preflight/setup helpers merged after v9.41.0 (#419, #420).
+
 ## [9.41.0] - 2026-05-24
 
 ### Added
