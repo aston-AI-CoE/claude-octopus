@@ -10,7 +10,8 @@
 ### Changed
 
 - Default `claude-opus` routing now prefers Opus 4.8 on Claude Code v2.1.154+, then falls back to Opus 4.7 and 4.6.
-- Opus effort policy now follows the 4.8 default: `high` for ordinary work, `xhigh` for complex implementation, deep review, and long-running asynchronous workflows.
+- Opus effort policy now follows the 4.8 default: `high` for ordinary work, `xhigh` for complex implementation, deep review, and long-running asynchronous workflows. This phase-aware mapping applies to every supported Opus version (4.8, 4.7, and 4.6 on hosts that expose effort control), replacing the previous behavior of forcing `xhigh` on all phases; research and scoping phases now run at `high` instead of `xhigh`.
+- Behavioral test coverage for the routing change: `tests/unit/test-opus-48-routing.sh` asserts `opus_default_model` version preference and override, the `claude-opus-fast` wire flag, and the phase-to-effort mapping (the existing detection test only checked flag wiring).
 - Fast Opus guidance and pricing now distinguish Opus 4.8 fast mode (2x standard, $10/$50 MTok) from legacy Opus 4.6 fast mode (6x standard, $30/$150 MTok).
 - `/octo:doctor` now surfaces Opus 4.8, dynamic workflows, `.claude/skills` plugin auto-load, and EnterWorktree switching when the installed Claude Code version supports them.
 - Documentation now routes huge single-Claude migrations toward native Claude Code dynamic workflows and keeps Octopus positioned for multi-provider disagreement, councils, adversarial review, and validation.
