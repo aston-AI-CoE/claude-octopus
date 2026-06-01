@@ -22,6 +22,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# shellcheck source=scripts/lib/release-changelog.sh
+source "$SCRIPT_DIR/lib/release-changelog.sh"
+
 # --- Args ---
 
 if [[ $# -lt 2 ]]; then
@@ -151,31 +154,7 @@ sed -i '' "s/Version-[0-9]*\.[0-9]*\.[0-9]*-blue/Version-${VERSION}-blue/g" READ
 sed -i '' "s/Version [0-9]*\.[0-9]*\.[0-9]*/Version ${VERSION}/g" README.md
 echo "   README.md"
 
-# CHANGELOG
-CHANGELOG_ENTRY="## [${VERSION}] - ${DATE}"
-if ! grep -q "\\[${VERSION}\\]" CHANGELOG.md 2>/dev/null; then
-    # Prepend new entry
-    TEMP=$(mktemp)
-    echo "# Changelog" > "$TEMP"
-    echo "" >> "$TEMP"
-    echo "${CHANGELOG_ENTRY}" >> "$TEMP"
-    echo "" >> "$TEMP"
-    echo "### Changed" >> "$TEMP"
-    echo "" >> "$TEMP"
-    echo "- ${SUMMARY}" >> "$TEMP"
-    echo "" >> "$TEMP"
-    echo "---" >> "$TEMP"
-    echo "" >> "$TEMP"
-    if [[ -f CHANGELOG.md ]] && [[ "$(head -n 1 CHANGELOG.md)" == "# Changelog" ]]; then
-        tail -n +3 CHANGELOG.md >> "$TEMP"
-    else
-        cat CHANGELOG.md >> "$TEMP"
-    fi
-    mv "$TEMP" CHANGELOG.md
-    echo "   CHANGELOG.md (new entry)"
-else
-    echo "   CHANGELOG.md (entry already exists)"
-fi
+octo_release_update_changelog CHANGELOG.md "$VERSION" "$DATE" "$SUMMARY"
 
 echo ""
 

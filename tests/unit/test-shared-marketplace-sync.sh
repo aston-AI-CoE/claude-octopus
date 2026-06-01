@@ -13,6 +13,7 @@ test_suite "Shared Marketplace Sync"
 
 SYNC_SCRIPT="$PROJECT_ROOT/scripts/sync-shared-marketplace.sh"
 RELEASE_SCRIPT="$PROJECT_ROOT/scripts/release.sh"
+CHANGELOG_LIB="$PROJECT_ROOT/scripts/lib/release-changelog.sh"
 LOCAL_MARKETPLACE="$PROJECT_ROOT/.claude-plugin/marketplace.json"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/octo-shared-marketplace-test.XXXXXX")"
 
@@ -122,6 +123,49 @@ test_release_script_invokes_shared_marketplace_sync() {
     fi
 }
 
+test_release_promotes_unreleased_changelog_notes() {
+    test_case "release changelog helper promotes Unreleased notes into version entry"
+
+    local changelog="$TMP_DIR/CHANGELOG.md"
+    local unreleased_block version_block
+
+    cat > "$changelog" <<'MD'
+# Changelog
+
+## [Unreleased]
+
+### Added
+
+- Add Opus 4.8 routing.
+
+### Changed
+
+- Make council runner-backed by default.
+
+## [9.41.2] - 2026-05-28
+
+### Fixed
+
+- Previous patch release.
+MD
+
+    # shellcheck disable=SC1090
+    source "$CHANGELOG_LIB"
+    octo_release_update_changelog "$changelog" "9.42.0" "2026-06-02" "Release summary" >/tmp/octo-release-changelog.out
+
+    unreleased_block="$(awk '/^## \[Unreleased\]/{flag=1; next} /^## \[9\.42\.0\]/{flag=0} flag {print}' "$changelog")"
+    version_block="$(awk '/^## \[9\.42\.0\]/{flag=1; next} /^## \[9\.41\.2\]/{flag=0} flag {print}' "$changelog")"
+
+    if ! grep -q "Add Opus 4.8 routing" <<<"$unreleased_block" &&
+       grep -q "Add Opus 4.8 routing" <<<"$version_block" &&
+       grep -q "Make council runner-backed" <<<"$version_block" &&
+       grep -q "Previous patch release" "$changelog"; then
+        test_pass
+    else
+        test_fail "unreleased notes were not moved into the 9.42.0 entry"
+    fi
+}
+
 test_shared_marketplace_sync_updates_only_octo() {
     local remote="$TMP_DIR/plugins.git"
     local seed="$TMP_DIR/seed"
@@ -163,6 +207,7 @@ test_shared_marketplace_sync_updates_only_octo() {
 
 test_sync_script_exists
 test_release_script_invokes_shared_marketplace_sync
+test_release_promotes_unreleased_changelog_notes
 test_shared_marketplace_sync_updates_only_octo
 
 test_summary
