@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+## [9.42.1] - 2026-06-03
+
+
 ### Fixed
 
 - Honor global `--dry-run` flags placed after the command name so dry-run `probe`/`council` invocations do not spawn live provider helpers.
