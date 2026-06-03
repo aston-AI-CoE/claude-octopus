@@ -10,7 +10,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/helpers/test-framework.sh"
 test_suite "Intent Contract Skill Implementation"
 
-SKILL_FILE="$PROJECT_ROOT/.claude/skills/skill-intent-contract.md"
+SKILL_FILE="$(resolve_claude_skill_path "skill-intent-contract")"
 PLUGIN_JSON="$PROJECT_ROOT/.claude-plugin/plugin.json"
 
 
@@ -52,7 +52,7 @@ fi
 # Test 3: Check registration in plugin.json
 echo ""
 echo "Test 3: Checking if skill is registered in plugin.json..."
-if grep -q '"\./\.claude/skills/skill-intent-contract\.md"' "$PLUGIN_JSON"; then
+if grep -q '"\./skills/skill-intent-contract"' "$PLUGIN_JSON"; then
     pass "skill-intent-contract.md is registered in plugin.json"
 else
     fail "skill not registered" "Should be listed in plugin.json skills array"

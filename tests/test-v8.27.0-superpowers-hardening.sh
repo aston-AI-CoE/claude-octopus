@@ -11,6 +11,7 @@ source "$SCRIPT_DIR/helpers/test-framework.sh"
 test_suite "for v8.27.0 — Superpowers-Inspired Hardening"
 
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$PLUGIN_DIR"
 
 PASS=0
 FAIL=0
@@ -65,7 +66,7 @@ fi
 suite "2. Description Trap (Opaque Descriptions)"
 
 # 2.1 skill-debug — no process details in description
-DEBUG_DESC=$(grep '^description:' "$PLUGIN_DIR/.claude/skills/skill-debug.md" | head -1)
+DEBUG_DESC=$(grep '^description:' "$(resolve_claude_skill_path "skill-debug")" | head -1)
 if echo "$DEBUG_DESC" | grep -qiE "(phase|investigate|analyze|hypothesize|implement)"; then
   fail "skill-debug description leaks process details"
 else
@@ -73,7 +74,7 @@ else
 fi
 
 # 2.2 skill-tdd — no process details
-TDD_DESC=$(grep '^description:' "$PLUGIN_DIR/.claude/skills/skill-tdd.md" | head -1)
+TDD_DESC=$(grep '^description:' "$(resolve_claude_skill_path "skill-tdd")" | head -1)
 if echo "$TDD_DESC" | grep -qiE "(discipline|write.*first|failing test|red.green)"; then
   fail "skill-tdd description leaks process details"
 else
@@ -81,7 +82,7 @@ else
 fi
 
 # 2.3 skill-factory — no process details
-FACTORY_DESC=$(grep '^description:' "$PLUGIN_DIR/.claude/skills/skill-factory.md" | head -1)
+FACTORY_DESC=$(grep '^description:' "$(resolve_claude_skill_path "skill-factory")" | head -1)
 if echo "$FACTORY_DESC" | grep -qiE "(dark factory|spec.in|software.out|holdout|satisfaction)"; then
   fail "skill-factory description leaks process details"
 else
@@ -89,7 +90,7 @@ else
 fi
 
 # 2.4 skill-deep-research — no process details
-RESEARCH_DESC=$(grep '^description:' "$PLUGIN_DIR/.claude/skills/skill-deep-research.md" | head -1)
+RESEARCH_DESC=$(grep '^description:' "$(resolve_claude_skill_path "skill-deep-research")" | head -1)
 if echo "$RESEARCH_DESC" | grep -qiE "(multi.ai|parallel|cost transparency|provider)"; then
   fail "skill-deep-research description leaks process details"
 else
@@ -97,7 +98,7 @@ else
 fi
 
 # 2.5 flow-parallel — no process details
-PARALLEL_DESC=$(grep '^description:' "$PLUGIN_DIR/.claude/skills/flow-parallel.md" | head -1)
+PARALLEL_DESC=$(grep '^description:' "$(resolve_claude_skill_path "flow-parallel")" | head -1)
 if echo "$PARALLEL_DESC" | grep -qiE "(team of teams|claude instances|independent|compound)"; then
   fail "flow-parallel description leaks process details"
 else
@@ -111,7 +112,7 @@ suite "3. HARD-GATE XML Enforcement Tags"
 
 # 3.1-3.5 Check each skill for HARD-GATE tag
 for skill in skill-debug skill-tdd skill-factory skill-verify skill-deep-research; do
-  SKILL_FILE="$PLUGIN_DIR/.claude/skills/${skill}.md"
+  SKILL_FILE="$(resolve_claude_skill_path "$skill")"
   # skill-verify lives in OpenClaw format only (skills/skill-verify/SKILL.md)
   [[ ! -f "$SKILL_FILE" ]] && SKILL_FILE="$PLUGIN_DIR/skills/${skill}/SKILL.md"
   if grep -q '<HARD-GATE>' "$SKILL_FILE" 2>/dev/null && grep -q '</HARD-GATE>' "$SKILL_FILE" 2>/dev/null; then
@@ -128,7 +129,7 @@ suite "4. Human-Only Invocation Flag"
 
 # 4.1-4.5 Check each skill for human_only
 for skill in skill-factory skill-deep-research skill-security-audit flow-parallel skill-ship; do
-  SKILL_FILE="$PLUGIN_DIR/.claude/skills/${skill}.md"
+  SKILL_FILE="$(resolve_claude_skill_path "$skill")"
   if grep -q 'invocation: human_only' "$SKILL_FILE"; then
     pass "${skill} has invocation: human_only"
   else
@@ -142,7 +143,8 @@ done
 suite "5. Staged Review Pipeline"
 
 # 5.1 Skill file exists
-if [[ -f "$PLUGIN_DIR/.claude/skills/skill-staged-review.md" ]]; then
+STAGED_REVIEW_SKILL="$(resolve_claude_skill_path "skill-staged-review")"
+if [[ -f "$STAGED_REVIEW_SKILL" ]]; then
   pass "skill-staged-review.md exists"
 else
   fail "skill-staged-review.md missing"
@@ -156,15 +158,15 @@ else
 fi
 
 # 5.3 plugin.json references skill
-if grep -q "skill-staged-review.md" "$PLUGIN_DIR/.claude-plugin/plugin.json"; then
+if grep -q '"\./skills/skill-staged-review"' "$PLUGIN_DIR/.claude-plugin/plugin.json"; then
   pass "plugin.json registers staged-review skill"
 else
   fail "plugin.json missing staged-review skill"
 fi
 
 # 5.4 Two-stage structure (contains Stage 1 and Stage 2)
-if grep -q "Stage 1" "$PLUGIN_DIR/.claude/skills/skill-staged-review.md" && \
-   grep -q "Stage 2" "$PLUGIN_DIR/.claude/skills/skill-staged-review.md"; then
+if grep -q "Stage 1" "$STAGED_REVIEW_SKILL" && \
+   grep -q "Stage 2" "$STAGED_REVIEW_SKILL"; then
   pass "staged-review has two-stage structure"
 else
   fail "staged-review missing two-stage structure"

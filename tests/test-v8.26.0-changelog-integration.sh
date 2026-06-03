@@ -18,7 +18,7 @@ cat "$ORCHESTRATE_SH" "$(dirname "$ORCHESTRATE_SH")/lib/"*.sh > "$ALL_SRC" 2>/de
 trap 'rm -f "$ALL_SRC"' EXIT
 HOOKS_JSON="$PROJECT_ROOT/.claude-plugin/hooks.json"
 CONFIG_CHANGE_HANDLER="$PROJECT_ROOT/hooks/config-change-handler.sh"
-SKILL_DOCTOR="$PROJECT_ROOT/.claude/skills/skill-doctor.md"
+SKILL_DOCTOR="$(resolve_claude_skill_path "skill-doctor")"
 CONFIG_YAML="$PROJECT_ROOT/agents/config.yaml"
 
 

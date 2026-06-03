@@ -12,6 +12,7 @@ source "$SCRIPT_DIR/helpers/test-framework.sh"
 test_suite "-fleet-diversity.sh — Tests for dynamic fleet building and provider diversity"
 
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$PLUGIN_DIR"
 FLEET_SCRIPT="$PLUGIN_DIR/scripts/helpers/build-fleet.sh"
 CHECK_SCRIPT="$PLUGIN_DIR/scripts/helpers/check-providers.sh"
 
@@ -152,7 +153,7 @@ else
 fi
 
 # 3.2: flow-discover .claude skill references build-fleet.sh
-if grep -q "build-fleet.sh" "$PLUGIN_DIR/.claude/skills/flow-discover.md"; then
+if grep -q "build-fleet.sh" "$(resolve_claude_skill_path "flow-discover")"; then
     pass "3.2 .claude/skills/flow-discover.md references build-fleet.sh"
 else
     fail "3.2 .claude/skills/flow-discover.md missing build-fleet.sh reference"
@@ -195,12 +196,15 @@ fi
 
 # 3.7: No hardcoded state metrics (update_metrics "provider" "codex/gemini/claude")
 stale_metrics=0
-for skill_file in "$PLUGIN_DIR"/skills/*/SKILL.md "$PLUGIN_DIR"/.claude/skills/*.md; do
+while IFS= read -r skill_file; do
     [[ ! -f "$skill_file" ]] && continue
     if grep -q 'update_metrics "provider" "codex"' "$skill_file" 2>/dev/null; then
         stale_metrics=$((stale_metrics + 1))
     fi
-done
+done < <({
+    find "$PLUGIN_DIR/skills" -mindepth 2 -maxdepth 2 -type f -name 'SKILL.md' -print 2>/dev/null
+    list_claude_skill_files
+} | sort -u)
 if [[ $stale_metrics -eq 0 ]]; then
     pass "3.7 No hardcoded state metric provider tracking"
 else

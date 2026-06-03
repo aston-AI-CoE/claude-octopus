@@ -89,7 +89,7 @@ fi
 # Test 7: Skill file has priority triggers
 echo ""
 echo "Test 7: Validating skill priority triggers..."
-SKILL_FILE="$PROJECT_ROOT/.claude/skills/skill-parallel-agents.md"
+SKILL_FILE="$(resolve_claude_skill_path "skill-parallel-agents")"
 if grep -q 'PRIORITY TRIGGERS' "$SKILL_FILE"; then
     pass "PRIORITY TRIGGERS section exists in skill file"
 else

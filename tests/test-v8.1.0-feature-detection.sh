@@ -187,8 +187,16 @@ else
     assert_fail "3.2 plugin.json version is 8.x/9.x" "Got: $pj_version"
 fi
 
-# 3.3: marketplace.json version is current
-mj_version=$(grep '"version"' "$MARKETPLACE_JSON" | tail -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+# 3.3: marketplace.json version is current for the octo plugin entry
+mj_version=$(python3 - "$MARKETPLACE_JSON" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+for plugin in data.get("plugins", []):
+    if plugin.get("name") == "octo":
+        print(plugin.get("version", ""))
+        break
+PY
+)
 if [[ "$mj_version" =~ ^(8|9)\. ]]; then
     assert_pass "3.3 marketplace.json version is 8.x/9.x ($mj_version)"
 else
@@ -209,11 +217,12 @@ else
     assert_fail "3.5 README.md version badge is 8.x/9.x"
 fi
 
-# 3.6: README Claude Code badge is v2.1.33+ (accept newer patch/minor)
-if grep -Eq 'v2\.1\.(3[3-9]|[4-9][0-9])\+' "$README_MD"; then
-    assert_pass "3.6 README.md Claude Code badge is v2.1.33+"
+# 3.6: README Claude Code badge matches the current runtime minimum
+cc_minimum=$(grep -A 3 'local min_version=' "$ALL_SRC" | sed -n 's/.*local min_version="\([^"]*\)".*/\1/p' | head -1)
+if [[ -n "$cc_minimum" ]] && grep -Fq "v${cc_minimum}+" "$README_MD"; then
+    assert_pass "3.6 README.md Claude Code badge matches runtime minimum ($cc_minimum)"
 else
-    assert_fail "3.6 README.md Claude Code badge is v2.1.33+"
+    assert_fail "3.6 README.md Claude Code badge matches runtime minimum" "Expected: v${cc_minimum:-unknown}+"
 fi
 
 # 3.7: orchestrate.sh passes bash -n syntax check

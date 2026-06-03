@@ -22,7 +22,8 @@ ALL_SRC=$(mktemp)
 cat "$ORCHESTRATE_SH" "$(dirname "$ORCHESTRATE_SH")/lib/"*.sh > "$ALL_SRC" 2>/dev/null
 trap 'rm -f "$ALL_SRC"' EXIT
 BRIDGE_SH="${PLUGIN_DIR}/scripts/agent-teams-bridge.sh"
-FLOW_DEVELOP_MD="${PLUGIN_DIR}/.claude/skills/flow-develop.md"
+PROJECT_ROOT="$PLUGIN_DIR"
+FLOW_DEVELOP_MD="$(resolve_claude_skill_path "flow-develop")"
 
 
 TESTS_RUN=0

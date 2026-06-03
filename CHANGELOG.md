@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [9.42.1] - 2026-06-03
+
+
+### Fixed
+
+- Honor global `--dry-run` flags placed after the command name so dry-run `probe`/`council` invocations do not spawn live provider helpers.
+- Register packaged `/octo:doctor` and `/octo:preflight` command files and update release validation for the plugin namespace.
+- Clean up `CLAUDE_CODE_DISABLE_CRON` after parallel execution, matching the existing embrace workflow cleanup.
+
+### Changed
+
+- Refresh README, packaged README, marketplace, and adapter command-count strings from the current plugin manifest during release so command/skill/persona counts do not drift.
+- Update legacy root tests to resolve current directory-style skill entries and assert current probe synthesis behavior, marketplace parsing, and frontmatter stripping.
+
 ## [9.42.0] - 2026-06-02
 
 

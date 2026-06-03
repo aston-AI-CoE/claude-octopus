@@ -121,6 +121,33 @@ if persona_count == 0:
     print('ERROR: agents/personas contains no persona markdown files', file=sys.stderr)
     raise SystemExit(1)
 
+count_phrase = f'{persona_count} personas, {command_count} commands, {skill_count} skills'
+expert_count_phrase = f'{persona_count} expert personas, {command_count} commands, {skill_count} skills'
+specialized_count_phrase = f'{command_count} commands, {skill_count} skills, {persona_count} specialized personas'
+
+for path in ('README.md', '.claude-plugin/README.md'):
+    readme_path = pathlib.Path(path)
+    text = readme_path.read_text()
+    text = re.sub(r'\*\*\d+ specialized personas\*\*', f'**{persona_count} specialized personas**', text)
+    text = re.sub(r'\*\*\d+ commands\*\*', f'**{command_count} commands**', text)
+    text = re.sub(r'\*\*\d+ skills\*\*', f'**{skill_count} skills**', text)
+    text = re.sub(r'\b\d+ commands, \d+ skills, \d+ specialized personas\b', specialized_count_phrase, text)
+    text = re.sub(r'\ball \d+ commands\b', f'all {command_count} commands', text)
+    readme_path.write_text(text)
+print('   README count surfaces')
+
+path = pathlib.Path('.claude-plugin/marketplace.json')
+with open(path) as f:
+    data = json.load(f)
+for item in data.get('plugins', []):
+    if item.get('name') == 'octo':
+        desc = item.get('description', '')
+        item['description'] = re.sub(r'\d+ personas, \d+ commands, \d+ skills', count_phrase, desc)
+with open(path, 'w') as f:
+    json.dump(data, f, indent=2)
+    f.write('\n')
+print('   .claude-plugin/marketplace.json counts')
+
 for path in ('.codex-plugin/plugin.json', '.cursor-plugin/plugin.json', '.factory-plugin/plugin.json'):
     with open(path) as f:
         data = json.load(f)
@@ -128,10 +155,10 @@ for path in ('.codex-plugin/plugin.json', '.cursor-plugin/plugin.json', '.factor
     if path == '.codex-plugin/plugin.json':
         interface = data.setdefault('interface', {})
         desc = interface.get('longDescription', '')
-        desc = re.sub(r'\\d+ personas, \\d+ commands, \\d+ skills', f'{persona_count} personas, {command_count} commands, {skill_count} skills', desc)
+        desc = re.sub(r'\\d+ personas, \\d+ commands, \\d+ skills', count_phrase, desc)
         interface['longDescription'] = desc
     if path == '.factory-plugin/plugin.json':
-        data['description'] = f\"Multi-tentacled orchestrator using Double Diamond methodology. v{version}. {persona_count} expert personas, {command_count} commands, {skill_count} skills. Commands '/octo:*'. Run /octo:setup for guided setup. Compatible with Claude Code and Factory AI Droid.\"
+        data['description'] = f\"Multi-tentacled orchestrator using Double Diamond methodology. v{version}. {expert_count_phrase}. Commands '/octo:*'. Run /octo:setup for guided setup. Compatible with Claude Code and Factory AI Droid.\"
     with open(path, 'w') as f:
         json.dump(data, f, indent=2)
         f.write('\\n')
@@ -144,7 +171,7 @@ data.setdefault('metadata', {})['version'] = version
 for item in data.get('plugins', []):
     if item.get('name') == 'claude-octopus':
         item['version'] = version
-        item['description'] = f'v{version} - Multi-AI orchestration with Double Diamond workflow. {persona_count} personas, {command_count} commands, {skill_count} skills. Run /octo:setup after install.'
+        item['description'] = f'v{version} - Multi-AI orchestration with Double Diamond workflow. {count_phrase}. Run /octo:setup after install.'
 with open(path, 'w') as f:
     json.dump(data, f, indent=2)
     f.write('\\n')

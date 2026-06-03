@@ -315,7 +315,7 @@ else
 fi
 
 # Test 7.3: flow-discover.md includes perplexity
-if grep -q '🟣.*Perplexity' "$PROJECT_ROOT/.claude/skills/flow-discover.md"; then
+if grep -q '🟣.*Perplexity' "$(resolve_claude_skill_path "flow-discover")"; then
     pass "flow-discover.md has 🟣 Perplexity indicator"
 else
     fail "flow-discover.md missing Perplexity indicator"

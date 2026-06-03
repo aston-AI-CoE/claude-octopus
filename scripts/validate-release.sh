@@ -268,10 +268,8 @@ COMMAND_FILES=$(ls "$ROOT_DIR/.claude/commands/"*.md 2>/dev/null | xargs -n1 bas
 # Get commands registered in plugin.json
 REGISTERED_COMMANDS=$(grep -o '\.claude/commands/[^"]*\.md' "$ROOT_DIR/.claude-plugin/plugin.json" | sed 's|.*\.claude/commands/||' | sort)
 
-if echo "$REGISTERED_COMMANDS" | grep -q '^doctor\.md$' || [[ -f "$ROOT_DIR/.claude/commands/doctor.md" ]] || grep -R "^command:[[:space:]]*doctor$" "$ROOT_DIR/.claude/commands" >/dev/null 2>&1; then
-    echo -e "  ${RED}ERROR: Octopus must not register 'doctor' as a slash command; bare /doctor is reserved for Claude Code native diagnostics${NC}"
-    ((errors++)) || true
-fi
+# Plugin commands are namespaced by .claude-plugin/plugin.json (`octo`), so
+# command: doctor exposes /octo:doctor rather than a bare /doctor command.
 
 # Find unregistered commands
 for cmd_file in $COMMAND_FILES; do

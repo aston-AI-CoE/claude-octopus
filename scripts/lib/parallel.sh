@@ -121,16 +121,24 @@ validate_agent_type() {
 
 parallel_execute() {
     local tasks_file="${1:-$TASKS_FILE}"
+    local _parallel_cron_disabled=false
+    _parallel_cleanup_cron() {
+        if [[ "$_parallel_cron_disabled" == "true" ]]; then
+            unset CLAUDE_CODE_DISABLE_CRON 2>/dev/null || true
+        fi
+    }
 
     # v8.48.0: Disable cron during parallel execution to prevent interference
     if [[ "$SUPPORTS_DISABLE_CRON_ENV" == "true" ]]; then
         export CLAUDE_CODE_DISABLE_CRON=1
+        _parallel_cron_disabled=true
         log DEBUG "Cron jobs disabled for parallel execution duration"
     fi
 
     if [[ ! -f "$tasks_file" ]]; then
         log ERROR "Tasks file not found: $tasks_file"
         log INFO "Run '$(basename "$0") init' to create a template"
+        _parallel_cleanup_cron
         return 1
     fi
 
@@ -138,18 +146,21 @@ parallel_execute() {
 
     if ! command -v jq &> /dev/null; then
         log ERROR "jq is required for parallel execution. Install with: brew install jq"
+        _parallel_cleanup_cron
         return 1
     fi
 
     # SECURITY: Validate JSON structure first
     if ! jq -e . "$tasks_file" >/dev/null 2>&1; then
         log ERROR "Invalid JSON in tasks file: $tasks_file"
+        _parallel_cleanup_cron
         return 1
     fi
 
     local task_count
     task_count=$(jq '.tasks | length' "$tasks_file" 2>/dev/null) || {
         log ERROR "Failed to read tasks array from file"
+        _parallel_cleanup_cron
         return 1
     }
     log INFO "Found $task_count tasks"
@@ -232,6 +243,9 @@ parallel_execute() {
     log INFO "All $task_count tasks processed ($((task_count - skipped)) executed, $skipped skipped)"
     type render_agent_summary >/dev/null 2>&1 && render_agent_summary
     aggregate_results
+    local aggregate_status=$?
+    _parallel_cleanup_cron
+    return "$aggregate_status"
 }
 
 map_reduce() {

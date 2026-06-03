@@ -55,6 +55,29 @@ resolve_claude_skill_path() {
     fi
 }
 
+claude_skill_slug() {
+    local path="$1"
+    local base
+    base="$(basename "$path")"
+
+    if [[ "$base" == "SKILL.md" ]]; then
+        basename "$(dirname "$path")"
+    else
+        basename "$path" .md
+    fi
+}
+
+list_claude_skill_files() {
+    local root="${PROJECT_ROOT:-$(pwd)}"
+
+    [[ -d "$root/.claude/skills" ]] || return 0
+
+    {
+        find "$root/.claude/skills" -maxdepth 1 -type f -name '*.md' -print 2>/dev/null
+        find "$root/.claude/skills" -mindepth 2 -maxdepth 2 -type f -name 'SKILL.md' -print 2>/dev/null
+    } | sort
+}
+
 resolve_claude_skill_template_path() {
     local name="$1"
     local root="${PROJECT_ROOT:-$(pwd)}"

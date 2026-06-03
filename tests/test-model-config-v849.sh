@@ -359,7 +359,7 @@ fi
 
 # Verify health checks cover all 5 providers
 for provider in codex gemini claude perplexity openrouter; do
-    if grep -A 60 'check_provider_health()' "$_ORCH_ALL_TMP" | grep -q "$provider)"; then
+    if grep -A 120 'check_provider_health()' "$_ORCH_ALL_TMP" | grep -q "$provider)"; then
         pass "Health check covers $provider"
     else
         fail "Health check missing $provider"
@@ -374,7 +374,7 @@ else
 fi
 
 # Verify health check is wired into run_agent_sync
-if grep -A 100 'run_agent_sync()' "$_ORCH_ALL_TMP" | grep -q 'check_provider_health'; then
+if grep -A 160 'run_agent_sync()' "$_ORCH_ALL_TMP" | grep -q 'check_provider_health'; then
     pass "run_agent_sync() calls check_provider_health() before dispatch"
 else
     fail "run_agent_sync() not wired to health check"
@@ -523,7 +523,8 @@ else
 fi
 
 # Verify lint/typecheck checklist in flow-develop.md
-DEVELOP_SKILL="${SCRIPT_DIR}/../.claude/skills/flow-develop.md"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+DEVELOP_SKILL="$(resolve_claude_skill_path "flow-develop")"
 if grep -q 'Lint/typecheck commands run' "$DEVELOP_SKILL"; then
     pass "flow-develop.md includes lint/typecheck in checklist"
 else
@@ -545,7 +546,7 @@ else
 fi
 
 # Verify lint/typecheck in flow-deliver.md
-DELIVER_SKILL="${SCRIPT_DIR}/../.claude/skills/flow-deliver.md"
+DELIVER_SKILL="$(resolve_claude_skill_path "flow-deliver")"
 if grep -q 'lint/typecheck' "$DELIVER_SKILL"; then
     pass "flow-deliver.md includes lint/typecheck quality step"
 else
@@ -632,8 +633,9 @@ else
     fail "aggregate_results() synthesis prompt missing minority opinion rule"
 fi
 
-# Verify synthesize_probe_results uses ranking
-if grep -A 100 'synthesize_probe_results()' "$_ORCH_ALL_TMP" | grep -q 'rank_results_by_signals\|score_result_file'; then
+# Verify synthesize_probe_results uses ranking directly or via compact context helper
+if grep -A 140 'synthesize_probe_results()' "$_ORCH_ALL_TMP" | grep -q 'build_probe_synthesis_context' && \
+   grep -A 80 'build_probe_synthesis_context()' "$_ORCH_ALL_TMP" | grep -q 'rank_results_by_signals\|score_result_file'; then
     pass "synthesize_probe_results() uses quality ranking"
 else
     fail "synthesize_probe_results() not using quality ranking"

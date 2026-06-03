@@ -4,6 +4,7 @@
 
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/helpers/test-framework.sh"
 test_suite "Comprehensive test suite for Phases 1-3"
 
@@ -200,7 +201,7 @@ test_start "All flow skills have enforcement"
 flow_skills=("flow-discover" "flow-define" "flow-develop" "flow-deliver")
 all_have_enforcement=true
 for skill in "${flow_skills[@]}"; do
-    if ! grep -q "execution_mode: enforced" ".claude/skills/${skill}.md" 2>/dev/null; then
+    if ! grep -q "execution_mode: enforced" "$(resolve_claude_skill_path "$skill")" 2>/dev/null; then
         test_fail "$skill missing enforcement"
         all_have_enforcement=false
     fi
@@ -211,7 +212,8 @@ fi
 
 # Test 13: Count skills with enforcement
 test_start "Skills with enforcement count"
-enforcement_count=$(grep -l "execution_mode: enforced" .claude/skills/*.md | wc -l | tr -d ' ')
+skills_with_enforcement=$(list_claude_skill_files | xargs grep -l "execution_mode: enforced" 2>/dev/null || true)
+enforcement_count=$(echo "$skills_with_enforcement" | sed '/^$/d' | wc -l | tr -d ' ')
 if [ "$enforcement_count" -ge 16 ]; then
     test_pass
 else
@@ -220,7 +222,6 @@ fi
 
 # Test 14: Validation gates have required fields
 test_start "Enforcement skills have validation_gates"
-skills_with_enforcement=$(grep -l "execution_mode: enforced" .claude/skills/*.md)
 all_have_gates=true
 for skill in $skills_with_enforcement; do
     if ! grep -q "validation_gates:" "$skill" 2>/dev/null; then
@@ -319,7 +320,7 @@ fi
 
 # Test 23: flow-define has phase discussion step
 test_start "flow-define has phase discussion step"
-if grep -q "Phase Discussion" ".claude/skills/flow-define.md"; then
+if grep -q "Phase Discussion" "$(resolve_claude_skill_path "flow-define")"; then
     test_pass
 else
     test_fail "flow-define missing phase discussion step"
@@ -327,7 +328,7 @@ fi
 
 # Test 24: flow-define uses AskUserQuestion
 test_start "flow-define references AskUserQuestion"
-if grep -q "AskUserQuestion" ".claude/skills/flow-define.md"; then
+if grep -q "AskUserQuestion" "$(resolve_claude_skill_path "flow-define")"; then
     test_pass
 else
     test_fail "flow-define missing AskUserQuestion reference"
@@ -335,7 +336,7 @@ fi
 
 # Test 25: flow-define creates context file
 test_start "flow-define creates context file"
-if grep -q "create_templated_context" ".claude/skills/flow-define.md"; then
+if grep -q "create_templated_context" "$(resolve_claude_skill_path "flow-define")"; then
     test_pass
 else
     test_fail "flow-define missing context creation"
@@ -370,7 +371,7 @@ fi
 test_start "Flow skills read prior state"
 flow_with_state=0
 for skill in "${flow_skills[@]}"; do
-    if grep -q "state-manager.sh.*read_state\|get_context\|get_decisions" ".claude/skills/${skill}.md"; then
+    if grep -q "state-manager.sh.*read_state\|get_context\|get_decisions" "$(resolve_claude_skill_path "$skill")"; then
         flow_with_state=$((flow_with_state + 1))
     fi
 done
@@ -384,7 +385,7 @@ fi
 test_start "Flow skills update state"
 flow_with_updates=0
 for skill in "${flow_skills[@]}"; do
-    if grep -q "update_context\|write_decision\|update_metrics" ".claude/skills/${skill}.md"; then
+    if grep -q "update_context\|write_decision\|update_metrics" "$(resolve_claude_skill_path "$skill")"; then
         flow_with_updates=$((flow_with_updates + 1))
     fi
 done

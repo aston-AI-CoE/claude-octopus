@@ -2161,6 +2161,47 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     COMMAND="${1:-help}"
     shift || true
 
+    # Accept common global flags after the command as well as before it.
+    # This keeps dry-runs from executing live providers when users type:
+    #   octopus probe "topic" --dry-run
+    _late_args=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -n|--dry-run) DRY_RUN=true; shift ;;
+            --debug) OCTOPUS_DEBUG=true; VERBOSE=true; shift ;;
+            -v|--verbose) VERBOSE=true; shift ;;
+            -Q|--quick) FORCE_TIER="trivial"; shift ;;
+            -P|--premium) FORCE_TIER="premium"; shift ;;
+            --tier)
+                if [[ -n "${2:-}" ]]; then
+                    FORCE_TIER="$2"
+                    shift 2
+                else
+                    _late_args+=("$1")
+                    shift
+                fi
+                ;;
+            --provider)
+                if [[ -n "${2:-}" ]]; then
+                    FORCE_PROVIDER="$2"
+                    shift 2
+                else
+                    _late_args+=("$1")
+                    shift
+                fi
+                ;;
+            --cost-first) FORCE_COST_FIRST=true; shift ;;
+            --quality-first) FORCE_QUALITY_FIRST=true; shift ;;
+            --openrouter-nitro) OPENROUTER_ROUTING_OVERRIDE=":nitro"; shift ;;
+            --openrouter-floor) OPENROUTER_ROUTING_OVERRIDE=":floor"; shift ;;
+            *)
+                _late_args+=("$1")
+                shift
+                ;;
+        esac
+    done
+    set -- "${_late_args[@]}"
+
 # Check for first-run on commands that need setup (skip for help/setup/preflight)
 if [[ "$COMMAND" != "help" && "$COMMAND" != "setup" && "$COMMAND" != "preflight" && "$COMMAND" != "-h" && "$COMMAND" != "--help" ]]; then
     check_first_run || true  # Show hint but don't block

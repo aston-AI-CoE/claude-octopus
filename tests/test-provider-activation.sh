@@ -227,16 +227,12 @@ else
     fail "5.3 get_dispatch_strategy function missing"
 fi
 
-# 5.4: synthesis uses >500 byte threshold to filter probe results
-if grep -rA 5 'synthesize_probe_results' $SCRIPTS_ALL | grep -q '500\|file_size.*gt'; then
-    pass "5.4 Synthesis filters probe results by minimum size (>500 bytes)"
+# 5.4: synthesis admits short-but-usable probe findings instead of using a hard byte cutoff
+if grep -rA 30 'synthesize_probe_results()' $SCRIPTS_ALL | grep -q 'probe_result_file_is_usable' && \
+   grep -rA 80 'build_probe_synthesis_context()' $SCRIPTS_ALL | grep -q 'probe_result_file_is_usable'; then
+    pass "5.4 Synthesis classifies non-empty probe results without a hard byte cutoff"
 else
-    # Check in the function body
-    if grep -rA 30 'synthesize_probe_results()' $SCRIPTS_ALL | grep -q '500'; then
-        pass "5.4 Synthesis filters probe results by minimum size (>500 bytes)"
-    else
-        fail "5.4 Synthesis doesn't filter small/empty probe results"
-    fi
+    fail "5.4 Synthesis should classify usable probe results before synthesis"
 fi
 
 # 5.5: Graceful degradation with partial results

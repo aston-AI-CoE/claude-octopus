@@ -173,7 +173,7 @@ else
 fi
 
 # 2.7: load_agent_skill_content strips YAML frontmatter (awk pattern)
-if grep -A 10 'load_agent_skill_content()' "$ALL_SRC" | grep -q 'in_fm.*past_fm'; then
+if grep -A 25 'load_agent_skill_content()' "$ALL_SRC" | grep -q 'in_fm.*past_fm'; then
     assert_pass "2.7 load_agent_skill_content strips YAML frontmatter (awk pattern)"
 else
     assert_fail "2.7 load_agent_skill_content strips YAML frontmatter (awk pattern)"
@@ -260,8 +260,16 @@ else
     assert_fail "4.2 plugin.json version is 8.x/9.x" "Got: $pj_version"
 fi
 
-# 4.3: marketplace.json version is 8.x/9.x
-mj_version=$(grep '"version"' "$MARKETPLACE_JSON" | tail -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+# 4.3: marketplace.json version is 8.x/9.x for the octo plugin entry
+mj_version=$(python3 - "$MARKETPLACE_JSON" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+for plugin in data.get("plugins", []):
+    if plugin.get("name") == "octo":
+        print(plugin.get("version", ""))
+        break
+PY
+)
 if [[ "$mj_version" =~ ^(8|9)\. ]]; then
     assert_pass "4.3 marketplace.json version is 8.x/9.x ($mj_version)"
 else

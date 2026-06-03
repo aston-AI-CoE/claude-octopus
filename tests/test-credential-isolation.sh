@@ -11,6 +11,7 @@ source "$SCRIPT_DIR/helpers/test-framework.sh"
 test_suite "for credential isolation (v8.32.0)"
 
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$PLUGIN_DIR"
 ORCH="$PLUGIN_DIR/scripts/orchestrate.sh"
 # v9.12: Search orchestrate.sh + lib/*.sh for decomposed functions
 ALL_SRC=$(mktemp)
@@ -148,7 +149,7 @@ fi
 # ─────────────────────────────────────────────────────────────────────
 suite "3. Parallel Work Package Isolation"
 
-PARALLEL_SKILL="$PLUGIN_DIR/.claude/skills/flow-parallel.md"
+PARALLEL_SKILL="$(resolve_claude_skill_path "flow-parallel")"
 
 # 3.1 launch.sh template strips provider keys
 if grep -q 'unset OPENAI_API_KEY' "$PARALLEL_SKILL"; then

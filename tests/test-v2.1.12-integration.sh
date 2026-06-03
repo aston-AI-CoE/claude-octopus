@@ -180,14 +180,15 @@ test_flow_skill_frontmatter() {
     run_test "Flow skills have v2.1.12+ frontmatter"
 
     local flow_skills=(
-        "flow-discover.md"
-        "flow-define.md"
-        "flow-develop.md"
-        "flow-deliver.md"
+        "flow-discover"
+        "flow-define"
+        "flow-develop"
+        "flow-deliver"
     )
 
     for skill in "${flow_skills[@]}"; do
-        local skill_path="${PROJECT_ROOT}/.claude/skills/${skill}"
+        local skill_path
+        skill_path="$(resolve_claude_skill_path "$skill")"
 
         if [[ ! -f "$skill_path" ]]; then
             log_fail "Skill $skill not found"

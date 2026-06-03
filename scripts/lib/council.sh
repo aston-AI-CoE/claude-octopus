@@ -2252,6 +2252,10 @@ council_run() {
 
     council_parse_args "$@" || return $?
 
+    if [[ "${DRY_RUN:-false}" == "true" ]]; then
+        COUNCIL_DRY_RUN="true"
+    fi
+
     if [[ -z "$COUNCIL_TASK" ]]; then
         council_error_usage "missing task"
         return 2
