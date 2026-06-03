@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [9.42.2] - 2026-06-03
+
+### Changed
+
+- Sync Beads remote metadata
+
 ## [9.42.1] - 2026-06-03
 
 
