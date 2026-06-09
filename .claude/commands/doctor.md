@@ -35,6 +35,6 @@ AskUserQuestion({
 Run the diagnostic script:
 
 ```bash
-cd "${HOME}/.claude-octopus/plugin" && bash scripts/doctor.sh
+bash "${HOME}/.claude-octopus/plugin/scripts/doctor.sh"
 ```
 

@@ -140,7 +140,21 @@ resolve_octopus_model() {
                         resolved_model=$(resolve_octopus_model "$ref_provider" "$ref_type" "" "")
                     fi
                 else
-                    resolved_model="$routed"
+                    # Bare provider names in routing values are provider routes, not
+                    # model names. "researcher": "perplexity" means "route this role
+                    # to the perplexity provider" — it must never become
+                    # `codex exec --model perplexity` (bug 260609). Treat a bare
+                    # provider name like "provider:" with no model: skip for other
+                    # providers, fall through to lower tiers for the provider itself.
+                    case "$routed" in
+                        codex|gemini|claude|perplexity|qwen|copilot|opencode|ollama|openrouter|cursor-agent|vibe)
+                            [[ -n "$_trace" ]] && echo "[model-trace] Tier 3 (phase/role routing): SKIP (route '$routed' is a provider name, not a model — resolving for $provider)" >&2
+                            routed=""
+                            ;;
+                        *)
+                            resolved_model="$routed"
+                            ;;
+                    esac
                 fi
                 if [[ -n "$routed" ]]; then
                     [[ -n "$_trace" ]] && echo "[model-trace] Tier 3 (phase/role routing): $resolved_model ← SELECTED (route: $routed)" >&2

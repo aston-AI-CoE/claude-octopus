@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Providers dispatched from the plugin directory instead of the user's project** (bug report 260609). Command docs instructed `cd "${HOME}/.claude-octopus/plugin"` before `orchestrate.sh`, so `PROJECT_ROOT=$PWD` pointed at the plugin checkout and every provider sandbox (codex workdir, gemini workspace, copilot, claude subagents) could not read project files. Docs now invoke `orchestrate.sh` by absolute path from the project directory; `orchestrate.sh` falls back to `CLAUDE_PROJECT_DIR` (or warns) when invoked from inside the plugin install; `OCTOPUS_PROJECT_DIR` added as an explicit override; `probe-single` now cds to `PROJECT_ROOT` before dispatch.
+- **Bare provider names in `routing.roles`/`routing.phases` leaked as model names.** `"researcher": "perplexity"` produced `codex exec --model perplexity` (400 on ChatGPT accounts) and a gemini model 404 plus fallback retry. The model resolver now treats bare provider names as provider routes and falls through to the provider's own default model.
+- **Spawned `claude --print` subagents could not Read files** ("Read is blocked in the current permission mode"). Claude dispatch commands now pre-approve `Read,Glob,Grep`; implementer/developer roles additionally run with `--permission-mode acceptEdits` and `Edit,Write`.
+- **`probe-synthesis-*.md` never written when a straggler stream blocked the wait loop.** `display_rich_progress` now has a watchdog (`TIMEOUT` + `OCTOPUS_PROGRESS_GRACE`, default 120s grace) that terminates stragglers and proceeds to synthesis with completed results.
+- **Perplexity failures were silent** (empty result file, "(no output captured)", no error). Curl failures, timeouts, and empty or contentless responses now log errors and fail the agent; the empty-output placeholder names the provider and points at `doctor`.
+
+### Added
+
+- `OCTOPUS_GEMINI_INCLUDE_DIRS` — comma-separated directories appended to gemini dispatch as `--include-directories`, for prompts referencing files outside `PROJECT_ROOT` (e.g. `/tmp` staging dirs).
+- `tests/unit/test-orchestrate-cwd-routing.sh` — behavioral coverage for cwd resolution, role-routing model leaks, claude permission flags, gemini include dirs, and the docs cd-pattern regression.
+
 ## [9.42.3] - 2026-06-03
 
 ### Changed
