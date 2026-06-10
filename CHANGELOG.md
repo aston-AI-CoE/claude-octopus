@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Claude Fable 5 (Mythos-class) as opt-in premium Claude model.** `claude-fable-5` added to the model catalog and pricing tables ($10/$50 per MTok, 1M context, 128K output). Opt in by pinning `OCTOPUS_OPUS_MODEL=claude-fable-5`; never auto-selected because it costs 2x Opus 4.8 and Anthropic retains prompts/outputs up to 30 days for safety classifiers.
+- **GPT-5.5 and GPT-5.5 Pro in the model catalog** with June 2026 pricing ($5/$30 and $30/$180 per MTok).
+
+### Changed
+
+- **GPT-5.5 is the new Codex premium default.** Hard-coded resolver fallbacks, role-to-agent mappings (architect, reviewer, implementer), provider-routing defaults, and config templates move from `gpt-5.4` to `gpt-5.5`. `gpt-5.4` remains in the catalog and is still selectable.
+
+### Fixed
+
+- **Duplicate case arms made pricing/catalog entries unreachable.** `gpt-5.4-mini` was listed twice in `models.sh` and `cost.sh`; `cost.sh` also had a duplicate `o3` arm with a conflicting price and a stray duplicate `gpt-5.4` arm. Dead arms removed.
+- **`test-command-frontmatter.sh` always exited 0.** It tracked failures in its own counter but never propagated them, so three red assertions (doctor.md registration) shipped unnoticed. The test now exits 1 when any check fails.
+- **Native `/doctor` was shadowed again.** `.claude/commands/doctor.md` and its plugin.json registration (regressed in 6e0cb4a) are removed, restoring the v9.41.0 decision to keep diagnostics in `skills/skill-doctor` and `orchestrate.sh doctor`. OpenClaw registry rebuilt; README command count updated.
+
 ## [9.43.0] - 2026-06-09
 
 

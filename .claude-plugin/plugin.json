@@ -84,7 +84,6 @@
     "./.claude/commands/pipeline.md",
     "./.claude/commands/brainstorm.md",
     "./.claude/commands/meta-prompt.md",
-    "./.claude/commands/doctor.md",
     "./.claude/commands/preflight.md",
     "./.claude/commands/prd-score.md",
     "./.claude/commands/setup.md",
