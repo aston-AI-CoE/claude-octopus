@@ -1,6 +1,6 @@
 # 🐙 Claude Octopus
 
-Every AI model has blind spots. Claude Octopus puts up to nine of them on every task, so blind spots surface before you ship — not after. It orchestrates Codex, Gemini, Antigravity CLI, Copilot, Qwen, Ollama, Perplexity, OpenRouter, and OpenCode alongside Claude Code, with consensus gates that flag any disagreements.
+Every AI model has blind spots. Claude Octopus puts up to ten of them on every task, so blind spots surface before you ship — not after. It orchestrates Codex, Gemini, Antigravity CLI, Copilot, Qwen, Ollama, Perplexity, OpenRouter, OpenCode, and Grok alongside Claude Code, with consensus gates that flag any disagreements.
 
 **Claude-native first, Octopus for escalation.** Use Claude-native `/init`, `/review`, and `/security-review` when Claude is enough. Use Octopus when you want multiple model opinions, adversarial review, or stricter multi-LLM workflows.
 
@@ -11,13 +11,12 @@ Every AI model has blind spots. Claude Octopus puts up to nine of them on every 
 <p align="center">
   <a href="https://claude.ai"><img src="https://img.shields.io/badge/Claude-Built_with_AI-c96442?logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZiIgZD0iTTEyIDJhMTAgMTAgMCAxIDAgMCAyMCAxMCAxMCAwIDAgMCAwLTIwbTAgMS44YTEuMiAxLjIgMCAwIDEgLjg1LjM1bDEuNSA0LjVhLjYuNiAwIDAgMCAuMzUuMzVsNC41IDEuNWExLjIgMS4yIDAgMCAxIDAgMi4yN2wtNC41IDEuNWEuNi42IDAgMCAwLS4zNS4zNWwtMS41IDQuNWExLjIgMS4yIDAgMCAxLTIuMjcgMGwtMS41LTQuNWEuNi42IDAgMCAwLS4zNS0uMzVsLTQuNS0xLjVhMS4yIDEuMiAwIDAgMSAwLTIuMjdsNC41LTEuNWEuNi42IDAgMCAwIC4zNS0uMzVsMS41LTQuNUExLjIgMS4yIDAgMCAxIDEyIDMuOCIvPjwvc3ZnPg==&labelColor=333" alt="Built with Claude"></a>
   <a href="https://github.com/nyldn/claude-octopus/actions/workflows/test.yml"><img src="https://github.com/nyldn/claude-octopus/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
-  <img src="https://img.shields.io/badge/Tests-117_suites_passing-brightgreen" alt="117 suites passing">
   <img src="https://img.shields.io/badge/Version-9.51.0-blue" alt="Version 9.51.0">
-  <img src="https://img.shields.io/badge/Claude_Code-v2.1.14+_required-blueviolet" alt="Requires Claude Code v2.1.14+">
+  <img src="https://img.shields.io/badge/Claude_Code-v2.1.50+_required-blueviolet" alt="Requires Claude Code v2.1.50+">
   <img src="https://img.shields.io/badge/License-MIT-green" alt="MIT License">
 </p>
 
-🐙 **Research, build, review, and ship — with nine AI providers checking each other's work.** Say what you need, and the right workflow runs. Claude-native handles the ordinary path; Octopus handles the escalated path. A 75% consensus gate catches disagreements before they reach production. No single model's blind spots slip through.
+🐙 **Research, build, review, and ship — with ten AI providers checking each other's work.** Say what you need, and the right workflow runs. Claude-native handles the ordinary path; Octopus handles the escalated path. A 75% consensus gate catches disagreements before they reach production. No single model's blind spots slip through.
 
 🧠 **Remembers across sessions.** Integrates with [claude-mem](https://github.com/thedotmack/claude-mem) and [agentmemory](https://github.com/rohitg00/agentmemory) for persistent memory — past decisions, research, and context survive session boundaries.
 
@@ -27,7 +26,7 @@ Every AI model has blind spots. Claude Octopus puts up to nine of them on every 
 
 🐙 **32 specialized personas** (role-specific AI agents like security-auditor, backend-architect), **50 commands** (slash commands you type), **58 skills** (reusable workflow modules). Say "audit my API" and the right expert activates. Don't know the command? The smart router figures it out.
 
-🐙 **Works with just Claude. Scales to nine.** Zero providers needed to start. Add them one at a time — each activates automatically when detected.
+🐙 **Works with just Claude. Scales to ten.** Zero providers needed to start. Add them one at a time — each activates automatically when detected.
 
 💰 **Five providers cost nothing extra when you already have access.** Codex, Gemini, Antigravity CLI, and Copilot use existing subscriptions or local auth. Ollama runs locally for free. Qwen now requires API-key or Coding-Plan auth; its free OAuth tier ended on 2026-04-15.
 
@@ -59,6 +58,16 @@ Every AI model has blind spots. Claude Octopus puts up to nine of them on every 
 
 [Full changelog →](CHANGELOG.md)
 
+<details>
+<summary>Upgrading to 9.5x</summary>
+
+- The Codex seat's premium default moved from GPT-5.4 to **GPT-5.5** (v9.44+). Pin the old model with `OCTOPUS_CODEX_MODEL=gpt-5.4` if needed.
+- New claude-sdk seat env vars (v9.50): `CLAUDE_SDK_API_KEY`, `OCTOPUS_CLAUDE_SDK_MODEL`, `OCTOPUS_CLAUDE_SDK_MAX_TOKENS`, `OCTOPUS_CLAUDE_SDK_ALLOWED_MODELS`, `OCTOPUS_CLAUDE_SDK_CONTEXT_BUDGET`.
+- New Fable 5 guard env vars (v9.51): `OCTOPUS_FABLE5_MODE` (auto/off/on), `OCTOPUS_FABLE5_NO_RETRY`. Guards auto-enable only when you pin `claude-fable-5`.
+- Premium Claude role routing (architect, strategist, security-reviewer to Opus) landed in v9.29; restore the older mapping with `OCTOPUS_LEGACY_ROLES=1`.
+
+</details>
+
 ## Quickstart
 
 ```bash
@@ -72,7 +81,7 @@ claude plugin install octo@nyldn-plugins
 
 That's it. Setup detects installed providers, shows what's missing, and walks you through configuration. You need **zero** external providers to start — Claude is built in.
 
-Claude Code **v2.1.14+** is the minimum supported runtime. Newer Claude Code releases unlock additional Octopus diagnostics and release checks automatically; the current plugin tracks feature flags through **Claude Code v2.1.157**.
+Claude Code **v2.1.50+** is the minimum supported runtime. Newer Claude Code releases unlock additional Octopus diagnostics and release checks automatically; the current plugin tracks feature flags through **Claude Code v2.1.157**.
 
 <details>
 <summary>Install for Codex CLI</summary>
@@ -323,13 +332,13 @@ Or skip the table — type `/octo:auto <what you want>` or just say `octo <what 
 
 ## How It Works
 
-### How 9 Providers Work Together
+### How 10 Providers Work Together
 
-Claude Octopus coordinates up to nine AI providers:
+Claude Octopus coordinates up to ten AI providers:
 
 | Provider | Role |
 |----------|------|
-| 🔴 Codex (OpenAI, GPT-5.4) | Code review + implementation — edge-case hunting, terminal-heavy execution, patch/test loops |
+| 🔴 Codex (OpenAI, GPT-5.5) | Code review + implementation — edge-case hunting, terminal-heavy execution, patch/test loops |
 | 🟡 Gemini (Google) | Ecosystem breadth — alternatives, research synthesis |
 | 🧭 Antigravity CLI (`agy`) | Google Antigravity perspective via native stdin print-mode dispatch |
 | 🟣 Perplexity | Live web search — CVE lookups, dependency research, current docs |
@@ -337,11 +346,13 @@ Claude Octopus coordinates up to nine AI providers:
 | 🟢 Copilot (GitHub) | Zero-cost research — uses existing GitHub Copilot subscription |
 | 🟤 Qwen (Alibaba) | Qwen3-Coder research via API-key or Coding-Plan auth |
 | ⚫ Ollama (Local) | Zero-cost local LLM — offline, privacy-sensitive, fallback |
+| ⚡ Grok (xAI, via cursor-agent) | Frontier-model second opinion — added as a first-class seat in v9.48 |
 | 🔵 Claude (Anthropic, Opus 4.8 + Sonnet 4.6) | Architecture, strategy, security review, orchestration, consensus, final synthesis |
+| 🔵 Claude Agent SDK seat (`claude-sdk`) | Opus 4.8 with the 1M-token context window, independent of the host session (set `CLAUDE_SDK_API_KEY`) |
 
 Providers run in parallel for research, sequentially for problem scoping, and adversarially for review. A 75% consensus quality gate prevents questionable work from shipping. Only Claude is required — all others are optional and auto-detected.
 
-**Premium Claude routing** defaults `architect`, `strategist`, `security-reviewer`, and opt-in `implementer-heavy` to the current Opus family. On Claude Code v2.1.154+ that is Opus 4.8; older supported hosts fall back to Opus 4.7 and then 4.6. `code-reviewer` and `implementer` default to GPT-5.4 (Terminal-Bench and edge-case review). Opt out with `OCTOPUS_LEGACY_ROLES=1` to restore the v9.28 mapping. See [CHANGELOG](CHANGELOG.md) and [GPT-5.4 prompting guide](docs/GPT-5.4-PROMPTING.md).
+**Premium Claude routing** defaults `architect`, `strategist`, `security-reviewer`, and opt-in `implementer-heavy` to the current Opus family. On Claude Code v2.1.154+ that is Opus 4.8; older supported hosts fall back to Opus 4.7 and then 4.6. `code-reviewer` and `implementer` default to GPT-5.5 (Terminal-Bench and edge-case review). Opt out with `OCTOPUS_LEGACY_ROLES=1` to restore the v9.28 mapping. See [CHANGELOG](CHANGELOG.md) and [GPT-5.4 prompting guide](docs/GPT-5.4-PROMPTING.md).
 
 **Native dynamic workflows:** Claude Code v2.1.154+ can run native dynamic workflows for huge single-Claude migrations. Use that path when one Claude workflow is enough; use Octopus when you need multi-provider disagreement, councils, adversarial review, external model validation, or blind-spot coverage.
 
@@ -409,6 +420,19 @@ Reactions track 13 agent lifecycle states: `running` → `pr_open` → `ci_pendi
 | API key | `OPENAI_API_KEY` — per-token billing | `GEMINI_API_KEY` — per-token billing | n/a | Built into Claude Code |
 
 OAuth users pay nothing beyond their existing subscriptions. Qwen is the exception: its free OAuth tier ended on 2026-04-15, so use `QWEN_API_KEY` or Coding-Plan (`OPENAI_API_KEY` + `OPENAI_BASE_URL`).
+
+### What a Typical Run Costs
+
+Rough per-run estimates on API-key billing at current rates (GPT-5.5 $5/$30, Gemini 3.1 Pro $2.50/$10, Sonar Pro $3/$15, Opus 4.8 $5/$25 per MTok). OAuth/subscription seats (Codex via ChatGPT, Gemini via Google account, Antigravity, Copilot) bill nothing extra; Ollama is free. Numbers scale with prompt size — treat them as order-of-magnitude.
+
+| Run | Typical volume | API-key cost range |
+|-----|----------------|--------------------|
+| Single probe / quick question (one provider) | 5-20K tokens | $0.01-0.15 |
+| Debate (2-3 providers, multi-round) | 30-80K tokens | $0.20-0.80 |
+| Council (4-6 seats + synthesis) | 60-150K tokens | $0.50-2.00 |
+| Full embrace (4 phases, multi-provider) | 150-400K tokens | $1.00-5.00 |
+
+Before an expensive run, `/octo:costs` shows a session cost projection; after runs, `/octo:usage` breaks down actual spend per provider and skill. Anything projected over $1 is called out before dispatch.
 
 ### What You Get With Just Claude
 
@@ -592,11 +616,15 @@ See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for details.
 
 - [Documentation Guide](docs/README.md) — Start here
 - [Command Reference](docs/COMMAND-REFERENCE.md) — Commands, triggers, and provider indicators
-- [Feature Gap Analysis](docs/FEATURE-GAP.md) — CC feature adoption tracker
+- [Troubleshooting](docs/TROUBLESHOOTING.md) — Provider auth failures and common errors
 - [Architecture](docs/ARCHITECTURE.md) — Provider flow and execution model
-- [Plugin Architecture](docs/PLUGIN-ARCHITECTURE.md) — Internal plugin structure
 - [Agents & Personas](docs/AGENTS.md) — All 32 personas
-- [CLI Reference](docs/CLI-REFERENCE.md) — Direct CLI usage, debug mode, async, and tmux
+- [Provider Wiring Map](docs/PROVIDERS.md) — How a provider is wired (contributors)
+- [Developer Guide](docs/DEVELOPER.md) — Modular config, E2E testing, enforcement patterns
+- [Scheduler](docs/SCHEDULER.md) — Scheduled workflow runner
+- [Privacy](docs/PRIVACY.md) — What leaves your machine and when
+- [Security Policy](SECURITY.md) — Threat model and trust boundaries
+- [Releasing](RELEASING.md) — Release checklist (maintainers)
 - [Changelog](CHANGELOG.md)
 
 ---

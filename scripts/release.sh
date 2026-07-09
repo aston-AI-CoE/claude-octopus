@@ -179,6 +179,8 @@ print(f'   {path}')
 "
 
 # README badge
+sed -i '' -E "s/\(v[0-9]+\.[0-9]+\.[0-9]+\)/(v${VERSION})/" .claude-plugin/routines.json
+echo "   .claude-plugin/routines.json"
 sed -i '' "s/Version-[0-9]*\.[0-9]*\.[0-9]*-blue/Version-${VERSION}-blue/g" README.md
 sed -i '' "s/Version [0-9]*\.[0-9]*\.[0-9]*/Version ${VERSION}/g" README.md
 echo "   README.md"
@@ -191,7 +193,7 @@ echo ""
 
 echo "2/8 Committing..."
 git checkout -b "$BRANCH" --quiet
-git add package.json .claude-plugin/plugin.json .claude-plugin/marketplace.json .codex-plugin/plugin.json .cursor-plugin/plugin.json .factory-plugin/plugin.json .factory-plugin/marketplace.json README.md CHANGELOG.md
+git add package.json .claude-plugin/plugin.json .claude-plugin/marketplace.json .claude-plugin/routines.json .codex-plugin/plugin.json .cursor-plugin/plugin.json .factory-plugin/plugin.json .factory-plugin/marketplace.json README.md CHANGELOG.md
 git commit --quiet -m "chore: release v${VERSION} — ${SUMMARY}
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
