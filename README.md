@@ -234,6 +234,19 @@ Or skip the table — type `/octo:auto <what you want>` or just say `octo <what 
 
 ---
 
+## Relationship to Superpowers
+
+Claude Octopus and [Superpowers](https://github.com/obra/superpowers) are separate projects with separate distribution surfaces. Claude Octopus is the canonical home for the `octo` plugin, `/octo:*` commands, `octopus_*` MCP tools, multi-provider orchestration, provider consensus gates, and the Discover -> Define -> Develop -> Deliver workflow in this repository. It does not install, vendor, or require Superpowers at runtime.
+
+Superpowers is the canonical home for the [Superpowers methodology and skill set](https://github.com/obra/superpowers#the-basic-workflow): automatic skill activation, spec-to-plan-to-subagent development, TDD discipline, verification-before-completion, review workflows, and branch-finishing conventions. Octopus credits Superpowers for discipline patterns and adapts some of those ideas inside Octopus-owned commands and skills; fixes to Superpowers-specific behavior belong upstream in Superpowers, while fixes to `/octo:*`, `octopus_*`, provider dispatch, or Octopus install paths belong here.
+
+| Area | Claude Octopus | Superpowers | Canonical home |
+|---|---|---|---|
+| Public interface | `/octo:*` slash commands, `octo` natural-language router, `octopus_*` MCP tools, Codex/OpenCode skills | Automatically triggered skills and harness plugins | Octopus for `/octo:*` and `octopus_*`; Superpowers for Superpowers skills |
+| Installation | Claude Code `octo` plugin, `@anthropic-plugins/claude-octopus` package, Codex/OpenCode skill symlinks, Cursor MCP server | Superpowers plugin or package installed separately per harness | Each project owns its own install path |
+| Responsibility | Multi-provider research, debate, review, implementation support, consensus gates, Double Diamond phases | Single-agent software-development methodology, planning discipline, TDD, verification, code review, branch finishing | Octopus for multi-provider orchestration; Superpowers for the Superpowers methodology |
+| Duplicate concepts | TDD, planning, verification, review, subagent prompts | TDD, planning, verification, review, subagent-driven development | Superpowers owns the generic methodology; Octopus owns Octopus-flavored workflows and integrations |
+
 ## How It Works
 
 ### How 8 Providers Work Together
