@@ -15,6 +15,7 @@
  *   octopus_deliver  → ink
  *   octopus_embrace  → embrace
  *   octopus_debate   → grapple
+ *   octopus_council  → council
  *   octopus_review   → codex-review
  *   octopus_security → squeeze
  *

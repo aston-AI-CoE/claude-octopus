@@ -14,6 +14,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+source "$SCRIPT_DIR/helpers/test-framework.sh"
+test_suite "============================================================================="
+
 ORCHESTRATE="$PROJECT_ROOT/scripts/orchestrate.sh"
 # v9.7.8: Also search lib/ modules for extracted functions
 SCRIPTS_ALL="$PROJECT_ROOT/scripts/orchestrate.sh $PROJECT_ROOT/scripts/lib/*.sh"
@@ -22,20 +26,9 @@ PASS=0
 FAIL=0
 TOTAL=0
 
-pass() {
-    ((PASS++)) || true
-    ((TOTAL++)) || true
-    echo -e "  \033[0;32m✓\033[0m $1"
-}
+pass() { test_case "$1"; test_pass; }
 
-fail() {
-    ((FAIL++)) || true
-    ((TOTAL++)) || true
-    echo -e "  \033[0;31m✗\033[0m $1"
-    if [[ -n "${2:-}" ]]; then
-        echo -e "    \033[0;33m→ $2\033[0m"
-    fi
-}
+fail() { test_case "$1"; test_fail "${2:-$1}"; }
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -96,7 +89,8 @@ else
 fi
 
 # 2.2: probe_discover sets OCTOPUS_FORCE_LEGACY_DISPATCH before spawn loop
-if grep -rB 5 -A 30 'for i in.*perspectives' $SCRIPTS_ALL | grep -q 'FORCE_LEGACY_DISPATCH=true\|FORCE_LEGACY.*true'; then
+# v9.24.0: fleet_dispatch_begin/end helpers wrap the spawn loop (agent-sync.sh)
+if grep -rB 5 -A 30 'for i in.*perspectives' $SCRIPTS_ALL | grep -q 'FORCE_LEGACY_DISPATCH=true\|FORCE_LEGACY.*true\|fleet_dispatch_begin'; then
     pass "2.2 probe_discover sets FORCE_LEGACY_DISPATCH before spawn loop"
 else
     fail "2.2 probe_discover doesn't set FORCE_LEGACY_DISPATCH" \
@@ -163,9 +157,9 @@ echo ""
 echo -e "\033[0;34mTest Group 4: Model name consistency — no stale defaults (P1-B)\033[0m"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# 4.1: resolve_octopus_model uses gpt-5.4 for codex default
-if grep -rA 10 "case \"\$agent_type\" in" $SCRIPTS_ALL | grep -A 1 "codex\*)" | grep -q 'gpt-5\.4'; then
-    pass "4.1 resolve_octopus_model returns gpt-5.4 for codex default"
+# 4.1: resolve_octopus_model uses gpt-5.5 for codex default
+if grep -rA 10 "case \"\$agent_type\" in" $SCRIPTS_ALL | grep -A 1 "codex\*)" | grep -q 'gpt-5\.5'; then
+    pass "4.1 resolve_octopus_model returns gpt-5.5 for codex default"
 else
     fail "4.1 resolve_octopus_model uses stale model for codex default"
 fi
@@ -198,9 +192,9 @@ else
     fail "4.4 resolve_octopus_model missing role routing"
 fi
 
-# 4.5: codex fallbacks use gpt-5.4
-if grep -rA 20 "Fallback to hard-coded defaults" $SCRIPTS_ALL | grep -A 1 "codex\*)" | grep -q 'gpt-5\.4'; then
-    pass "4.5 codex fallback uses gpt-5.4"
+# 4.5: codex fallbacks use gpt-5.5
+if grep -rA 20 "Fallback to hard-coded defaults" $SCRIPTS_ALL | grep -A 1 "codex\*)" | grep -q 'gpt-5\.5'; then
+    pass "4.5 codex fallback uses gpt-5.5"
 else
     fail "4.5 codex fallback uses stale model"
 fi
@@ -233,16 +227,12 @@ else
     fail "5.3 get_dispatch_strategy function missing"
 fi
 
-# 5.4: synthesis uses >500 byte threshold to filter probe results
-if grep -rA 5 'synthesize_probe_results' $SCRIPTS_ALL | grep -q '500\|file_size.*gt'; then
-    pass "5.4 Synthesis filters probe results by minimum size (>500 bytes)"
+# 5.4: synthesis admits short-but-usable probe findings instead of using a hard byte cutoff
+if grep -rA 30 'synthesize_probe_results()' $SCRIPTS_ALL | grep -q 'probe_result_file_is_usable' && \
+   grep -rA 80 'build_probe_synthesis_context()' $SCRIPTS_ALL | grep -q 'probe_result_file_is_usable'; then
+    pass "5.4 Synthesis classifies non-empty probe results without a hard byte cutoff"
 else
-    # Check in the function body
-    if grep -rA 30 'synthesize_probe_results()' $SCRIPTS_ALL | grep -q '500'; then
-        pass "5.4 Synthesis filters probe results by minimum size (>500 bytes)"
-    else
-        fail "5.4 Synthesis doesn't filter small/empty probe results"
-    fi
+    fail "5.4 Synthesis should classify usable probe results before synthesis"
 fi
 
 # 5.5: Graceful degradation with partial results
@@ -260,7 +250,8 @@ echo -e "\033[0;34mTest Group 6: Agent Teams dispatch safety\033[0m"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # 6.1: should_use_agent_teams only returns 0 for Claude agents
-if grep -rA 20 'should_use_agent_teams()' $SCRIPTS_ALL | grep -q 'claude|claude-sonnet|claude-opus'; then
+agent_teams_predicate_refs=$(grep -rA 30 'should_use_agent_teams()' $SCRIPTS_ALL | grep -c 'is_claude_agent_type "$agent_type"' || true)
+if [[ "$agent_teams_predicate_refs" -gt 0 ]]; then
     pass "6.1 Agent Teams only routes Claude agent types"
 else
     fail "6.1 Agent Teams may route non-Claude agents incorrectly"
@@ -288,13 +279,4 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo -e "\033[0;34mTest Summary — Provider Activation & Reliability\033[0m"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "Total tests:  \033[0;34m$TOTAL\033[0m"
-echo -e "Passed:       \033[0;32m$PASS\033[0m"
-echo -e "Failed:       \033[0;31m$FAIL\033[0m"
-echo ""
-if [[ $FAIL -eq 0 ]]; then
-    echo -e "\033[0;32m✅ All provider activation tests passed!\033[0m"
-    exit 0
-else
-    echo -e "\033[0;31m❌ $FAIL test(s) failed!\033[0m"
-    exit 1
-fi
+test_summary

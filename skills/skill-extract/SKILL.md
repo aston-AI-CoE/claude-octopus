@@ -1,8 +1,13 @@
 ---
 name: skill-extract
-version: 1.0.0
 description: "Reverse-engineer design systems, tokens, and components from live products or screenshots"
 ---
+
+> **Host: Codex CLI** — This skill was designed for Claude Code and adapted for Codex.
+> Cross-reference commands use installed skill names in Codex rather than `/octo:*` slash commands.
+> Use the active Codex shell and subagent tools. Do not claim a provider, model, or host subagent is available until the current session exposes it.
+> For host tool equivalents, see `skills/blocks/codex-host-adapter.md`.
+
 
 # Extract Skill - Implementation Guide
 
@@ -79,7 +84,7 @@ When enabled, the extract feature uses multiple AI providers for higher accuracy
 - **Gemini**: Pattern recognition, alternative interpretations, UX insights
 
 **Consensus Mechanism**:
-- Threshold: 67% (2/3 providers must agree)
+- Threshold: extraction quality gates require the configured consensus threshold (default 67%); when no numeric vote data exists, the quorum resolver selects the strongest matching proposal from up to 3 provider perspectives and logs disagreements.
 - Disagreements logged in `90_evidence/disagreements.md`
 - Confidence scores attached to all outputs
 
@@ -133,7 +138,7 @@ Automated validation ensures extraction quality:
 1. **Token Coverage**: Fail if 0 tokens in design mode
 2. **Component Coverage**: Warn if < 50% of component files detected
 3. **Architecture Completeness**: Warn if no services detected in product mode
-4. **Multi-AI Consensus**: Fail if < 50% agreement on key outputs
+4. **Multi-AI Consensus**: Fail if agreement is below the configured consensus threshold (default 67%) on key outputs
 
 ## Usage Patterns
 
@@ -227,6 +232,5 @@ Implementation phases:
 6. Quality Gates (Week 8)
 7. Testing & Documentation (Week 10)
 
----
 
 *This skill implements the design specified in PRD v2.0 (AI-Executable)*

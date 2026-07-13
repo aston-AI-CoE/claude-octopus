@@ -82,14 +82,29 @@ function assertWithinDirectory(filePath, directory) {
  */
 export async function loadSkills(pluginRoot) {
     const skillsDir = resolve(pluginRoot, ".claude/skills");
-    const files = await readdir(skillsDir);
+    const entries = await readdir(skillsDir, { withFileTypes: true });
     const skills = [];
-    for (const file of files) {
-        if (!file.endsWith(".md"))
+    for (const entry of entries) {
+        let file = entry.name;
+        let filePath;
+        if (entry.isFile() && file.endsWith(".md")) {
+            filePath = resolve(skillsDir, file);
+        }
+        else if (entry.isDirectory()) {
+            file = `${entry.name}/SKILL.md`;
+            filePath = resolve(skillsDir, file);
+        }
+        else {
             continue;
-        const filePath = resolve(skillsDir, file);
+        }
         assertWithinDirectory(filePath, skillsDir);
-        const content = await readFile(filePath, "utf-8");
+        let content;
+        try {
+            content = await readFile(filePath, "utf-8");
+        }
+        catch {
+            continue;
+        }
         const frontmatter = parseFrontmatter(content);
         if (!frontmatter.name)
             continue;

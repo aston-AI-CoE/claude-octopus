@@ -15,6 +15,11 @@ openrouter_execute_model() {
     local complexity="${4:-2}"
     local output_file="${5:-}"
 
+    # stdin fallback: probe_single_agent pipes prompt via stdin (#305)
+    if [[ -z "$prompt" && ! -t 0 ]]; then
+        prompt=$(cat)
+    fi
+
     if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
         log ERROR "OPENROUTER_API_KEY not set"
         return 1
@@ -113,10 +118,12 @@ EOF
 
     rm -f "$header_file"
 
-    # Extract content from response
+    # Extract content from OpenAI-compatible nested path .choices[0].message.content.
+    # `json_extract` only reads top-level keys, so it silently returned empty and the
+    # caller got the raw JSON dumped to its result file. Fixed in v9.29 (issue #307).
     local content=""
-    if json_extract "$response" "content"; then
-        content="$REPLY"
+    if command -v jq &>/dev/null; then
+        content=$(printf '%s' "$response" | jq -re '.choices[0].message.content // empty' 2>/dev/null) || content=""
     fi
 
     if [[ -z "$content" ]]; then
@@ -142,6 +149,11 @@ EOF
 openrouter_execute() {
     local prompt="$1"
     local task_type="${2:-general}"
+
+    # stdin fallback: probe_single_agent pipes prompt via stdin (#305)
+    if [[ -z "$prompt" && ! -t 0 ]]; then
+        prompt=$(cat)
+    fi
     local complexity="${3:-2}"
     local output_file="${4:-}"
 
@@ -163,6 +175,11 @@ perplexity_execute() {
     local prompt="$2"
     local output_file="${3:-}"
 
+    # stdin fallback: probe_single_agent pipes prompt via stdin (#305)
+    if [[ -z "$prompt" && ! -t 0 ]]; then
+        prompt=$(cat)
+    fi
+
     if [[ -z "${PERPLEXITY_API_KEY:-}" ]]; then
         log ERROR "PERPLEXITY_API_KEY not set — get one at https://www.perplexity.ai/settings/api"
         return 1
@@ -174,6 +191,12 @@ perplexity_execute() {
     local escaped_prompt
     escaped_prompt=$(json_escape "$prompt")
 
+    # Sanitize max_tokens to a positive integer before splicing into JSON; a
+    # non-numeric OCTOPUS_PERPLEXITY_MAX_TOKENS would otherwise produce invalid
+    # JSON or inject extra fields (codex review).
+    local max_tokens="${OCTOPUS_PERPLEXITY_MAX_TOKENS:-4096}"
+    [[ "$max_tokens" =~ ^[1-9][0-9]*$ ]] || max_tokens=4096
+
     local payload
     payload=$(cat << EOF
 {
@@ -181,22 +204,36 @@ perplexity_execute() {
   "messages": [
     {"role": "system", "content": "You are a research assistant with live web access. Provide detailed, factual answers with citations. Always include source URLs when referencing specific information."},
     {"role": "user", "content": "$escaped_prompt"}
-  ]
+  ],
+  "max_tokens": ${max_tokens}
 }
 EOF
 )
 
-    local response
-    response=$(curl -s -X POST "https://api.perplexity.ai/chat/completions" \
+    local response curl_exit=0
+    # -sS: silent progress but keep curl errors on stderr so the spawn error log
+    # captures them; --max-time bounds hung connections. A failed or empty
+    # request previously fell through silently and produced an empty result
+    # file with "(no output captured)" and no actionable error (bug 260609).
+    response=$(curl -sS --max-time "${OCTOPUS_PERPLEXITY_TIMEOUT:-120}" -X POST "https://api.perplexity.ai/chat/completions" \
         -H "Authorization: Bearer ${PERPLEXITY_API_KEY}" \
         -H "Content-Type: application/json" \
         -H "Connection: keep-alive" \
-        -d "$payload")
+        -d "$payload") || curl_exit=$?
+    if [[ $curl_exit -ne 0 ]]; then
+        log ERROR "Perplexity request failed (curl exit ${curl_exit}, model=$model)"
+        return 1
+    fi
+    if [[ -z "$response" ]]; then
+        log ERROR "Perplexity returned an empty response body (model=$model)"
+        return 1
+    fi
 
-    # Extract content from response (same format as OpenAI-compatible API)
+    # Extract content from OpenAI-compatible nested path .choices[0].message.content.
+    # See openrouter_execute_model above — same bug, same fix (issue #307).
     local content=""
-    if json_extract "$response" "content"; then
-        content="$REPLY"
+    if command -v jq &>/dev/null; then
+        content=$(printf '%s' "$response" | jq -re '.choices[0].message.content // empty' 2>/dev/null) || content=""
     fi
 
     # Extract citations if available (Perplexity-specific field)
@@ -207,11 +244,24 @@ EOF
 
     if [[ -z "$content" ]]; then
         if [[ "$response" =~ \"error\":\{([^\}]*)\} ]]; then
-            log ERROR "Perplexity error: ${BASH_REMATCH[1]}"
+            local _ppx_err="${BASH_REMATCH[1]}"
+            # Terminal quota/auth (HTTP 401 insufficient_quota) returns faster than
+            # the 2s quota-watcher poll, so mark the provider dead directly here
+            # (oco-cbb) and emit a quota-watcher-matchable keyword (oco-48z) so
+            # preflight + is_agent_available skip perplexity for the rest of the run.
+            if [[ "$_ppx_err" == *insufficient_quota* || "$_ppx_err" == *'"code":401'* || "$_ppx_err" == *quota* ]]; then
+                log ERROR "Perplexity TerminalQuotaError (insufficient_quota / HTTP 401): ${_ppx_err}"
+                declare -f octo_quota_mark_dead >/dev/null 2>&1 && octo_quota_mark_dead "perplexity" || true
+                return 1
+            fi
+            log ERROR "Perplexity error: ${_ppx_err}"
             return 1
         fi
-        log WARN "Empty response from Perplexity ($model)"
+        # Content missing but no parseable error — surface the raw body and fail
+        # so the agent is marked FAILED instead of "succeeding" with JSON noise.
+        log ERROR "Perplexity response had no message content ($model)"
         echo "$response"
+        return 1
     else
         local result
         result=$(echo "$content" | sed 's/\\n/\n/g; s/\\t/\t/g; s/\\"/"/g')

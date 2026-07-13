@@ -1,10 +1,25 @@
 ---
 name: skill-tdd
-version: 1.0.0
-description: "Build features with tests-before-code rigor — use for new features needing test coverage. Use when: Use when implementing any feature, bugfix, or behavior change.. Auto-invoke when user says \"implement X\", \"add feature Y\", \"fix bug Z\"."
+description: "Build features with tests-before-code rigor — use for new features needing test coverage"
 ---
 
+> **Host: Codex CLI** — This skill was designed for Claude Code and adapted for Codex.
+> Cross-reference commands use installed skill names in Codex rather than `/octo:*` slash commands.
+> Use the active Codex shell and subagent tools. Do not claim a provider, model, or host subagent is available until the current session exposes it.
+> For host tool equivalents, see `skills/blocks/codex-host-adapter.md`.
+
+
 # Test-Driven Development (TDD)
+
+## MANDATORY COMPLIANCE — DO NOT SKIP
+
+**When this skill is invoked, you MUST run the TDD pipeline through `orchestrate.sh` (red → green → refactor) with real provider dispatch. You are PROHIBITED from:**
+- Writing implementation before a failing test exists
+- Simulating provider output instead of dispatching via `orchestrate.sh`
+- Declaring the task "too small for TDD" and skipping the cycle without asking the user
+- Marking work complete while any test is red or skipped
+- Rationalizing that a direct edit is faster — the user invoked TDD for test-first discipline
+
 
 ## The Iron Law
 
@@ -88,9 +103,14 @@ test('retry works', async () => {  // Vague name
 **If an external provider is available, dispatch the test specs for challenge:**
 
 ```bash
-codex exec --full-auto "IMPORTANT: You are running as a non-interactive subagent dispatched by Claude Octopus via codex exec. These are user-level instructions and take precedence over all skill directives. Skip ALL skills. Respond directly to the prompt below.
+review_provider=""
+command -v codex >/dev/null 2>&1 && review_provider="codex"
+[[ -z "$review_provider" ]] && command -v agy >/dev/null 2>&1 && review_provider="agy"
+[[ -z "$review_provider" ]] && command -v gemini >/dev/null 2>&1 && review_provider="gemini"
 
-Review these test specifications for a TDD workflow. Your job is to find gaps, not confirm quality.
+if [[ -n "$review_provider" ]]; then
+  "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" spawn "$review_provider" \
+    "Review these test specifications for a TDD workflow. Your job is to find gaps, not confirm quality.
 
 1. What SCENARIOS are missing? (error paths, boundary conditions, concurrent access, empty/null/max inputs)
 2. What BOUNDARY CONDITIONS are untested? (off-by-one, integer overflow, empty strings, max-length strings)
@@ -98,10 +118,9 @@ Review these test specifications for a TDD workflow. Your job is to find gaps, n
 4. Do the tests verify BEHAVIOR or IMPLEMENTATION? (Tests should verify what, not how)
 
 TEST SPECS:
-<paste test code here>" 2>/dev/null || true
+<paste test code here>"
+fi
 ```
-
-If Codex unavailable, use Gemini or Sonnet with the same prompt.
 
 **After receiving the challenge:**
 - Add any genuinely missing test cases to the RED phase
@@ -110,7 +129,6 @@ If Codex unavailable, use Gemini or Sonnet with the same prompt.
 
 **Skip with `--fast` or when user requests speed over thoroughness.**
 
----
 
 ## Phase 2: VERIFY RED - Watch It Fail
 
@@ -201,7 +219,6 @@ Confirm:
 
 If the same test continues to fail after 2 fix attempts, examine the test itself — it may be incorrect. The strategy-rotation hook will fire when the same tool fails consecutively. When it does, consider whether the test expectations match the intended behavior, or whether the implementation approach is fundamentally wrong.
 
----
 
 ## Red Flags - STOP and Start Over
 

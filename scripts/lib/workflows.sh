@@ -3,6 +3,11 @@
 # Extracted from orchestrate.sh to reduce file size
 # Functions: probe_single_agent, probe_discover, grasp_define, tangle_develop, ink_deliver
 
+if ! type probe_result_file_status >/dev/null 2>&1; then
+    _octo_probe_results_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/probe-results.sh"
+    [[ -f "$_octo_probe_results_lib" ]] && source "$_octo_probe_results_lib"
+fi
+
 # v8.54.0: Single-agent probe for multi-agentic skill dispatch
 # Runs one probe perspective synchronously and writes result to RESULTS_DIR.
 # Called by Claude's Agent tool (one per perspective) instead of probe_discover().
@@ -24,6 +29,13 @@ probe_single_agent() {
     preflight_check || return 1
 
     mkdir -p "$RESULTS_DIR" "$LOGS_DIR"
+
+    # Dispatch from the user's project so provider sandboxes (codex workdir,
+    # gemini workspace) can read project files (bug 260609). probe-single runs
+    # in its own orchestrate.sh process, so cd here cannot leak to other work.
+    if [[ -n "${PROJECT_ROOT:-}" && -d "$PROJECT_ROOT" ]]; then
+        cd "$PROJECT_ROOT" || log "WARN" "probe_single_agent: cannot cd to PROJECT_ROOT=$PROJECT_ROOT"
+    fi
 
     # Determine role and phase
     local role="researcher"
@@ -79,7 +91,14 @@ IMPORTANT: If you find yourself searching or grepping more than 3 times in a row
     # (probe dispatch has minimal variable content — context budget is the boundary)
 
     # v8.10.0: Enforce context budget AFTER all injections
-    enhanced_prompt=$(enforce_context_budget "$enhanced_prompt" "$role")
+    local tokens_in
+    tokens_in=$(( ${#enhanced_prompt} / 4 ))
+    enhanced_prompt=$(enforce_context_budget "$enhanced_prompt" "$role" "$agent_type")
+    local _budget_rc=$?
+    if [[ $_budget_rc -ne 0 ]]; then
+        type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "failed" "$tokens_in" 0 "Prompt exceeded context budget" 0 "" "$role" || true
+        return "$_budget_rc"
+    fi
 
     # Resolve model and command
     local model
@@ -104,11 +123,13 @@ IMPORTANT: If you find yourself searching or grepping more than 3 times in a row
     case "$agent_type" in
         codex*) provider_name="codex" ;;
         gemini*) provider_name="gemini" ;;
+        agy*|antigravity) provider_name="agy" ;;
         claude*) provider_name="claude" ;;
         perplexity*) provider_name="perplexity" ;;
         copilot*) provider_name="copilot" ;;
         ollama*) provider_name="ollama" ;;
         qwen*) provider_name="qwen" ;;
+        cursor-agent*) provider_name="cursor-agent" ;;
         opencode*) provider_name="opencode" ;;
         *) provider_name="$agent_type" ;;
     esac
@@ -121,12 +142,13 @@ IMPORTANT: If you find yourself searching or grepping more than 3 times in a row
 
     # Build command array with credential isolation
     local -a cmd_array
-    local env_prefix
-    env_prefix=$(build_provider_env "$agent_type")
-    if [[ -n "$env_prefix" ]]; then
-        read -ra cmd_array <<< "$env_prefix $cmd"
+    local -a inner_cmd_array
+    build_provider_env "$agent_type"
+    read -ra inner_cmd_array <<< "$cmd"
+    if [[ ${#PROVIDER_ENV_ARRAY[@]} -gt 0 ]]; then
+        cmd_array=("${PROVIDER_ENV_ARRAY[@]}" "${inner_cmd_array[@]}")
     else
-        read -ra cmd_array <<< "$cmd"
+        cmd_array=("${inner_cmd_array[@]}")
     fi
 
     local temp_output="${RESULTS_DIR}/.tmp-${task_id}.out"
@@ -144,10 +166,9 @@ IMPORTANT: If you find yourself searching or grepping more than 3 times in a row
     echo "## Output" >> "$result_file"
     echo '```' >> "$result_file"
 
-    # Append gemini/copilot/qwen headless flag (-p "" triggers stdin reading)
-    # NOTE: .toml commands exist for human use but don't compose with stdin in headless mode
-    # Qwen is a fork of Gemini CLI — same flags
-    if [[ "$agent_type" == gemini* ]] || [[ "$agent_type" == copilot* ]] || [[ "$agent_type" == qwen* ]]; then
+    # Append headless flag (-p "" triggers stdin reading) for CLI providers
+    # Qwen and Cursor Agent are forks of Gemini CLI — same flags
+    if [[ "$agent_type" == gemini* ]] || [[ "$agent_type" == copilot* ]] || [[ "$agent_type" == qwen* ]] || [[ "$agent_type" == cursor-agent* ]]; then
         cmd_array+=(-p "")
     fi
 
@@ -162,6 +183,7 @@ IMPORTANT: If you find yourself searching or grepping more than 3 times in a row
 
     local auth_attempt=0
     local exit_code=0
+    local final_rc=0
     local start_time_ms
     start_time_ms=$(( $(date +%s) * 1000 ))
 
@@ -203,50 +225,146 @@ IMPORTANT: If you find yourself searching or grepping more than 3 times in a row
 
     # Process output
     if [[ $exit_code -eq 0 ]]; then
-        awk '
-            BEGIN { in_response = 0; header_done = 0; }
-            /^--------$/ { header_done = 1; next; }
-            !header_done { next; }
-            /^(codex|gemini|assistant)$/ { in_response = 1; next; }
-            /^thinking$/ { next; }
-            /^tokens used$/ { next; }
-            /^[0-9,]+$/ && in_response { next; }
-            in_response { print; }
-        ' "$temp_output" >> "$result_file"
-
-        # Trust marker for external CLI output
-        case "$agent_type" in codex*|gemini*|perplexity*)
-            if [[ "${OCTOPUS_SECURITY_V870:-true}" == "true" ]]; then
-                sed -i.bak '1s/^/<!-- trust=untrusted provider='"$agent_type"' -->\n/' "$result_file" 2>/dev/null || true
-                rm -f "${result_file}.bak"
-            fi ;; esac
-
-        echo '```' >> "$result_file"
-        echo "" >> "$result_file"
-        echo "## Status: SUCCESS" >> "$result_file"
-
-        local end_time_ms elapsed_ms
-        end_time_ms=$(( $(date +%s) * 1000 ))
-        elapsed_ms=$((end_time_ms - start_time_ms))
-        update_agent_status "$agent_type" "completed" "$elapsed_ms" 0.0
-        record_outcome "$agent_type" "$agent_type" "research" "$phase" "success" "$elapsed_ms" 2>/dev/null || true
-        # v9.3.0: Record file co-occurrence pattern for heuristic learning
-        record_run_pattern "$agent_type" "${enhanced_prompt:-$original_prompt}" "$result_file" 2>/dev/null || true
-    elif [[ $exit_code -eq 124 ]] || [[ $exit_code -eq 143 ]]; then
-        # Timeout — preserve partial output
-        if [[ -s "$temp_output" ]]; then
+        local separator_count
+        separator_count=$(grep -cE '^--------$' "$temp_output" 2>/dev/null || true)
+        separator_count=${separator_count%%$'\n'*}
+        separator_count=${separator_count:-0}
+        if [[ "$agent_type" == cursor-agent* ]]; then
+            # cursor-agent stdout is clean — strip surrounding blanks only
+            awk '
+                !started && /^[[:space:]]*$/ { next }
+                { started = 1; lines[++count] = $0 }
+                END {
+                    while (count > 0 && lines[count] ~ /^[[:space:]]*$/) {
+                        count--
+                    }
+                    for (i = 1; i <= count; i++) {
+                        print lines[i]
+                    }
+                }
+            ' "$temp_output" >> "$result_file"
+        elif [[ "${separator_count:-0}" -gt 0 ]]; then
+            # v9.27.0: Port #191 awk-header-guard fix from spawn_agent — codex exec
+            # sends clean response on stdout (no header), banner on stderr.
             awk '
                 BEGIN { in_response = 0; header_done = 0; }
                 /^--------$/ { header_done = 1; next; }
                 !header_done { next; }
                 /^(codex|gemini|assistant)$/ { in_response = 1; next; }
+                /^thinking$/ { next; }
+                /^tokens used$/ { next; }
+                /^[0-9,]+$/ && in_response { next; }
                 in_response { print; }
             ' "$temp_output" >> "$result_file"
+        else
+            # No separator + not cursor-agent: strip noise banners (v9.27.0)
+            grep -v \
+                -e '^MCP issues detected' \
+                -e '^Loading extension:' \
+                -e '^YOLO mode is enabled' \
+                -e '^Keychain initialization' \
+                -e '^Using FileKeychain' \
+                -e '^Loaded cached credentials' \
+                -e '^Run /mcp' \
+                "$temp_output" >> "$result_file" 2>/dev/null || cat "$temp_output" >> "$result_file"
+        fi
+        local codex_stderr_transcript_appended=false
+        if [[ "$agent_type" == codex* ]] \
+            && ! grep -q '[[:alnum:]]' "$temp_output" 2>/dev/null \
+            && type octo_file_has_codex_recoverable_stderr >/dev/null 2>&1 \
+            && octo_file_has_codex_recoverable_stderr "$temp_errors"; then
+            echo "(Codex response was emitted on stderr; see Errors transcript below.)" >> "$result_file"
+            echo '```' >> "$result_file"
+            echo "" >> "$result_file"
+            echo "## Errors" >> "$result_file"
+            echo '```' >> "$result_file"
+            cat "$temp_errors" >> "$result_file"
+            echo '```' >> "$result_file"
+            echo "" >> "$result_file"
+            codex_stderr_transcript_appended=true
+        fi
+
+        # Trust marker for external CLI output
+        case "$agent_type" in codex*|gemini*|perplexity*|cursor-agent*)
+            if [[ "${OCTOPUS_SECURITY_V870:-true}" == "true" ]]; then
+                sed -i.bak '1s/^/<!-- trust=untrusted provider='"$agent_type"' -->\n/' "$result_file" 2>/dev/null || true
+                rm -f "${result_file}.bak"
+            fi ;; esac
+
+        local end_time_ms elapsed_ms
+        end_time_ms=$(( $(date +%s) * 1000 ))
+        elapsed_ms=$((end_time_ms - start_time_ms))
+
+        local classification status reason tokens_out
+        classification=$(classify_agent_output "$temp_output" "$exit_code" "$agent_type" "$temp_errors" 2>/dev/null || echo "ok:")
+        status="${classification%%:*}"
+        reason="${classification#*:}"
+        tokens_out=$(octo_estimate_tokens_for_file "$temp_output" 2>/dev/null || echo 0)
+
+        if [[ "$codex_stderr_transcript_appended" != "true" ]]; then
+            echo '```' >> "$result_file"
+            echo "" >> "$result_file"
+        fi
+        # Legacy result consumers look for literal "Status: FAILED" and "Status: TIMEOUT" markers.
+        case "$status" in
+            failed)
+                echo "## Status: FAILED (${reason:-unusable output})" >> "$result_file"
+                if [[ -s "$temp_errors" ]]; then
+                    echo "" >> "$result_file"
+                    echo "## Errors" >> "$result_file"
+                    echo '```' >> "$result_file"
+                    cat "$temp_errors" >> "$result_file"
+                    echo '```' >> "$result_file"
+                fi
+                update_agent_status "$agent_type" "failed" "$elapsed_ms" 0.0
+                record_outcome "$agent_type" "$agent_type" "research" "$phase" "fail" "$elapsed_ms" 2>/dev/null || true
+                type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "failed" "$tokens_in" "$tokens_out" "${reason:-unusable output}" "$elapsed_ms" "$result_file" "$role" || true
+                final_rc=1
+                ;;
+            degraded)
+                echo "## Status: SUCCESS (DEGRADED: ${reason:-partial output})" >> "$result_file"
+                update_agent_status "$agent_type" "completed" "$elapsed_ms" 0.0
+                record_outcome "$agent_type" "$agent_type" "research" "$phase" "success" "$elapsed_ms" 2>/dev/null || true
+                record_run_pattern "$agent_type" "${enhanced_prompt:-$original_prompt}" "$result_file" 2>/dev/null || true
+                type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "degraded" "$tokens_in" "$tokens_out" "${reason:-partial output}" "$elapsed_ms" "$result_file" "$role" || true
+                ;;
+            *)
+                echo "## Status: SUCCESS" >> "$result_file"
+                update_agent_status "$agent_type" "completed" "$elapsed_ms" 0.0
+                record_outcome "$agent_type" "$agent_type" "research" "$phase" "success" "$elapsed_ms" 2>/dev/null || true
+                # v9.3.0: Record file co-occurrence pattern for heuristic learning
+                record_run_pattern "$agent_type" "${enhanced_prompt:-$original_prompt}" "$result_file" 2>/dev/null || true
+                type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "ok" "$tokens_in" "$tokens_out" "" "$elapsed_ms" "$result_file" "$role" || true
+                ;;
+        esac
+    elif [[ $exit_code -eq 124 ]] || [[ $exit_code -eq 143 ]]; then
+        # Timeout — preserve partial output
+        if [[ -s "$temp_output" ]]; then
+            if [[ $(grep -c '^--------$' "$temp_output" 2>/dev/null || true) -gt 0 ]]; then
+                awk '
+                    BEGIN { in_response = 0; header_done = 0; }
+                    /^--------$/ { header_done = 1; next; }
+                    !header_done { next; }
+                    /^(codex|gemini|assistant)$/ { in_response = 1; next; }
+                    /^thinking$/ { next; }
+                    /^tokens used$/ { next; }
+                    /^[0-9,]+$/ && in_response { next; }
+                    in_response { print; }
+                ' "$temp_output" >> "$result_file"
+            else
+                cat "$temp_output" >> "$result_file"
+            fi
         fi
         echo '```' >> "$result_file"
         echo "" >> "$result_file"
         echo "## Status: TIMEOUT" >> "$result_file"
         log "WARN" "Agent $agent_type timed out for task $task_id"
+        local end_time_ms elapsed_ms tokens_out
+        end_time_ms=$(( $(date +%s) * 1000 ))
+        elapsed_ms=$((end_time_ms - start_time_ms))
+        tokens_out=$(octo_estimate_tokens_for_file "$temp_output" 2>/dev/null || echo 0)
+        type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "timeout" "$tokens_in" "$tokens_out" "Timed out before completion" "$elapsed_ms" "$result_file" "$role" || true
+        final_rc=$exit_code
     else
         # Failure
         if [[ -s "$temp_output" ]]; then
@@ -263,6 +381,12 @@ IMPORTANT: If you find yourself searching or grepping more than 3 times in a row
             echo '```' >> "$result_file"
         fi
         log "WARN" "Agent $agent_type failed for task $task_id (exit=$exit_code)"
+        local end_time_ms elapsed_ms tokens_out
+        end_time_ms=$(( $(date +%s) * 1000 ))
+        elapsed_ms=$((end_time_ms - start_time_ms))
+        tokens_out=$(octo_estimate_tokens_for_file "$temp_output" 2>/dev/null || echo 0)
+        type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "failed" "$tokens_in" "$tokens_out" "Exit code $exit_code" "$elapsed_ms" "$result_file" "$role" || true
+        final_rc=$exit_code
     fi
 
     # Cleanup temp files
@@ -271,6 +395,7 @@ IMPORTANT: If you find yourself searching or grepping more than 3 times in a row
     log "INFO" "probe_single_agent complete: $result_file"
     # Output the result file path for the caller
     echo "$result_file"
+    return "$final_rc"
 }
 
 # Phase 1: PROBE (Discover) - Parallel research with synthesis
@@ -279,6 +404,8 @@ probe_discover() {
     local _ts; _ts=$(date +%s)
     local prompt="$1"
     local task_group="$_ts"
+    export OCTOPUS_COMMAND="${OCTOPUS_COMMAND:-discover}"
+    export OCTOPUS_COMMAND_ARGS="${OCTOPUS_COMMAND_ARGS:-$prompt}"
 
     echo ""
     octopus_phase_banner "RESEARCH (Phase 1/4)" "Parallel Exploration" "$MAGENTA"
@@ -289,7 +416,7 @@ probe_discover() {
 
     if [[ "$DRY_RUN" == "true" ]]; then
         log INFO "[DRY-RUN] Would probe: $prompt"
-        log INFO "[DRY-RUN] Would spawn 5+ parallel research agents (Codex, Gemini, Sonnet 4.6, +codebase if in git repo, +Perplexity if API key set)"
+        log INFO "[DRY-RUN] Would spawn 5+ parallel research agents (Codex, Antigravity/agy, Sonnet 4.6, +codebase if in git repo, +Perplexity if API key set)"
         return 0
     fi
 
@@ -407,11 +534,7 @@ ${_blind_spot_checklist}"
     # Initialize progress tracking with actual agent count (dynamic, may be 5, 6, or 7)
     init_progress_tracking "discover" "${#perspectives[@]}"
 
-    # P0-B fix: Force legacy (bash CLI) dispatch for probe-phase agents.
-    # orchestrate.sh runs as a Bash tool subprocess, so Agent Teams JSON
-    # instruction files are never picked up by Claude Code's native dispatcher
-    # and SubagentStop hooks never fire, leaving result files empty.
-    export OCTOPUS_FORCE_LEGACY_DISPATCH=true
+    fleet_dispatch_begin
 
     local pids=()
     for i in "${!perspectives[@]}"; do
@@ -426,13 +549,14 @@ ${_blind_spot_checklist}"
             pids+=("$pid")
         else
             # Standard spawning
-            spawn_agent "$agent" "$perspective" "$task_id" "researcher" "probe" &
-            pids+=($!)
+            local pid
+            pid=$(spawn_agent_capture_pid "$agent" "$perspective" "$task_id" "researcher" "probe")
+            pids+=("$pid")
         fi
         sleep 0.1
     done
 
-    unset OCTOPUS_FORCE_LEGACY_DISPATCH
+    fleet_dispatch_end
 
     log INFO "Spawned ${#pids[@]} parallel research threads"
 
@@ -447,7 +571,10 @@ ${_blind_spot_checklist}"
     # Wait for all to complete with progress
     # v7.19.0 P1.2: Rich progress display
     local start_time=$(date +%s)
+    OCTO_PROGRESS_AGENT_TYPES=("${probe_agents[@]}")
+    OCTO_PROGRESS_AGENT_NAMES=("${pane_titles[@]}")
     display_rich_progress "$task_group" "${#pids[@]}" "$start_time" "${pids[@]}"
+    unset OCTO_PROGRESS_AGENT_TYPES OCTO_PROGRESS_AGENT_NAMES
 
     # Cleanup tmux if enabled
     if [[ "$TMUX_MODE" == "true" ]]; then
@@ -485,30 +612,23 @@ ${_blind_spot_checklist}"
             # Capitalize first letter of agent name properly
             local agent_display="$(_ucfirst "$agent")"
 
-            # Categorize based on content and status markers
-            if grep -q "Status: SUCCESS" "$result_file"; then
+            local classification status reason
+            classification="$(probe_result_file_status "$result_file")"
+            status="${classification%%:*}"
+            reason="${classification#*:}"
+
+            if [[ "$status" == "success" ]]; then
                 echo -e " ${GREEN}✓${NC} $agent_display probe $i: completed ($(numfmt --to=iec-i --suffix=B $file_size 2>/dev/null || echo "${file_size}B"))"
                 ((success_count++)) || true
-            elif grep -q "Status: TIMEOUT" "$result_file"; then
+            elif [[ "$status" == "timeout" ]]; then
                 echo -e " ${YELLOW}⏳${NC} $agent_display probe $i: timeout with partial results ($(numfmt --to=iec-i --suffix=B $file_size 2>/dev/null || echo "${file_size}B"))"
                 ((timeout_count++)) || true
-            elif grep -q "Status: FAILED" "$result_file"; then
-                if [[ $file_size -gt 1024 ]]; then
-                    echo -e " ${YELLOW}⚠${NC}  $agent_display probe $i: failed but has output ($(numfmt --to=iec-i --suffix=B $file_size 2>/dev/null || echo "${file_size}B"))"
-                    ((timeout_count++))  # Count as partial success
-                else
-                    echo -e " ${RED}✗${NC} $agent_display probe $i: failed ($(numfmt --to=iec-i --suffix=B $file_size 2>/dev/null || echo "${file_size}B"))"
-                    ((failure_count++)) || true
-                fi
+            elif [[ "$status" == "degraded" ]]; then
+                echo -e " ${YELLOW}⚠${NC} $agent_display probe $i: partial result (${reason:-degraded}; $(numfmt --to=iec-i --suffix=B $file_size 2>/dev/null || echo "${file_size}B"))"
+                ((timeout_count++)) || true
             else
-                # No clear status marker - check file size
-                if [[ $file_size -gt 1024 ]]; then
-                    echo -e " ${YELLOW}?${NC} $agent_display probe $i: unknown status but has content ($(numfmt --to=iec-i --suffix=B $file_size 2>/dev/null || echo "${file_size}B"))"
-                    ((timeout_count++))  # Count as partial success
-                else
-                    echo -e " ${RED}✗${NC} $agent_display probe $i: empty or missing ($(numfmt --to=iec-i --suffix=B $file_size 2>/dev/null || echo "${file_size}B"))"
-                    ((failure_count++)) || true
-                fi
+                echo -e " ${RED}✗${NC} $agent_display probe $i: unusable (${reason:-failed}; $(numfmt --to=iec-i --suffix=B $file_size 2>/dev/null || echo "${file_size}B"))"
+                ((failure_count++)) || true
             fi
         else
             local agent_display="$(_ucfirst "$agent")"
@@ -528,7 +648,7 @@ ${_blind_spot_checklist}"
             local task_id="probe-${task_group}-${i}"
             local agent="${probe_agents[$i]}"
             local result_file="${RESULTS_DIR}/${agent}-${task_id}.md"
-            if [[ ! -f "$result_file" ]] || grep -q "Status: FAILED" "$result_file" 2>/dev/null; then
+            if [[ ! -f "$result_file" ]] || ! probe_result_file_is_usable "$result_file"; then
                 failed_providers="${failed_providers:+$failed_providers, }${agent}"
             fi
         done
@@ -539,6 +659,13 @@ ${_blind_spot_checklist}"
         fi
     fi
     echo ""
+
+    # v9.37.0: Make provider participation explicit before synthesis so users
+    # can tell which LLMs actually contributed and fail-fast if all providers
+    # are required.
+    if type render_agent_summary >/dev/null 2>&1; then
+        render_agent_summary || return $?
+    fi
 
     # v8.48.0: Write synthesis marker before attempting synthesis
     # WHY: The Bash tool's 120s timeout frequently kills the process during
@@ -587,7 +714,7 @@ grasp_define() {
 
     if [[ "$DRY_RUN" == "true" ]]; then
         log INFO "[DRY-RUN] Would grasp: $prompt"
-        log INFO "[DRY-RUN] Would gather 4 perspectives (Codex, Gemini, Sonnet 4.6) and build consensus"
+        log INFO "[DRY-RUN] Would gather 4 perspectives (Codex, Antigravity/agy, Sonnet 4.6) and build consensus"
         return 0
     fi
 
@@ -615,9 +742,9 @@ grasp_define() {
         echo -e " ${YELLOW}⚠${NC}  Codex unavailable for problem definition — falling back to Claude"
         def1=$(run_agent_sync "claude-sonnet" "Based on: $prompt\n${context}Define the core problem statement in 2-3 sentences. What is the essential challenge?" 120 "backend-architect" "grasp") || true
     }
-    def2=$(run_agent_sync "gemini" "Based on: $prompt\n${context}Define success criteria. How will we know when this is solved correctly? List 3-5 measurable criteria." 120 "researcher" "grasp") || {
-        log WARN "Gemini failed for success criteria, falling back to Claude"
-        echo -e " ${YELLOW}⚠${NC}  Gemini unavailable for success criteria — falling back to Claude"
+    def2=$(run_agent_sync "agy" "Based on: $prompt\n${context}Define success criteria. How will we know when this is solved correctly? List 3-5 measurable criteria." 120 "researcher" "grasp") || {
+        log WARN "Antigravity (agy) failed for success criteria, falling back to Claude"
+        echo -e " ${YELLOW}⚠${NC}  Antigravity (agy) unavailable for success criteria — falling back to Claude"
         def2=$(run_agent_sync "claude-sonnet" "Based on: $prompt\n${context}Define success criteria. How will we know when this is solved correctly? List 3-5 measurable criteria." 120 "researcher" "grasp") || true
     }
     def3=$(run_agent_sync "claude-sonnet" "Based on: $prompt\n${context}Define constraints and boundaries. What are we NOT solving? What are hard limits?" 120 "researcher" "grasp")
@@ -646,7 +773,7 @@ Output a single, clear problem definition document with:
 4. Recommended Approach"
 
     local consensus
-    consensus=$(run_agent_sync "gemini" "$consensus_prompt" 180 "synthesizer" "grasp") || {
+    consensus=$(run_agent_sync "agy" "$consensus_prompt" 180 "synthesizer" "grasp") || {
         consensus="[Auto-consensus failed - manual review required]\n\nProblem: $def1\n\nSuccess Criteria: $def2\n\nConstraints: $def3"
     }
 
@@ -666,6 +793,830 @@ EOF
     echo -e "${GREEN}✓${NC} Problem definition saved to: $consensus_file"
     echo ""
 }
+
+build_tangle_subtask_prompt() {
+    local original_task="$1"
+    local assigned_subtask="$2"
+
+    if [[ -z "${original_task//[[:space:]]/}" ]]; then
+        echo "build_tangle_subtask_prompt: original task is required" >&2
+        return 64
+    fi
+    if [[ -z "${assigned_subtask//[[:space:]]/}" ]]; then
+        echo "build_tangle_subtask_prompt: assigned subtask is required" >&2
+        return 64
+    fi
+
+    local repo_context
+    repo_context=$(tangle_build_repo_context_block "$assigned_subtask")
+
+    cat <<EOF
+Original task context:
+${original_task}
+
+Assigned subtask:
+${assigned_subtask}
+
+${repo_context}
+
+Execution instructions:
+- Treat the original task as authoritative for requirements, explicit file targets, acceptance criteria, and forbidden changes.
+- Complete the assigned subtask without dropping original constraints that apply to it.
+- For [CODING] work, edit the repository files directly in the current worktree. Do not only describe a plan or paste code snippets.
+- For [CODING] work, treat file paths/directories named in the assigned subtask as approximate exclusive write scope intent. Use the resolved repository context files above as the concrete targets. Do not edit files clearly owned by another subtask; report a blocker if the required change crosses scopes.
+- If the subtask creates a new exported component, command, event type, route, hook, or helper, wire it into at least one production call site unless the original task explicitly asks for an isolated artifact.
+- Tests alone are not integration evidence. User-facing features must be reachable from the relevant user flow or the subtask must report a blocker.
+- In the final output, include "## Worktree Changes", "## Integration Evidence", and "## Verification" sections.
+- If the assigned subtask is incomplete, contradictory, or omits required context, report the blocker instead of inventing scope.
+EOF
+}
+
+tangle_extract_write_scopes() {
+    local text="$1"
+    local files_text
+
+    files_text=$(printf '%s\n' "$text" | sed -nE 's/.*Files:[[:space:]]*//p' | head -n 1)
+    files_text=$(printf '%s\n' "$files_text" | sed -E 's/[[:space:]]+[—-][[:space:]]+Task:.*$//; s/[[:space:]]+Task:.*$//')
+    [[ -n "$files_text" ]] || return 0
+
+    printf '%s\n' "$files_text" \
+        | tr ' `",;()[]{}' '\n' \
+        | sed -nE '/^([A-Za-z0-9_.@%+-]+(\/[A-Za-z0-9_.@%+\/-]+)?)(\*|\/)?(:[0-9]+)?$/p' \
+        | sed -E 's/:([0-9]+)$//; s/[[:punct:]]+$//' \
+        | sed -E 's#^\./##; s#/\*$#/#; s#//+#/#g' \
+        | sed '/^$/d' \
+        | sort -u
+}
+
+tangle_scope_is_directory() {
+    local scope="$1"
+    local base
+    [[ "$scope" == */ ]] && return 0
+    [[ "$scope" == *"*"* ]] && return 0
+    base="${scope##*/}"
+    [[ "$base" != *.* ]]
+}
+
+tangle_scopes_overlap() {
+    local left="${1%/}"
+    local right="${2%/}"
+    [[ -z "$left" || -z "$right" ]] && return 1
+    [[ "$left" == "$right" ]] && return 0
+
+    if tangle_scope_is_directory "$1" && [[ "$right" == "$left"/* ]]; then
+        return 0
+    fi
+    if tangle_scope_is_directory "$2" && [[ "$left" == "$right"/* ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
+tangle_resolve_repo_root() {
+    local repo_root
+    local resolved_root
+
+    if [[ -n "${PROJECT_ROOT:-}" ]]; then
+        if [[ -d "$PROJECT_ROOT" ]]; then
+            resolved_root=$(git -C "$PROJECT_ROOT" rev-parse --show-toplevel 2>/dev/null || true)
+            if [[ -z "$resolved_root" ]]; then
+                printf '%s\n' "$PROJECT_ROOT"
+                return 0
+            fi
+            printf '%s\n' "$resolved_root"
+            return 0
+        fi
+        repo_root="$(pwd)"
+    else
+        repo_root="$(pwd)"
+    fi
+
+    resolved_root=$(git -C "$repo_root" rev-parse --show-toplevel 2>/dev/null || true)
+    [[ -n "$resolved_root" ]] || return 1
+    printf '%s\n' "$resolved_root"
+}
+
+tangle_resolve_repo_context_files() {
+    local text="$1"
+    local max_files="${OCTOPUS_TANGLE_CONTEXT_MAX_FILES:-16}"
+    [[ "$max_files" =~ ^[0-9]+$ ]] || max_files=16
+
+    local repo_root
+    repo_root=$(tangle_resolve_repo_root) || return 0
+    git -C "$repo_root" rev-parse --show-toplevel >/dev/null 2>&1 || return 0
+
+    local files=()
+    local token full basename
+
+    # Keep concrete existing files explicitly named by the decomposition.
+    while IFS= read -r token; do
+        [[ -z "$token" ]] && continue
+        token="${token#./}"
+        if [[ -f "$repo_root/$token" ]]; then
+            files+=("$token")
+        else
+            basename="${token##*/}"
+            if [[ "$basename" == *.* ]]; then
+                while IFS= read -r full; do
+                    [[ -n "$full" ]] && files+=("$full")
+                done < <(git -C "$repo_root" ls-files | awk -v b="$basename" 'BEGIN{n=0} {split($0,a,"/"); if (a[length(a)]==b && n<4) {print; n++}}')
+            fi
+        fi
+    done < <(printf '%s\n' "$text" | grep -Eo '[A-Za-z0-9_./-]+\.(js|ts|json|md|yml|yaml|toml|py|sh)' | sort -u)
+
+    # Add high-signal files by endpoint/domain terms.
+    local lower
+    lower=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')
+    if [[ "$lower" == *"runterminalscript"* || "$lower" == *"commands/execute"* || "$lower" == *"script mode"* || "$lower" == *"bounded executor"* ]]; then
+        for full in api/terminal.js serverModules/apiRoutes.js serverModules/swaggerSetup.js api/activityLog.js package.json README.md SETUP.md; do
+            [[ -f "$repo_root/$full" ]] && files+=("$full")
+        done
+    fi
+    if [[ "$lower" == *"openapi"* || "$lower" == *"schema"* || "$lower" == *"readme"* || "$lower" == *"setup"* || "$lower" == *"documentation"* ]]; then
+        for full in serverModules/swaggerSetup.js README.md SETUP.md package.json; do
+            [[ -f "$repo_root/$full" ]] && files+=("$full")
+        done
+    fi
+    if [[ "$lower" == *"test"* || "$lower" == *"acceptance"* || "$lower" == *"smoke"* ]]; then
+        for full in package.json README.md SETUP.md; do
+            [[ -f "$repo_root/$full" ]] && files+=("$full")
+        done
+    fi
+
+    # Fallback: use grep over tracked text files for rare domain tokens.
+    if [[ ${#files[@]} -lt 3 ]]; then
+        for token in runterminalscript commands execute terminal swagger activity bounded timeout; do
+            if [[ "$lower" == *"$token"* ]]; then
+                while IFS= read -r full; do
+                    [[ -n "$full" ]] && files+=("$full")
+                done < <(git -C "$repo_root" grep -Il -m1 "$token" -- '*.js' '*.json' '*.md' 2>/dev/null | head -n 6)
+            fi
+        done
+    fi
+
+    [[ ${#files[@]} -gt 0 ]] || return 0
+    printf '%s\n' "${files[@]}" | sed '/^$/d' | awk '!seen[$0]++' | sed -n "1,${max_files}p"
+}
+
+tangle_build_repo_context_block() {
+    local assigned_subtask="$1"
+    local repo_root
+    repo_root=$(tangle_resolve_repo_root) || return 0
+    local resolved
+    resolved=$(tangle_resolve_repo_context_files "$assigned_subtask")
+    cat <<EOF
+Repository context for this subtask:
+- The worktree is the source of truth. Do not invent repository layout from generic names.
+- Treat the decomposer's Files clause as approximate intent. Prefer the resolved files below when they conflict with invented paths.
+- If none of the resolved files fit, inspect the tracked file list and report the blocker.
+
+Tracked files, first 200:
+$(git -C "$repo_root" ls-files 2>/dev/null | sed -n '1,200p')
+
+Resolved relevant files to inspect/edit for this subtask:
+${resolved:-<none resolved>}
+EOF
+}
+
+tangle_scope_is_known_or_explicit_new_file() {
+    local scope="$1"
+    local normalized="${scope%/}"
+    [[ -z "$normalized" ]] && return 1
+
+    local repo_root
+    if ! repo_root=$(tangle_resolve_repo_root 2>/dev/null); then
+        if [[ -n "${PROJECT_ROOT:-}" && -d "$PROJECT_ROOT" ]]; then
+            repo_root="$PROJECT_ROOT"
+        else
+            repo_root=$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null || pwd)
+        fi
+    fi
+    if git -C "$repo_root" rev-parse --show-toplevel >/dev/null 2>&1; then
+        if git -C "$repo_root" ls-files --error-unmatch "$normalized" >/dev/null 2>&1; then
+            return 0
+        fi
+        local child_matches
+        child_matches=$(git -C "$repo_root" ls-files "$normalized/" 2>/dev/null || true)
+        if [[ -n "$child_matches" ]]; then
+            return 0
+        fi
+    fi
+
+    [[ -e "$repo_root/$normalized" ]] && return 0
+
+    if [[ "$scope" != */ && "${normalized##*/}" == *.* ]]; then
+        local parent="${normalized%/*}"
+        [[ "$parent" == "$normalized" ]] && return 0
+        [[ -d "$repo_root/$parent" ]] && return 0
+        if git -C "$repo_root" rev-parse --show-toplevel >/dev/null 2>&1; then
+            local parent_matches
+            parent_matches=$(git -C "$repo_root" ls-files "$parent/" 2>/dev/null || true)
+            if [[ -n "$parent_matches" ]]; then
+                return 0
+            fi
+        fi
+    fi
+    return 1
+}
+
+
+tangle_line_is_numbered_subtask() {
+    local line="$1"
+    local numbered_subtask_pattern='^[[:space:]]*(\*\*)?[0-9]+[.)]'
+    if [[ "$line" =~ $numbered_subtask_pattern ]]; then
+        return 0
+    fi
+    return 1
+}
+
+tangle_parseable_subtask_count() {
+    local subtasks="$1"
+    local count=0
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        tangle_line_is_numbered_subtask "$line" && ((count++)) || true
+    done <<< "$subtasks"
+    echo "$count"
+}
+
+tangle_parseable_coding_subtask_count() {
+    local subtasks="$1"
+    local count=0
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        tangle_line_is_numbered_subtask "$line" || continue
+        [[ "$line" =~ \[CODING\] ]] && ((count++)) || true
+    done <<< "$subtasks"
+    echo "$count"
+}
+
+tangle_reformat_decomposition() {
+    local original_task="$1"
+    local previous_decomposition="$2"
+    local reason="${3:-not parseable}"
+    local repo_file_map="${4:-}"
+    local reformat_prompt="Reformat the previous Octopus task decomposition. Do not add analysis.
+
+Required output format, exactly one subtask per line:
+1. [CODING] Short title — Files: relative/file.js, another/file.js — Task: specific coding work
+2. [REASONING] Short title — Task: specific reasoning/review work
+
+Rules:
+- Output only numbered lines. No Markdown headings, no code fences, no prose before or after.
+- Every [CODING] line must include a same-line 'Files:' clause.
+- Use relative file or directory scopes from the repository file map when possible.
+- Prefer concrete paths from the repository file map; invented/generic paths will be resolved against the actual worktree before dispatch.
+- New files should be explicit filenames whose parent directory already exists, or root-level files; avoid creating new source trees unless explicitly required.
+- Coding write scopes must be disjoint. If scopes overlap, merge those items into one [CODING] line.
+- If all coding work touches the same files, output one [CODING] line with those files rather than pretending it can be parallelized.
+- Keep 1-6 total subtasks.
+
+${repo_file_map}
+
+Original task:
+${original_task}
+
+Previous decomposition failed validation because: ${reason}
+
+Previous decomposition:
+${previous_decomposition}
+"
+
+    local tangle_decompose_agent="agy" tangle_decompose_fallback_agent="codex"
+    if declare -f octopus_agent_override >/dev/null 2>&1; then
+        tangle_decompose_agent=$(octopus_agent_override "tangle" "decompose" "agy")
+        tangle_decompose_fallback_agent=$(octopus_agent_override "tangle" "decompose_fallback" "codex")
+    fi
+
+    OCTOPUS_UNBOUNDED_EXECUTION_SUPERVISED="tangle-reformat-validation" run_agent_sync "$tangle_decompose_agent" "$reformat_prompt" 0 "researcher" "tangle" || \
+    OCTOPUS_UNBOUNDED_EXECUTION_SUPERVISED="tangle-reformat-validation" run_agent_sync "$tangle_decompose_fallback_agent" "$reformat_prompt" 0 "researcher" "tangle"
+}
+
+tangle_validate_parallel_write_scopes() {
+    local subtasks="$1"
+    local task_index=0
+    local coding_count=0
+    local existing_scopes=()
+    local existing_tasks=()
+
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        tangle_line_is_numbered_subtask "$line" || continue
+
+        local subtask
+        subtask=$(echo "$line" | sed -E 's/^[[:space:]]*(\*\*)?[0-9]+[\.\)][[:space:]]*//; s/^[[:space:]]+//')
+        ((task_index++)) || true
+
+        if [[ "$subtask" =~ \[REASONING\] ]]; then
+            continue
+        fi
+
+        ((coding_count++)) || true
+        subtask=$(echo "$subtask" | sed 's/\[CODING\]\s*//; s/\[REASONING\]\s*//')
+
+        local scopes
+        scopes=$(tangle_extract_write_scopes "$subtask")
+        if [[ -z "$scopes" ]]; then
+            echo "coding subtask ${task_index} has no explicit file or directory write scope"
+            return 1
+        fi
+
+        local effective_scopes=""
+        while IFS= read -r scope; do
+            [[ -z "$scope" ]] && continue
+            if tangle_scope_is_known_or_explicit_new_file "$scope"; then
+                effective_scopes="${effective_scopes}${scope}
+"
+            else
+                local resolved_scopes
+                resolved_scopes=$(tangle_resolve_repo_context_files "$subtask")
+                if [[ -n "$resolved_scopes" ]]; then
+                    effective_scopes="${effective_scopes}${resolved_scopes}
+"
+                else
+                    effective_scopes="${effective_scopes}${scope}
+"
+                fi
+            fi
+        done <<< "$scopes"
+        effective_scopes=$(printf '%s
+' "$effective_scopes" | sed '/^$/d' | sort -u)
+
+        while IFS= read -r scope; do
+            [[ -z "$scope" ]] && continue
+            local i
+            for i in "${!existing_scopes[@]}"; do
+                [[ "${existing_tasks[$i]}" == "$task_index" ]] && continue
+                if tangle_scopes_overlap "$scope" "${existing_scopes[$i]}"; then
+                    echo "coding subtask ${task_index} effective write scope '${scope}' overlaps subtask ${existing_tasks[$i]} scope '${existing_scopes[$i]}'"
+                    return 1
+                fi
+            done
+            existing_scopes+=("$scope")
+            existing_tasks+=("$task_index")
+        done <<< "$effective_scopes"
+    done <<< "$subtasks"
+
+    [[ $coding_count -eq 0 ]] && return 0
+    return 0
+}
+
+
+octo_bool_disabled() {
+    case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+        0|false|off|no|disabled) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+octo_bool_enabled() {
+    case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+        1|true|on|yes|enabled) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+tangle_review_warning_text() {
+    local findings_file="$1"
+    [[ -f "$findings_file" ]] || return 0
+    jq -r '(.warning // (if ((.message // "") | test("No changes found to review"; "i")) then .message else "" end)) // ""' "$findings_file" 2>/dev/null || true
+}
+
+tangle_review_blocking_count() {
+    local findings_file="$1"
+    [[ -f "$findings_file" ]] || { echo 0; return 0; }
+    local review_warning
+    review_warning=$(tangle_review_warning_text "$findings_file")
+    if [[ -n "$review_warning" ]]; then
+        echo 1
+        return 0
+    fi
+    local count
+    if ! count=$(jq '[.findings[]? | select((.severity // "") == "normal")] | length' "$findings_file" 2>/dev/null); then
+        # fail closed: malformed/truncated findings must block delivery.
+        echo 1
+        return 0
+    fi
+    echo "$count"
+}
+
+tangle_review_findings_summary() {
+    local findings_file="$1"
+    [[ -f "$findings_file" ]] || return 0
+    jq -r '.findings[]? | "- [" + (.severity // "unknown") + "] " + (.title // "untitled") + " — " + (.file // "unknown") + ":" + ((.line // 0)|tostring) + "\n  " + (.detail // "")' "$findings_file" 2>/dev/null || true
+}
+
+tangle_normal_findings_summary() {
+    local findings_file="$1"
+    [[ -f "$findings_file" ]] || return 0
+    jq -r '.findings[]? | select((.severity // "") == "normal") | "### " + (.title // "untitled") + "\n- Location: " + (.file // "unknown") + ":" + ((.line // 0)|tostring) + "\n- Confidence: " + ((.confidence // 0)|tostring) + "\n\n" + (.detail // "") + "\n"' "$findings_file" 2>/dev/null || true
+}
+
+tangle_findings_signature() {
+    local findings_file="$1"
+    [[ -f "$findings_file" ]] || { echo "missing"; return 0; }
+    jq -r '[.findings[]? | select((.severity // "") == "normal") | (.title // .message // "untitled")] | sort | join(" | ")' "$findings_file" 2>/dev/null || echo "unparseable"
+}
+
+# Fingerprint only the actionable validation-gate decision. This lets the
+# correction loop distinguish useful validation movement from a static gate that
+# is being recomputed from immutable initial subtask result files.
+tangle_validation_signature() {
+    local validation_file="$1"
+    [[ -f "$validation_file" ]] || { echo "missing"; return 0; }
+    awk '
+        /^### Quality Gate:/ { capture=1 }
+        /^### Subtask Results/ { capture=0 }
+        capture { print }
+    ' "$validation_file" 2>/dev/null | sha256sum | awk '{print $1}'
+}
+
+tangle_worktree_fingerprint() {
+    local repo_root
+    repo_root=$(tangle_resolve_repo_root 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || pwd)
+    {
+        git -C "$repo_root" status --porcelain 2>/dev/null || true
+        git -C "$repo_root" diff --stat 2>/dev/null || true
+        git -C "$repo_root" ls-files --others --exclude-standard 2>/dev/null || true
+    } | sha256sum 2>/dev/null | awk '{print $1}'
+}
+
+tangle_process_is_active_non_zombie() {
+    local pid="${1:-}"
+    [[ -n "$pid" ]] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    local stat
+    stat=$(ps -o stat= -p "$pid" 2>/dev/null | awk 'NR==1 {print $1}') || stat=""
+    [[ -n "$stat" ]] || return 1
+    [[ "$stat" == Z* ]] && return 1
+    return 0
+}
+
+tangle_scope_contamination_summary() {
+    local repo_root
+    repo_root=$(tangle_resolve_repo_root 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || pwd)
+    git -C "$repo_root" status --porcelain 2>/dev/null \
+        | awk '{print $2}' \
+        | grep -E '(^|/)(_wr\.py|.*\.bak$|.*_new\.[^.]+$|.*_p[0-9]+\.[^.]+$|.*\.tmp$|.*\.orig$)' \
+        || true
+}
+
+tangle_correction_strategy_prompt() {
+    local strategy="${1:-delta}"
+    case "$strategy" in
+        cleanup-and-fix)
+            cat <<'EOF'
+Strategy for this round:
+- First remove or reverse out-of-scope scratch/backup files created by earlier attempts.
+- Then fix the smallest set of blocking findings possible.
+- Do not create backup, scratch, _new, _pN, .tmp, .orig, or helper files.
+EOF
+            ;;
+        single-finding)
+            cat <<'EOF'
+Strategy for this round:
+- Do not attempt to fix all findings at once.
+- Pick the highest-impact blocking finding and fix that one cleanly.
+- If tests or OpenAPI are the selected blocker, add only the required files/scripts.
+- Do not create backup, scratch, _new, _pN, .tmp, .orig, or helper files.
+EOF
+            ;;
+        *)
+            cat <<'EOF'
+Strategy for this round:
+- Apply a minimal delta patch that reduces the current blocking findings.
+- Prefer small, path-scoped edits over rewrites.
+- Do not create backup, scratch, _new, _pN, .tmp, .orig, or helper files.
+EOF
+            ;;
+    esac
+}
+
+TANGLE_CORRECTION_FILE=""
+TANGLE_CORRECTION_STATUS=""
+TANGLE_CORRECTION_CHANGED="0"
+TANGLE_CORRECTION_CONTAMINATION=""
+
+tangle_build_develop_review_context() {
+    local task_group="$1"
+    local resolved_prompt="$2"
+    local grasp_context="$3"
+    local subtasks="$4"
+    local validation_file="$5"
+    local worktree_before_file="$6"
+    local round_label="${7:-initial}"
+    local context_file="${RESULTS_DIR:-${HOME}/.claude-octopus/results}/develop-review-context-${task_group}-${round_label}.md"
+    local repo_root
+    repo_root=$(tangle_resolve_repo_root 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || pwd)
+
+    {
+        echo "# Develop Review Context"
+        echo
+        echo "## Purpose"
+        echo "Review the current working-tree diff against the original task contract, grasp/define context, tangle decomposition, and validation evidence."
+        echo
+        echo "## Review round"
+        echo "$round_label"
+        echo
+        echo "## Repository"
+        echo '```text'
+        echo "$repo_root"
+        echo '```'
+        echo
+        echo "## Git status"
+        echo '```text'
+        git -C "$repo_root" status --short --branch 2>/dev/null || true
+        echo '```'
+        echo
+        echo "## Changed files"
+        echo '```text'
+        {
+            git -C "$repo_root" diff --name-status 2>/dev/null || true
+            git -C "$repo_root" ls-files --others --exclude-standard 2>/dev/null | sed 's/^/??\t/' || true
+        } | sort -u
+        echo '```'
+        echo
+        echo "## Worktree diff stat"
+        echo '```text'
+        git -C "$repo_root" diff --stat 2>/dev/null || true
+        echo '```'
+        echo
+        if [[ -f "$worktree_before_file" ]]; then
+            echo "## Worktree snapshot before tangle"
+            echo '```text'
+            sed -n '1,200p' "$worktree_before_file" 2>/dev/null || true
+            echo '```'
+            echo
+        fi
+        echo "## Original task / task contract"
+        echo '```markdown'
+        printf '%s\n' "$resolved_prompt"
+        echo '```'
+        echo
+        if [[ -n "$grasp_context" ]]; then
+            echo "## Grasp / define context"
+            echo '```markdown'
+            printf '%s\n' "$grasp_context"
+            echo '```'
+            echo
+        fi
+        echo "## Tangle decomposition"
+        echo '```text'
+        printf '%s\n' "$subtasks"
+        echo '```'
+        echo
+        if [[ -f "$validation_file" ]]; then
+            echo "## Tangle validation report excerpt"
+            echo '```markdown'
+            sed -n '1,260p' "$validation_file" 2>/dev/null || true
+            echo '```'
+            echo
+            echo "## Tangle validation key lines"
+            echo '```text'
+            grep -n "Quality Gate\|Success Rate\|Failed\|Decision Branch\|Worktree Change Evidence\|Missing\|Status:" "$validation_file" 2>/dev/null | head -120 || true
+            echo '```'
+        fi
+    } > "$context_file"
+
+    echo "$context_file"
+}
+
+TANGLE_REVIEW_FINDINGS_FILE=""
+
+tangle_run_context_code_review() {
+    local task_group="$1"
+    local context_file="$2"
+    local round_label="${3:-initial}"
+    local marker findings_file review_profile review_rc
+    TANGLE_REVIEW_FINDINGS_FILE=""
+
+    if ! declare -F review_run >/dev/null 2>&1; then
+        log ERROR "tangle review gate cannot run: review_run is unavailable"
+        return 1
+    fi
+
+    marker=$(mktemp "${TMPDIR:-/tmp}/octopus-tangle-review-marker.XXXXXX")
+    touch "$marker"
+    local _marker_cleanup_trap
+    _marker_cleanup_trap=$(trap -p RETURN || true)
+    trap 'rm -f "${marker:-}" 2>/dev/null || true' RETURN
+
+    review_profile=$(jq -n \
+        --arg target "${OCTOPUS_TANGLE_REVIEW_TARGET:-working-tree}" \
+        --arg contextFile "$context_file" \
+        --arg contextLabel "Octopus tangle develop review context (${round_label})" \
+        --arg provenance "octopus-tangle" \
+        --arg autonomy "${OCTOPUS_TANGLE_REVIEW_AUTONOMY:-autonomous}" \
+        --arg publish "${OCTOPUS_TANGLE_REVIEW_PUBLISH:-never}" \
+        --arg history "${OCTOPUS_TANGLE_REVIEW_HISTORY:-fresh}" \
+        '{target:$target, contextFile:$contextFile, contextLabel:$contextLabel, focus:["correctness","security","architecture","tdd","plan-conformance"], provenance:$provenance, autonomy:$autonomy, publish:$publish, history:$history}')
+
+    log INFO "Step 4: Contextual code review (${round_label})..."
+    review_run "$review_profile"
+    review_rc=$?
+
+    findings_file=""
+    local _findings_candidate _findings_mtime _best_findings_mtime=0
+    while IFS= read -r _findings_candidate; do
+        [[ -f "$_findings_candidate" ]] || continue
+        [[ "$_findings_candidate" -nt "$marker" ]] || continue
+        _findings_mtime=$(stat -c '%Y' "$_findings_candidate" 2>/dev/null || stat -f '%m' "$_findings_candidate" 2>/dev/null || echo 0)
+        [[ "$_findings_mtime" =~ ^[0-9]+$ ]] || _findings_mtime=0
+        if [[ "$_findings_mtime" -ge "$_best_findings_mtime" ]]; then
+            _best_findings_mtime="$_findings_mtime"
+            findings_file="$_findings_candidate"
+        fi
+    done < <(find "${RESULTS_DIR:-${HOME}/.claude-octopus/results}" -maxdepth 1 -type f -name 'review-findings-*.json' 2>/dev/null || true)
+    rm -f "$marker" 2>/dev/null || true
+    trap - RETURN
+    if [[ -n "$_marker_cleanup_trap" ]]; then
+        eval "$_marker_cleanup_trap"
+    fi
+
+    if [[ -z "$findings_file" || ! -f "$findings_file" ]]; then
+        log ERROR "Contextual code review did not produce a findings file"
+        return 1
+    fi
+
+    TANGLE_REVIEW_FINDINGS_FILE="$findings_file"
+    local normal_count review_warning
+    normal_count=$(tangle_review_blocking_count "$findings_file")
+    review_warning=$(tangle_review_warning_text "$findings_file")
+    log INFO "Contextual code review findings: $findings_file (normal=${normal_count})"
+    if [[ -n "$review_warning" ]]; then
+        log WARN "Contextual code review warning: ${review_warning}"
+        return 1
+    fi
+    return "$review_rc"
+}
+
+tangle_apply_review_corrections() {
+    local resolved_prompt="$1"
+    local context_file="$2"
+    local findings_file="$3"
+    local round_num="$4"
+    local correction_agent="${5:-codex}"
+    local correction_strategy="${6:-delta}"
+    local correction_file="${RESULTS_DIR:-${HOME}/.claude-octopus/results}/tangle-review-corrections-${round_num}-$(date +%s).md"
+    local rc_file="${correction_file}.rc"
+    local normal_findings strategy_text before_fp after_fp last_fp last_size last_progress now
+
+    TANGLE_CORRECTION_FILE="$correction_file"
+    TANGLE_CORRECTION_STATUS="unknown"
+    TANGLE_CORRECTION_CHANGED="0"
+    TANGLE_CORRECTION_CONTAMINATION=""
+
+    normal_findings=$(tangle_normal_findings_summary "$findings_file")
+    if [[ -z "$normal_findings" ]]; then
+        log INFO "No normal findings to correct in $findings_file"
+        TANGLE_CORRECTION_STATUS="no-findings"
+        return 0
+    fi
+
+    strategy_text=$(tangle_correction_strategy_prompt "$correction_strategy")
+    local correction_prompt="You are in Octopus tangle correction round ${round_num}.
+
+Do not reimplement the whole plan.
+Do not expand scope.
+Do not restart from scratch.
+Preserve existing working-tree changes unless a change is necessary to fix a blocking finding.
+Fix blocking severity=normal findings using the requested strategy.
+After editing, report files changed and tests/checks run.
+
+${strategy_text}
+
+Hard rules:
+- Do not declare success unless the intended edits were actually written.
+- Do not leave backup/scratch files in the worktree.
+- Prefer exact edits and tests over prose.
+
+Original task contract:
+\`\`\`markdown
+${resolved_prompt}
+\`\`\`
+
+Review context file for reference:
+${context_file}
+
+Blocking findings to fix:
+${normal_findings}
+"
+
+    before_fp=$(tangle_worktree_fingerprint)
+    last_fp="$before_fp"
+    last_size=0
+    last_progress=$(date +%s)
+    : > "$correction_file"
+    rm -f "$rc_file" 2>/dev/null || true
+
+    local stall_window="${OCTOPUS_TANGLE_CORRECTION_STALL_WINDOW:-1800}"
+    local poll_secs="${OCTOPUS_TANGLE_CORRECTION_POLL_SECS:-30}"
+    [[ "$stall_window" =~ ^[0-9]+$ ]] || stall_window=1800
+    [[ "$poll_secs" =~ ^[0-9]+$ ]] || poll_secs=30
+    [[ "$poll_secs" -lt 1 ]] && poll_secs=1
+
+    log INFO "Step 5: Applying contextual review corrections (round ${round_num}, strategy=${correction_strategy}, stall_window=${stall_window}s) with ${correction_agent}..."
+    (
+        OCTOPUS_UNBOUNDED_EXECUTION_SUPERVISED="tangle-correction-stall-watchdog" run_agent_sync "$correction_agent" "$correction_prompt" 0 "implementer" "tangle" > "$correction_file" 2>&1
+        echo "$?" > "$rc_file"
+    ) &
+    local correction_pid=$!
+    local stalled="false"
+
+    while true; do
+        [[ -f "$rc_file" ]] && break
+        if ! tangle_process_is_active_non_zombie "$correction_pid"; then
+            break
+        fi
+        sleep "$poll_secs"
+        local current_fp current_size
+        current_fp=$(tangle_worktree_fingerprint)
+        current_size=$(stat -c '%s' "$correction_file" 2>/dev/null || stat -f '%z' "$correction_file" 2>/dev/null || echo 0)
+        if [[ "$current_fp" != "$last_fp" || "$current_size" != "$last_size" ]]; then
+            last_fp="$current_fp"
+            last_size="$current_size"
+            last_progress=$(date +%s)
+            log INFO "Correction round ${round_num}: progress observed (worktree/output changed)"
+        fi
+        now=$(date +%s)
+        if [[ "$stall_window" -gt 0 && $((now - last_progress)) -ge "$stall_window" ]]; then
+            stalled="true"
+            log WARN "Correction round ${round_num}: no observable progress for ${stall_window}s — stopping agent and preserving partial writes"
+            pkill -TERM -P "$correction_pid" 2>/dev/null || true
+            kill -TERM "$correction_pid" 2>/dev/null || true
+            sleep 2
+            pkill -KILL -P "$correction_pid" 2>/dev/null || true
+            kill -KILL "$correction_pid" 2>/dev/null || true
+            break
+        fi
+    done
+
+    wait "$correction_pid" 2>/dev/null || true
+    local correction_rc="1"
+    [[ -f "$rc_file" ]] && correction_rc=$(cat "$rc_file" 2>/dev/null || echo 1)
+    rm -f "$rc_file" 2>/dev/null || true
+
+    after_fp=$(tangle_worktree_fingerprint)
+    if [[ "$after_fp" != "$before_fp" ]]; then
+        TANGLE_CORRECTION_CHANGED="1"
+    fi
+    TANGLE_CORRECTION_CONTAMINATION=$(tangle_scope_contamination_summary)
+
+    if [[ "$stalled" == "true" ]]; then
+        TANGLE_CORRECTION_STATUS="stalled-partial"
+        {
+            echo ""
+            echo "## Status: STALLED - PARTIAL RESULTS"
+            echo "# Completed: $(date)"
+        } >> "$correction_file"
+        log WARN "Correction round ${round_num} stalled; partial writes changed=${TANGLE_CORRECTION_CHANGED}; result: $correction_file"
+        return 0
+    fi
+
+    if [[ "$correction_rc" == "0" ]]; then
+        TANGLE_CORRECTION_STATUS="completed"
+        {
+            echo ""
+            echo "## Status: SUCCESS"
+            echo "# Completed: $(date)"
+        } >> "$correction_file"
+        log INFO "Correction round ${round_num} result: $correction_file"
+        return 0
+    fi
+
+    if [[ "$correction_rc" == "130" || "$correction_rc" == "137" || "$correction_rc" == "143" ]]; then
+        TANGLE_CORRECTION_STATUS="interrupted-partial"
+        {
+            echo ""
+            echo "## Status: INTERRUPTED - PARTIAL WRITES PRESERVED"
+            echo "# Completed: $(date)"
+        } >> "$correction_file"
+        log WARN "Correction round ${round_num} was interrupted (rc=${correction_rc}); preserving partial writes but stopping correction loop: $correction_file"
+        return 1
+    fi
+
+    if [[ "$TANGLE_CORRECTION_CHANGED" == "1" ]]; then
+        TANGLE_CORRECTION_STATUS="failed-partial"
+        {
+            echo ""
+            echo "## Status: FAILED - PARTIAL WRITES PRESERVED"
+            echo "# Completed: $(date)"
+        } >> "$correction_file"
+        log WARN "Correction round ${round_num} failed but left partial writes; validation/review should continue: $correction_file"
+        return 0
+    fi
+
+    TANGLE_CORRECTION_STATUS="failed-no-progress"
+    {
+        echo ""
+        echo "## Status: FAILED - NO PROGRESS"
+        echo "# Completed: $(date)"
+    } >> "$correction_file"
+    log WARN "Correction round ${round_num} failed with no observable worktree change: $correction_file"
+    return 1
+}
+
 
 # Phase 3: TANGLE (Develop) - Enhanced map-reduce with validation
 # Tentacles work together in a coordinated tangle of activity
@@ -702,6 +1653,12 @@ tangle_develop() {
     fi
 
     mkdir -p "$RESULTS_DIR"
+    local worktree_before_file="${RESULTS_DIR}/.tangle-${task_group}-worktree-before.txt"
+    if type snapshot_tangle_worktree_paths >/dev/null 2>&1; then
+        snapshot_tangle_worktree_paths > "$worktree_before_file" 2>/dev/null || true
+    else
+        : > "$worktree_before_file"
+    fi
 
     # Initialize tmux if enabled
     if [[ "$TMUX_MODE" == "true" ]]; then
@@ -715,86 +1672,378 @@ tangle_develop() {
         log INFO "Using grasp context from: $grasp_file"
     fi
 
-    # v8.18.0: Pre-work design review ceremony
-    design_review_ceremony "$prompt" "$context"
+    # Resolve a referenced Markdown plan file before both design review and
+    # decomposition. Claude-based reviewers cannot read files outside the active
+    # worktree unless the content is injected into the prompt.
+    local resolved_prompt="$prompt"
+    local file_ref=""
+    local raw_file_ref=""
+    local token
+    local noglob_was_set=false
+    [[ "$-" == *f* ]] && noglob_was_set=true || set -f
+    for token in $prompt; do
+        local candidate_ref="$token"
+        local candidate_basename
+        candidate_ref="${candidate_ref#plan:}"
+        candidate_ref="${candidate_ref#plan=}"
+        candidate_basename="${candidate_ref##*/}"
+        if [[ "$token" == plan:* || "$token" == plan=* || "$candidate_basename" == "plan.md" || "$candidate_basename" == *.plan.md || "$candidate_basename" == *-plan.md ]]; then
+            raw_file_ref="$token"
+            raw_file_ref="${raw_file_ref#plan:}"
+            raw_file_ref="${raw_file_ref#plan=}"
+            file_ref="${raw_file_ref/#\~/$HOME}"
+            break
+        fi
+    done
+    [[ "$noglob_was_set" == "false" ]] && set +f
+    if [[ -n "$file_ref" && -f "$file_ref" ]]; then
+        local max_plan_bytes="${OCTOPUS_PLAN_INJECT_MAX_BYTES:-40000}"
+        [[ "$max_plan_bytes" =~ ^[0-9]+$ ]] || max_plan_bytes=40000
+        local file_size
+        file_size=$(wc -c < "$file_ref" 2>/dev/null || echo 0)
+        local file_content
+        if [[ "$file_size" -gt "$max_plan_bytes" ]]; then
+            file_content="$(head -c "$max_plan_bytes" "$file_ref" 2>/dev/null)"
+            file_content="${file_content}
+
+[... truncated from ${file_size} bytes to ${max_plan_bytes} bytes ...]"
+        else
+            file_content=$(<"$file_ref")
+        fi
+        local plan_block="--- PLAN: ${file_ref} ---
+${file_content}
+--- END PLAN ---"
+        local trimmed_prompt="$prompt"
+        trimmed_prompt="${trimmed_prompt#"${trimmed_prompt%%[![:space:]]*}"}"
+        trimmed_prompt="${trimmed_prompt%"${trimmed_prompt##*[![:space:]]}"}"
+
+        if [[ "$trimmed_prompt" == "$raw_file_ref" || "$trimmed_prompt" == "$file_ref" ]]; then
+            resolved_prompt="Implement the code changes described in the following plan. Do NOT modify the plan file itself (${file_ref}).
+
+${plan_block}"
+        else
+            resolved_prompt="${prompt}
+
+The following referenced plan file has been resolved. Use it as implementation context and do NOT modify the plan file itself (${file_ref}).
+
+${plan_block}"
+        fi
+        log INFO "Resolved file reference: ${file_ref} - injecting content into workflow prompt"
+    fi
+
+    # v8.18.0: Pre-work design review ceremony. Use resolved_prompt so reviewers
+    # receive plan content instead of an unreadable cross-workspace file path.
+    design_review_ceremony "$resolved_prompt" "$context"
 
     # Step 1: Decompose into validated subtasks
     log INFO "Step 1: Task decomposition..."
+
+    local repo_file_map=""
+    local repo_root
+    if repo_root=$(tangle_resolve_repo_root 2>/dev/null); then
+        repo_file_map="Repository files available for write scopes (from git ls-files, first 200):
+$(git -C "$repo_root" ls-files 2>/dev/null | sed -n 1,200p)
+"
+    fi
+
     local decompose_prompt="Decompose this task into subtasks that can be executed in parallel.
 Each subtask should be:
 - Self-contained and independently verifiable
 - Clear about inputs and expected outputs
 - Assignable to either a coding agent [CODING] or reasoning agent [REASONING]
+- For every [CODING] subtask, include an explicit 'Files:' clause listing the exact files or directories that subtask owns and may edit
+- Coding write scopes must be disjoint. If two subtasks need the same file or directory, merge them into one [CODING] subtask instead of splitting them.
 
 **Cohesion rule:** If the task produces a single deliverable (one file, one script, one page, one config), keep it as ONE subtask — do not split it. Only decompose when subtasks are truly independent with no cross-file references between them. Aim for 2-6 subtasks; fewer is better when the work is tightly coupled.
 
-${context}Task: $prompt
+${context}${repo_file_map}
+Task: $resolved_prompt
 
-Output as numbered list with [CODING] or [REASONING] prefix for each subtask."
+Output only numbered subtask lines, with no headings, no analysis, no Markdown fences, and no prose before or after.
+Required format:
+1. [CODING] Short title — Files: relative/file.js, relative/dir/ — Task: specific coding work
+2. [REASONING] Short title — Task: specific reasoning work
+Every [CODING] line must include a same-line Files: clause."
+
+    # Tangle decomposition agents are overridable (OCTOPUS_TANGLE_DECOMPOSE_AGENT,
+    # OCTOPUS_TANGLE_DECOMPOSE_FALLBACK_AGENT, OCTOPUS_TANGLE_AGENT). Override only
+    # selects the dispatch agent; the fail-closed contract below is unchanged.
+    local tangle_decompose_agent="agy" tangle_decompose_fallback_agent="codex"
+    if declare -f octopus_agent_override >/dev/null 2>&1; then
+        tangle_decompose_agent=$(octopus_agent_override "tangle" "decompose" "agy")
+        tangle_decompose_fallback_agent=$(octopus_agent_override "tangle" "decompose_fallback" "codex")
+    fi
 
     local subtasks
-    subtasks=$(run_agent_sync "gemini" "$decompose_prompt" 120 "researcher" "tangle") || {
-        log WARN "Decomposition failed, falling back to direct execution"
-        spawn_agent "codex" "$prompt" "tangle-${task_group}-direct" "implementer" "tangle"
-        wait
-        return
+    subtasks=$(OCTOPUS_UNBOUNDED_EXECUTION_SUPERVISED="tangle-dispatch-watcher" run_agent_sync "$tangle_decompose_agent" "$decompose_prompt" 0 "researcher" "tangle") || \
+    subtasks=$(OCTOPUS_UNBOUNDED_EXECUTION_SUPERVISED="tangle-dispatch-watcher" run_agent_sync "$tangle_decompose_fallback_agent" "$decompose_prompt" 0 "researcher" "tangle") || {
+        log ERROR "Decomposition failed with all providers; refusing monolithic direct fallback"
+        return 1
     }
 
     echo -e "${CYAN}Decomposed into subtasks:${NC}"
     echo "$subtasks"
     echo ""
 
+    local parseable_subtask_count
+    local parseable_coding_subtask_count
+    parseable_subtask_count=$(tangle_parseable_subtask_count "$subtasks")
+    parseable_coding_subtask_count=$(tangle_parseable_coding_subtask_count "$subtasks")
+
+    local parallel_safety_reason=""
+    if [[ $parseable_subtask_count -eq 0 ]] || [[ $parseable_coding_subtask_count -eq 0 ]] || ! parallel_safety_reason=$(tangle_validate_parallel_write_scopes "$subtasks"); then
+        local retry_reason="${parallel_safety_reason:-no parseable subtasks}"
+        if [[ $parseable_subtask_count -eq 0 ]]; then
+            retry_reason="no parseable subtasks"
+        elif [[ $parseable_coding_subtask_count -eq 0 ]]; then
+            retry_reason="no parseable [CODING] subtasks"
+        fi
+        log WARN "Decomposition failed validation (${retry_reason}); retrying with strict one-line Files format"
+        local reformatted_subtasks
+        if reformatted_subtasks=$(tangle_reformat_decomposition "$resolved_prompt" "$subtasks" "$retry_reason" "$repo_file_map"); then
+            subtasks="$reformatted_subtasks"
+            echo -e "${CYAN}Reformatted subtasks:${NC}"
+            echo "$subtasks"
+            echo ""
+            parseable_subtask_count=$(tangle_parseable_subtask_count "$subtasks")
+            parseable_coding_subtask_count=$(tangle_parseable_coding_subtask_count "$subtasks")
+            parallel_safety_reason=""
+        else
+            log ERROR "Decomposition reformat retry failed; refusing monolithic direct fallback"
+            return 1
+        fi
+    fi
+
+    if [[ $parseable_subtask_count -eq 0 ]]; then
+        log ERROR "Decomposition still produced no parseable subtasks after retry; refusing monolithic direct fallback"
+        return 1
+    fi
+    if [[ $parseable_coding_subtask_count -eq 0 ]]; then
+        log ERROR "Decomposition still produced no parseable [CODING] subtasks after retry; refusing monolithic direct fallback"
+        return 1
+    fi
+
+    if [[ $parseable_coding_subtask_count -eq 0 ]]; then
+        log ERROR "Decomposition still produced no parseable [CODING] subtasks after retry; refusing monolithic direct fallback"
+        return 1
+    fi
+
+    if ! parallel_safety_reason=$(tangle_validate_parallel_write_scopes "$subtasks"); then
+        log ERROR "Unsafe parallel decomposition after retry: ${parallel_safety_reason}; refusing monolithic direct fallback"
+        return 1
+    fi
+
     # Step 2: Parallel execution with progress tracking
     log INFO "Step 2: Parallel execution..."
     local subtask_num=0
     local pids=()
+    local task_ids=()
+    local subtask_lines=()
 
+    # Materialize parseable lines before dispatching providers. spawn helpers and
+    # external CLIs may read stdin; if the dispatch loop itself reads from a
+    # here-string, the first provider can consume the remaining decomposition and
+    # silently prevent later subtasks from launching.
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
-        [[ ! "$line" =~ ^[0-9]+[\.\)] ]] && continue
+        tangle_line_is_numbered_subtask "$line" || continue
+        subtask_lines+=("$line")
+    done <<< "$subtasks"
 
+    if [[ ${#subtask_lines[@]} -ne $parseable_subtask_count ]]; then
+        log ERROR "Parsed $parseable_subtask_count subtasks but retained ${#subtask_lines[@]} for dispatch; refusing partial tangle execution"
+        return 1
+    fi
+
+    # [CODING] and [REASONING] subtask routing are overridable. This keeps
+    # tangle usable on hosts where the default coding provider is unavailable,
+    # misconfigured, or unsuitable for implementation work. The lookup order is
+    # handled by octopus_agent_override(), e.g. OCTOPUS_TANGLE_CODING_AGENT,
+    # OCTOPUS_TANGLE_AGENT, then OCTOPUS_CODING_AGENT.
+    local tangle_coding_agent="codex"
+    local tangle_reasoning_agent="agy"
+    if declare -f octopus_agent_override >/dev/null 2>&1; then
+        tangle_coding_agent=$(octopus_agent_override "tangle" "coding" "codex")
+        tangle_reasoning_agent=$(octopus_agent_override "tangle" "reasoning" "agy")
+    fi
+
+    # [REASONING] falls back through available providers. Without this, users
+    # without agy get an unconditional exit 127 on every REASONING subtask even
+    # though the provider health check already flagged agy as absent.
+    if ! command -v "$tangle_reasoning_agent" >/dev/null 2>&1; then
+        local _tangle_reasoning_fb
+        for _tangle_reasoning_fb in gemini codex; do
+            command -v "$_tangle_reasoning_fb" >/dev/null 2>&1 \
+                && tangle_reasoning_agent="$_tangle_reasoning_fb" && break
+        done
+        # claude-sonnet is a type resolved by get_agent_command, not a bare
+        # executable — command -v never finds it. Fall back unconditionally
+        # since the claude binary (the host process) is always available.
+        if ! command -v "$tangle_reasoning_agent" >/dev/null 2>&1; then
+            tangle_reasoning_agent="claude-sonnet"
+        fi
+    fi
+
+    fleet_dispatch_begin
+    for line in "${subtask_lines[@]}"; do
         local subtask
-        subtask=$(echo "$line" | sed 's/^[0-9]*[\.\)]\s*//')
-        local agent="codex"
+        subtask=$(echo "$line" | sed -E 's/^[[:space:]]*(\*\*)?[0-9]+[\.\)][[:space:]]*//; s/^[[:space:]]+//')
+        local agent="$tangle_coding_agent"
         local role="implementer"
         local pane_icon="⚙️"
         if [[ "$subtask" =~ \[REASONING\] ]]; then
-            agent="gemini"
+            agent="$tangle_reasoning_agent"
             role="researcher"
             pane_icon="🧠"
         fi
         subtask=$(echo "$subtask" | sed 's/\[CODING\]\s*//; s/\[REASONING\]\s*//')
         local task_id="tangle-${task_group}-${subtask_num}"
         local pane_title="$pane_icon Subtask $((subtask_num+1))"
+        local subtask_prompt
+        subtask_prompt=$(build_tangle_subtask_prompt "$resolved_prompt" "$subtask")
 
+        # Tangle uses the legacy spawn path in this parallel loop so .done
+        # markers are written for the completion watcher. This also allows
+        # configurable CLI-backed coding/reasoning agents without requiring
+        # Claude Agent Teams hooks in the host process.
         if [[ "$TMUX_MODE" == "true" ]]; then
             # Use async+tmux spawning
             local pid
-            pid=$(spawn_agent_async "$agent" "$subtask" "$task_id" "$role" "tangle" "$pane_title")
+            pid=$(spawn_agent_async "$agent" "$subtask_prompt" "$task_id" "$role" "tangle" "$pane_title")
             pids+=("$pid")
         else
             # Standard spawning
-            spawn_agent "$agent" "$subtask" "$task_id" "$role" "tangle" &
-            pids+=($!)
+            local pid
+            pid=$(spawn_agent_capture_pid "$agent" "$subtask_prompt" "$task_id" "$role" "tangle")
+            pids+=("$pid")
         fi
+        task_ids+=("$task_id")
         ((subtask_num++)) || true
-    done <<< "$subtasks"
+    done
+    fleet_dispatch_end
+
+    # Future-proof fail-closed guard: the current loop increments once per
+    # retained line, but this catches any later continue/break/error path before
+    # quality gates can validate a partial dispatch as a complete tangle run.
+    if [[ $subtask_num -ne ${#subtask_lines[@]} ]]; then
+        log ERROR "Spawned $subtask_num development threads for ${#subtask_lines[@]} parsed subtasks; refusing partial tangle execution"
+        return 1
+    fi
 
     log INFO "Spawned $subtask_num development threads"
 
-    # Wait with progress monitoring
+    # Wait with progress monitoring — poll .done marker files written by spawn_agent
+    # rather than kill -0 $pid (which tracks wrapper PID, not provider PID)
+    local _done_dir="${WORKSPACE_DIR:-${HOME}/.claude-octopus}/.octo/agents"
+    local _tangle_max_wait="${OCTOPUS_TANGLE_DEADLINE:-0}"
+    [[ "$_tangle_max_wait" =~ ^[0-9]+$ ]] || _tangle_max_wait=0
+    local _missing_marker_grace="${OCTOPUS_TANGLE_MISSING_MARKER_GRACE:-180}"
+    [[ "$_missing_marker_grace" =~ ^[0-9]+$ ]] || _missing_marker_grace=180
+    local _deadline=0
+    if [[ "$_tangle_max_wait" -gt 0 ]]; then
+        _deadline=$(( $(date +%s) + _tangle_max_wait ))
+    fi
     local completed=0
-    while [[ $completed -lt ${#pids[@]} ]]; do
+    local _failed_tasks=()
+    local _terminal_task_ids=""
+    local _missing_marker_since=()
+    while [[ $completed -lt ${#task_ids[@]} ]]; do
         completed=0
-        for pid in "${pids[@]}"; do
-            if ! kill -0 "$pid" 2>/dev/null; then
+        for i in "${!task_ids[@]}"; do
+            local _done_file="${_done_dir}/${task_ids[$i]}.done"
+            if [[ -f "$_done_file" ]]; then
                 ((completed++)) || true
+            elif [[ " $_terminal_task_ids " == *" ${task_ids[$i]} "* ]]; then
+                ((completed++)) || true
+            else
+                local _wrapper_pid="${pids[$i]:-}"
+                if [[ "$_tangle_max_wait" -gt 0 ]] && (( $(date +%s) > _deadline )); then
+                    log WARN "Thread ${task_ids[$i]} deadline exceeded — killing and marking timeout"
+                    if [[ -n "$_wrapper_pid" ]]; then
+                        pkill -TERM -P "$_wrapper_pid" 2>/dev/null || true
+                        kill -TERM "$_wrapper_pid" 2>/dev/null || true
+                        sleep 1
+                        pkill -KILL -P "$_wrapper_pid" 2>/dev/null || true
+                        kill -KILL "$_wrapper_pid" 2>/dev/null || true
+                    fi
+                    mkdir -p "$_done_dir" 2>/dev/null || true
+                    if [[ ! -f "$_done_file" ]] && ! echo "timeout" > "$_done_file" 2>/dev/null; then
+                        log WARN "Failed to write timeout marker for ${task_ids[$i]} at $_done_file"
+                    fi
+                    [[ " $_terminal_task_ids " == *" ${task_ids[$i]} "* ]] || _terminal_task_ids="${_terminal_task_ids:+$_terminal_task_ids }${task_ids[$i]}"
+                elif [[ -n "$_wrapper_pid" ]] && ! tangle_process_is_active_non_zombie "$_wrapper_pid"; then
+                    local _now
+                    _now=$(date +%s)
+                    if [[ -z "${_missing_marker_since[$i]:-}" ]]; then
+                        _missing_marker_since[$i]="$_now"
+                        log WARN "Thread ${task_ids[$i]} wrapper exited without completion marker; exited or became zombie without completion marker — waiting up to ${_missing_marker_grace}s for late result/marker"
+                    elif (( _now - ${_missing_marker_since[$i]} >= _missing_marker_grace )); then
+                        log WARN "Thread ${task_ids[$i]} still lacks completion marker after ${_missing_marker_grace}s — marking failed"
+                        mkdir -p "$_done_dir" 2>/dev/null || true
+                        if [[ ! -f "$_done_file" ]] && ! echo "missing-done-marker" > "$_done_file" 2>/dev/null; then
+                            log WARN "Failed to write missing-done marker for ${task_ids[$i]} at $_done_file"
+                        fi
+                        [[ " $_terminal_task_ids " == *" ${task_ids[$i]} "* ]] || _terminal_task_ids="${_terminal_task_ids:+$_terminal_task_ids }${task_ids[$i]}"
+                        local _result_file
+                        _result_file=$(find "${RESULTS_DIR:-${HOME}/.claude-octopus/results}" -maxdepth 1 -type f -name "*-${task_ids[$i]}.md" 2>/dev/null | head -1 || true)
+                        if [[ -n "$_result_file" ]]; then
+                            local _status_count
+                            _status_count=$(grep -c '^## Status:' "$_result_file" 2>/dev/null || true)
+                            if [[ "${_status_count:-0}" -eq 0 ]]; then
+                                {
+                                    echo ""
+                                    echo "## Status: FAILED (Missing completion marker)"
+                                    echo "# Completed: $(date)"
+                                } >> "$_result_file" 2>/dev/null || true
+                            fi
+                        fi
+                    fi
+                fi
             fi
         done
-        echo -ne "\r${CYAN}Progress: $completed/${#pids[@]} subtasks complete${NC}"
+        echo -ne "\r${CYAN}Progress: $completed/${#task_ids[@]} subtasks complete${NC}"
         sleep 2
     done
     echo ""
+
+    # Final artifact reconciliation: providers can write the result and .done
+    # marker after the wrapper PID disappears. Trust a latest SUCCESS status
+    # before reporting failures or entering the quality gate.
+    for i in "${!task_ids[@]}"; do
+        local _done_file="${_done_dir}/${task_ids[$i]}.done"
+        local _exit_val
+        _exit_val=$(cat "$_done_file" 2>/dev/null || echo "")
+        if [[ "$_exit_val" != "0" ]]; then
+            local _result_file=""
+            _result_file=$(find "${RESULTS_DIR:-${HOME}/.claude-octopus/results}" -maxdepth 1 -type f -name "*-${task_ids[$i]}.md" 2>/dev/null | head -1 || true)
+            if [[ -n "$_result_file" ]]; then
+                local _latest_status=""
+                _latest_status=$(grep '^## Status:' "$_result_file" 2>/dev/null | tail -1 || true)
+                if [[ "$_latest_status" == *SUCCESS* ]]; then
+                    mkdir -p "$_done_dir" 2>/dev/null || true
+                    echo "0" > "$_done_file" 2>/dev/null || true
+                    log INFO "Reconciled late successful result for ${task_ids[$i]} before quality gate"
+                fi
+            fi
+        fi
+    done
+
+    # Report any failed subtasks
+    for i in "${!task_ids[@]}"; do
+        local _done_file="${_done_dir}/${task_ids[$i]}.done"
+        local _exit_val
+        _exit_val=$(cat "$_done_file" 2>/dev/null || echo "unknown")
+        if [[ "$_exit_val" != "0" ]]; then
+            log WARN "Subtask ${task_ids[$i]} finished with status: $_exit_val"
+            _failed_tasks+=("${task_ids[$i]}")
+        fi
+    done
+    [[ ${#_failed_tasks[@]} -gt 0 ]] && log WARN "${#_failed_tasks[@]}/${#task_ids[@]} subtasks failed: ${_failed_tasks[*]}"
+
+    # Cleanup done markers
+    for i in "${!task_ids[@]}"; do
+        rm -f "${_done_dir}/${task_ids[$i]}.done" 2>/dev/null || true
+    done
 
     # Cleanup tmux if enabled
     if [[ "$TMUX_MODE" == "true" ]]; then
@@ -808,7 +2057,336 @@ Output as numbered list with [CODING] or [REASONING] prefix for each subtask."
 
     # Step 3: Validation gate
     log INFO "Step 3: Validation gate..."
-    validate_tangle_results "$task_group" "$prompt"
+    local validation_file="${RESULTS_DIR:-${HOME}/.claude-octopus/results}/tangle-validation-${task_group}.md"
+    local validation_rc=0
+    validate_tangle_results "$task_group" "$resolved_prompt" "$worktree_before_file" || validation_rc=$?
+
+    tangle_contextual_review_gate "$task_group" "$resolved_prompt" "$context" "$subtasks" \
+        "$validation_file" "$worktree_before_file" "$validation_rc" "$tangle_coding_agent"
+    return $?
+}
+
+# Contextual review gate + correction loop for tangle_develop. Extracted so
+# round accounting, the convergence guard, and the absolute round ceiling are
+# unit-testable with stubbed review/correction functions
+# (tests/unit/test-tangle-correction-loop-behavior.sh).
+tangle_contextual_review_gate() {
+    local task_group="$1"
+    local resolved_prompt="$2"
+    local context="$3"
+    local subtasks="$4"
+    local validation_file="$5"
+    local worktree_before_file="$6"
+    local validation_rc="${7:-0}"
+    local tangle_coding_agent="${8:-codex}"
+
+    if octo_bool_disabled "${OCTOPUS_TANGLE_CODE_REVIEW:-true}"; then
+        log INFO "Contextual code review disabled by OCTOPUS_TANGLE_CODE_REVIEW"
+        return "$validation_rc"
+    fi
+
+    local review_context_file
+    review_context_file=$(tangle_build_develop_review_context "$task_group" "$resolved_prompt" "$context" "$subtasks" "$validation_file" "$worktree_before_file" "initial")
+
+    local review_rc=0
+    tangle_run_context_code_review "$task_group" "$review_context_file" "initial" || review_rc=$?
+    local findings_file="$TANGLE_REVIEW_FINDINGS_FILE"
+    local normal_count
+    normal_count=$(tangle_review_blocking_count "$findings_file")
+
+    local correction_mode="${OCTOPUS_TANGLE_REVIEW_CORRECTION_MODE:-unbounded}"
+    local max_correction_rounds="${OCTOPUS_TANGLE_REVIEW_CORRECTION_ROUNDS:-0}"
+    [[ "$max_correction_rounds" =~ ^[0-9]+$ ]] || max_correction_rounds=0
+    if [[ "$correction_mode" == "bounded" && "$max_correction_rounds" -eq 0 ]]; then
+        log WARN "OCTOPUS_TANGLE_REVIEW_CORRECTION_MODE=bounded with no OCTOPUS_TANGLE_REVIEW_CORRECTION_ROUNDS set — defaulting to 1 round"
+        max_correction_rounds=1
+    fi
+    local correction_round=1
+    local previous_normal_count="$normal_count"
+    local previous_signature
+    previous_signature=$(tangle_findings_signature "$findings_file")
+    local previous_validation_signature
+    previous_validation_signature=$(tangle_validation_signature "$validation_file")
+    local best_normal_count="$normal_count"
+    local no_progress_rounds=0
+    local convergence_round_limit="${OCTOPUS_TANGLE_CONVERGENCE_NO_PROGRESS_ROUNDS:-3}"
+    # Validation files are re-rendered each correction round and can change even
+    # when the actionable gate is static. By default, only a new best blocker
+    # count resets convergence; validation signature movement is diagnostic only.
+    local validation_progress_resets_convergence="${OCTOPUS_TANGLE_CONVERGENCE_VALIDATION_PROGRESS:-false}"
+    local correction_strategy="delta"
+    # Absolute ceiling on correction rounds. Each round dispatches paid provider
+    # calls, so even the default unbounded mode stops here; the stall watchdog
+    # and convergence guard remain the primary stops. Setting the ceiling to 0
+    # is an explicit opt-in to a truly unbounded loop.
+    local hard_round_cap="${OCTOPUS_TANGLE_CORRECTION_HARD_CAP:-10}"
+    [[ "$hard_round_cap" =~ ^[0-9]+$ ]] || hard_round_cap=10
+
+    while [[ "${normal_count:-0}" -gt 0 ]]; do
+        if [[ "$correction_mode" == "bounded" && "$max_correction_rounds" -gt 0 && "$correction_round" -gt "$max_correction_rounds" ]]; then
+            log WARN "Contextual code review still has ${normal_count} blocking finding(s) after bounded ${max_correction_rounds} correction round(s): ${findings_file}"
+            return 1
+        fi
+
+        if [[ "$hard_round_cap" -gt 0 && "$correction_round" -gt "$hard_round_cap" ]]; then
+            log ERROR "Correction loop hit the absolute round ceiling (${hard_round_cap}) with ${normal_count} blocking finding(s) remaining: ${findings_file} — raise or disable with OCTOPUS_TANGLE_CORRECTION_HARD_CAP (0 = no ceiling)"
+            return 1
+        fi
+
+        if ! tangle_apply_review_corrections "$resolved_prompt" "$review_context_file" "$findings_file" "$correction_round" "$tangle_coding_agent" "$correction_strategy"; then
+            log WARN "Correction round ${correction_round} made no observable progress; escalating without starting a hot loop"
+            return 1
+        fi
+
+        if [[ -n "${TANGLE_CORRECTION_CONTAMINATION:-}" ]]; then
+            log WARN "Correction round ${correction_round} created out-of-scope/scratch files:"
+            printf '%s\n' "$TANGLE_CORRECTION_CONTAMINATION" | while IFS= read -r _contam; do
+                [[ -n "$_contam" ]] && log WARN "  $_contam"
+            done
+            correction_strategy="cleanup-and-fix"
+        fi
+
+        log INFO "Re-running validation gate after correction round ${correction_round} (status=${TANGLE_CORRECTION_STATUS}, changed=${TANGLE_CORRECTION_CHANGED})..."
+        validation_rc=0
+        OCTOPUS_TANGLE_VALIDATION_CORRECTION_FILE="${TANGLE_CORRECTION_FILE:-}" \
+        OCTOPUS_TANGLE_VALIDATION_CORRECTION_ROUND="$correction_round" \
+        OCTOPUS_TANGLE_VALIDATION_CORRECTION_STATUS="${TANGLE_CORRECTION_STATUS:-}" \
+        OCTOPUS_TANGLE_VALIDATION_CORRECTION_CHANGED="${TANGLE_CORRECTION_CHANGED:-0}" \
+            validate_tangle_results "$task_group" "$resolved_prompt" "$worktree_before_file" || validation_rc=$?
+
+        review_context_file=$(tangle_build_develop_review_context "$task_group" "$resolved_prompt" "$context" "$subtasks" "$validation_file" "$worktree_before_file" "correction-${correction_round}")
+        review_rc=0
+        tangle_run_context_code_review "$task_group" "$review_context_file" "correction-${correction_round}" || review_rc=$?
+        findings_file="$TANGLE_REVIEW_FINDINGS_FILE"
+        normal_count=$(tangle_review_blocking_count "$findings_file")
+        local current_signature
+        current_signature=$(tangle_findings_signature "$findings_file")
+
+        if [[ "$review_rc" -ne 0 ]]; then
+            log WARN "Contextual code review returned non-zero after correction round ${correction_round}; not treating review warning/no-diff as improvement"
+            return "$review_rc"
+        fi
+
+        if [[ "${normal_count:-0}" -lt "${previous_normal_count:-0}" ]]; then
+            log INFO "Correction round ${correction_round} improved blockers: ${previous_normal_count} -> ${normal_count}"
+            correction_strategy="delta"
+        elif [[ "${normal_count:-0}" -gt "${previous_normal_count:-0}" ]]; then
+            log WARN "Correction round ${correction_round} worsened blockers: ${previous_normal_count} -> ${normal_count}; switching strategy"
+            correction_strategy="single-finding"
+        else
+            if [[ "$current_signature" == "$previous_signature" ]]; then
+                log WARN "Correction round ${correction_round} repeated the same blocking findings; switching strategy"
+            else
+                log WARN "Correction round ${correction_round} did not reduce blocker count (${normal_count}); switching strategy"
+            fi
+            correction_strategy="single-finding"
+        fi
+
+        local current_validation_signature
+        current_validation_signature=$(tangle_validation_signature "$validation_file")
+        local made_progress=0
+        if [[ "${normal_count:-0}" -lt "${best_normal_count:-0}" ]]; then
+            best_normal_count="$normal_count"
+            made_progress=1
+        fi
+        if [[ "$current_validation_signature" != "$previous_validation_signature" ]]; then
+            if octo_bool_enabled "$validation_progress_resets_convergence"; then
+                made_progress=1
+            else
+                log INFO "Correction round ${correction_round}: validation signature changed but blocker best did not improve; not resetting convergence guard"
+            fi
+        fi
+
+        if [[ "$made_progress" -eq 1 ]]; then
+            no_progress_rounds=0
+        else
+            no_progress_rounds=$((no_progress_rounds + 1))
+            log WARN "Correction round ${correction_round} did not improve best blockers (${no_progress_rounds}/${convergence_round_limit})"
+        fi
+
+        if [[ "${TANGLE_CORRECTION_CHANGED:-0}" != "1" && "${TANGLE_CORRECTION_STATUS:-}" == *"stalled"* ]]; then
+            log WARN "Correction stalled without partial writes; stopping to avoid a no-progress loop"
+            return 1
+        fi
+
+        if [[ "${convergence_round_limit:-0}" -gt 0 && "$no_progress_rounds" -ge "$convergence_round_limit" ]]; then
+            log ERROR "Stopping tangle correction loop after ${no_progress_rounds} rounds without new best blockers (best_normal=${best_normal_count}, current_normal=${normal_count})"
+            return 1
+        fi
+
+        previous_normal_count="$normal_count"
+        previous_signature="$current_signature"
+        previous_validation_signature="$current_validation_signature"
+        ((correction_round++)) || true
+    done
+
+    if [[ "${normal_count:-0}" -gt 0 ]]; then
+        log WARN "Contextual code review still has ${normal_count} blocking finding(s): ${findings_file}"
+        return 1
+    fi
+
+    if [[ "$review_rc" -ne 0 ]]; then
+        log WARN "Contextual code review returned non-zero despite zero blocking findings"
+        return "$review_rc"
+    fi
+
+    if [[ "$validation_rc" -ne 0 ]]; then
+        log WARN "Skipping ink/deliver because tangle validation gate returned non-zero (${validation_rc})"
+        return "$validation_rc"
+    fi
+
+    if octo_bool_enabled "${OCTOPUS_TANGLE_INK:-false}"; then
+        log INFO "OCTOPUS_TANGLE_INK enabled — running ink/deliver after contextual review passed"
+        ink_deliver "$resolved_prompt"
+    fi
+
+    return 0
+}
+
+ink_delivery_sanitize_context() {
+    sed -e 's/\[Synthesis failed - raw results attached\]/[Upstream phase synthesis failed; raw fallback omitted from compact delivery context]/g'
+}
+
+ink_delivery_file_label() {
+    local file="$1"
+    local base
+    base=$(basename "$file")
+
+    case "$base" in
+        probe-synthesis-*) echo "Probe Synthesis" ;;
+        grasp-consensus-*) echo "Grasp Consensus" ;;
+        tangle-validation-*) echo "Tangle Validation" ;;
+        *aggregate*) echo "Aggregate Result" ;;
+        *) echo "Supporting Result" ;;
+    esac
+}
+
+ink_delivery_append_excerpt() {
+    local file="$1"
+    local max_chars="$2"
+    local label
+    local size
+
+    [[ -f "$file" ]] || return 0
+    label=$(ink_delivery_file_label "$file")
+    size=$(wc -c < "$file" 2>/dev/null | tr -d '[:space:]')
+    size="${size:-0}"
+
+    echo "## Source: ${label}"
+    echo "- File: ${file}"
+    echo "- Size: ${size} bytes"
+    if [[ "$size" =~ ^[0-9]+$ && "$size" -gt "$max_chars" ]]; then
+        echo "- Included: first ${max_chars} bytes (truncated)"
+    else
+        echo "- Included: full file"
+    fi
+    echo ""
+    echo '```markdown'
+    if [[ "$size" =~ ^[0-9]+$ && "$size" -gt "$max_chars" ]]; then
+        head -c "$max_chars" "$file" 2>/dev/null | ink_delivery_sanitize_context
+        echo ""
+        echo "[... truncated by ink delivery context: original ${size} bytes, included ${max_chars} bytes ...]"
+    else
+        ink_delivery_sanitize_context < "$file"
+    fi
+    echo '```'
+    echo ""
+}
+
+build_ink_delivery_context() {
+    local tangle_results="${1:-}"
+    local max_file="${OCTOPUS_INK_FILE_CONTEXT_CHARS:-12000}"
+    local max_total="${OCTOPUS_INK_CONTEXT_CHARS:-60000}"
+
+    [[ "$max_file" =~ ^[0-9]+$ ]] || max_file=12000
+    [[ "$max_total" =~ ^[0-9]+$ ]] || max_total=60000
+    max_file=$((10#$max_file))
+    max_total=$((10#$max_total))
+    [[ "$max_file" -lt 1000 ]] && max_file=1000
+    [[ "$max_total" -lt 4000 ]] && max_total=4000
+
+    local -a files=()
+    local seen="|"
+    local candidate
+
+    for candidate in \
+        "$tangle_results" \
+        "$(ls -t "$RESULTS_DIR"/tangle-validation-*.md 2>/dev/null | head -1)" \
+        "$(ls -t "$RESULTS_DIR"/grasp-consensus-*.md 2>/dev/null | head -1)" \
+        "$(ls -t "$RESULTS_DIR"/probe-synthesis-*.md 2>/dev/null | head -1)"; do
+        [[ -n "$candidate" && -f "$candidate" ]] || continue
+        if [[ "$seen" != *"|$candidate|"* ]]; then
+            files+=("$candidate")
+            seen="${seen}${candidate}|"
+        fi
+    done
+
+    for candidate in "$RESULTS_DIR"/*.md; do
+        [[ -f "$candidate" ]] || continue
+        [[ "$candidate" == *aggregate* || "$candidate" == *delivery* ]] && continue
+        [[ "$seen" == *"|$candidate|"* ]] && continue
+        files+=("$candidate")
+        seen="${seen}${candidate}|"
+        [[ ${#files[@]} -ge 10 ]] && break
+    done
+
+    local tmp_context
+    tmp_context=$(mktemp "${TMPDIR:-/tmp}/octo-ink-context.XXXXXX") || return 1
+
+    {
+        echo "# Compact Delivery Context"
+        echo ""
+        echo "This context is bounded before synthesis. Full raw artifacts remain on disk in RESULTS_DIR."
+        echo ""
+        echo "## Context Budget"
+        echo "- Max per source file: ${max_file} bytes"
+        echo "- Max total context: ${max_total} bytes"
+        echo "- Source files selected: ${#files[@]}"
+        echo ""
+
+        for candidate in "${files[@]}"; do
+            ink_delivery_append_excerpt "$candidate" "$max_file"
+        done
+    } > "$tmp_context"
+
+    local total_size
+    total_size=$(wc -c < "$tmp_context" 2>/dev/null | tr -d '[:space:]')
+    total_size="${total_size:-0}"
+
+    if [[ "$total_size" =~ ^[0-9]+$ && "$total_size" -gt "$max_total" ]]; then
+        head -c "$max_total" "$tmp_context" 2>/dev/null
+        echo ""
+        echo ""
+        echo "[... compact delivery context truncated: original ${total_size} bytes, included ${max_total} bytes ...]"
+    else
+        cat "$tmp_context"
+    fi
+
+    rm -f "$tmp_context"
+}
+
+build_ink_fallback_delivery() {
+    local prompt="$1"
+    local sonnet_review="$2"
+    local compact_context="$3"
+
+    cat <<EOF
+Automated synthesis unavailable.
+
+## Executive Summary
+The delivery phase completed local checks, but the synthesis provider did not return a polished final narrative. This fallback is intentionally compact and does not attach raw phase artifacts.
+
+## Key Deliverables
+- Compact delivery context assembled from phase artifacts.
+- Quality review retained below when available.
+- Full raw artifacts remain available in RESULTS_DIR for manual inspection.
+
+## Quality Review
+${sonnet_review}
+
+## Compact Source Context
+${compact_context}
+EOF
 }
 
 # Phase 4: INK (Deliver) - Quality gates + final output
@@ -864,19 +2442,17 @@ ink_deliver() {
     # Step 2: Synthesize final output
     log INFO "Step 2: Synthesizing final deliverable..."
 
-    local all_results=""
-    local result_count=0
-    for result in "$RESULTS_DIR"/*.md; do
-        [[ -f "$result" ]] || continue
-        [[ "$result" == *aggregate* || "$result" == *delivery* ]] && continue
-        all_results+="$(<"$result")\n\n"
-        ((result_count++)) || true
-        [[ $result_count -ge 10 ]] && break  # Limit context size
-    done
+    local all_results
+    all_results=$(build_ink_delivery_context "$tangle_results")
+    local result_count
+    result_count=$(grep -c '^## Source:' <<< "$all_results" 2>/dev/null || true)
+    result_count="${result_count:-0}"
 
     # Sonnet 4.6 quality review before synthesis
     log INFO "Step 2a: Sonnet 4.6 quality review..."
-    local sonnet_review
+    local sonnet_review ink_review_timeout
+    ink_review_timeout="${OCTOPUS_INK_REVIEW_TIMEOUT:-0}"
+    [[ "$ink_review_timeout" =~ ^[0-9]+$ ]] || ink_review_timeout=0
     sonnet_review=$(run_agent_sync "claude-sonnet" "Review these development results for quality, completeness, and correctness.
 Flag any issues, gaps, or improvements needed.
 Rate each dimension explicitly as 'Security: N/10', 'Reliability: N/10', 'Performance: N/10', 'Accessibility: N/10'.
@@ -884,7 +2460,7 @@ Rate each dimension explicitly as 'Security: N/10', 'Reliability: N/10', 'Perfor
 Original task: $prompt
 
 Results:
-$all_results" 120 "code-reviewer" "ink") || {
+$all_results" "$ink_review_timeout" "code-reviewer" "ink") || {
         sonnet_review="[Quality review unavailable]"
     }
 
@@ -938,8 +2514,13 @@ Be specific — list files and line numbers. If the code is already clean, say s
 Code to review:
 ${all_results}"
         local simplify_result
-        simplify_result=$(run_agent_sync "claude-sonnet" "$simplify_prompt" 120 "code-reviewer" "ink") || true
+        simplify_result=$(OCTOPUS_UNBOUNDED_EXECUTION_SUPERVISED="ink-review-watchdog" run_agent_sync "claude-sonnet" "$simplify_prompt" 0 "code-reviewer" "ink") || true
         if [[ -n "$simplify_result" ]]; then
+            if [[ ${#simplify_result} -gt 12000 ]]; then
+                simplify_result="${simplify_result:0:12000}
+
+[... simplification review truncated to 12000 chars ...]"
+            fi
             all_results="${all_results}
 
 --- SIMPLIFICATION REVIEW ---
@@ -961,12 +2542,12 @@ Original task: $prompt
 Quality Review (from Sonnet 4.6):
 $sonnet_review
 
-Results to synthesize:
+Compact source context to synthesize:
 $all_results"
 
     local delivery
-    delivery=$(run_agent_sync "gemini" "$synthesis_prompt" 180 "synthesizer" "ink") || {
-        delivery="[Synthesis failed - raw results attached]\n\n$all_results"
+    delivery=$(OCTOPUS_UNBOUNDED_EXECUTION_SUPERVISED="ink-delivery-watchdog" run_agent_sync "agy" "$synthesis_prompt" 0 "synthesizer" "ink") || {
+        delivery=$(build_ink_fallback_delivery "$prompt" "$sonnet_review" "$all_results")
     }
 
     # Step 3: Generate final document
@@ -986,7 +2567,8 @@ $delivery
 
 ## Quality Certification
 - Pre-delivery checks: $([[ "$checks_passed" == "true" ]] && echo "PASSED" || echo "NEEDS REVIEW")
-- Results synthesized: $result_count files
+- Results synthesized: $result_count compact source files
+- Context policy: bounded excerpts; raw phase artifacts are not embedded on synthesis failure
 - Generated by: Claude Octopus Double Diamond
 - Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 EOF
@@ -1017,4 +2599,729 @@ format_workflow_banner() {
         echo "🐙 **CLAUDE OCTOPUS ACTIVATED** - ${workflow}"
         echo "${phase_emoji} ${description}"
     fi
+}
+
+# ── Embrace debate gates ────────────────────────────────────────────────
+embrace_normalize_debate_gates() {
+    local raw="${OCTOPUS_EMBRACE_DEBATE_GATES:-${EMBRACE_DEBATE_GATES:-none}}"
+    raw=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-')
+    raw="${raw#-}"
+    raw="${raw%-}"
+
+    case "$raw" in
+        ""|none|no|false|off|skip|skipped)
+            printf '%s\n' "none"
+            ;;
+        define|define-develop|define-to-develop|first|one|single|yes|true|on)
+            printf '%s\n' "define"
+            ;;
+        both|all|two|full)
+            printf '%s\n' "both"
+            ;;
+        auto|if-disagreement|only-if-disagreement|disagreement|detected)
+            printf '%s\n' "auto"
+            ;;
+        *)
+            log WARN "Unknown OCTOPUS_EMBRACE_DEBATE_GATES='$raw'; treating as none"
+            printf '%s\n' "none"
+            ;;
+    esac
+}
+
+embrace_debate_gate_requested() {
+    local gate="$1"
+    local requested
+    requested=$(embrace_normalize_debate_gates)
+
+    case "$requested:$gate" in
+        define:define-develop|both:define-develop|both:develop-deliver)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+embrace_debate_gate() {
+    local gate="$1"
+    local prompt="$2"
+    local context_file="${3:-}"
+    local gate_slug title style focus expected_pattern
+    local task_group="${OCTOPUS_TASK_GROUP:-$(date +%s)}"
+    EMBRACE_DEBATE_GATE_OUTPUT=""
+
+    case "$gate" in
+        define|define-develop)
+            gate_slug="define-develop"
+            title="Define → Develop"
+            style="adversarial"
+            focus="Challenge the proposed approach before implementation. Identify blockers, weak assumptions, missing requirements, and alternatives dismissed too quickly."
+            expected_pattern="${RESULTS_DIR}/grasp-consensus-*.md"
+            ;;
+        develop|develop-deliver)
+            gate_slug="develop-deliver"
+            title="Develop → Deliver"
+            style="collaborative"
+            focus="Review implementation readiness before delivery. Identify missing scope, unverified claims, quality gaps, regressions, and follow-up work that must not be hidden."
+            expected_pattern="${RESULTS_DIR}/tangle-validation-*.md"
+            ;;
+        *)
+            log ERROR "Unknown embrace debate gate: $gate"
+            return 1
+            ;;
+    esac
+
+    if [[ -z "$context_file" ]]; then
+        context_file=$(ls -t $expected_pattern 2>/dev/null | head -1) || true
+    fi
+    if [[ -z "$context_file" || ! -f "$context_file" ]]; then
+        log ERROR "Embrace debate gate '${gate_slug}' missing context artifact"
+        echo -e "${RED:-}✗${NC:-} Debate gate ${title} cannot run: context artifact missing"
+        return 1
+    fi
+
+    if ! declare -f run_agent_sync >/dev/null 2>&1; then
+        log ERROR "Embrace debate gate '${gate_slug}' cannot run: run_agent_sync is unavailable"
+        return 1
+    fi
+
+    mkdir -p "$RESULTS_DIR" "$LOGS_DIR"
+
+    echo ""
+    echo -e "${CYAN:-}Debate gate: ${title} (${style})${NC:-}"
+    echo ""
+
+    local context_excerpt gate_prompt
+    context_excerpt=$(head -c "${OCTOPUS_EMBRACE_GATE_CONTEXT_BYTES:-12000}" "$context_file" 2>/dev/null || true)
+    gate_prompt="EMBRACE ${title} DEBATE GATE
+
+Style: ${style}
+Task: ${prompt}
+Context artifact: ${context_file}
+
+${focus}
+
+Context excerpt:
+${context_excerpt}
+
+Return a concise gate review with:
+1. Verdict: PROCEED, PROCEED_WITH_RISKS, REVISE, or STOP
+2. Blocking issues, if any
+3. Non-blocking risks
+4. Concrete changes needed before the next phase
+5. Evidence from the context artifact"
+
+    local codex_view="" agy_view="" claude_view="" synthesis=""
+    local codex_status="failed" agy_status="failed" claude_status="failed"
+    local successful=0
+
+    if codex_view=$(run_agent_sync "codex" "$gate_prompt" 120 "code-reviewer" "embrace-gate" 2>/dev/null); then
+        if [[ -n "$codex_view" ]]; then
+            codex_status="ok"
+            successful=$((successful + 1))
+        fi
+    fi
+    # Antigravity (agy) is the Google seat since the Gemini CLI sunset (#524)
+    if agy_view=$(run_agent_sync "agy" "$gate_prompt" 120 "researcher" "embrace-gate" 2>/dev/null); then
+        if [[ -n "$agy_view" ]]; then
+            agy_status="ok"
+            successful=$((successful + 1))
+        fi
+    fi
+    if claude_view=$(run_agent_sync "claude-sonnet" "$gate_prompt" 120 "code-reviewer" "embrace-gate" 2>/dev/null); then
+        if [[ -n "$claude_view" ]]; then
+            claude_status="ok"
+            successful=$((successful + 1))
+        fi
+    fi
+
+    if [[ "$successful" -eq 0 ]]; then
+        log ERROR "Embrace debate gate '${gate_slug}' produced no provider output"
+        echo -e "${RED:-}✗${NC:-} Debate gate ${title} produced no provider output"
+        return 1
+    fi
+
+    local synthesis_prompt="Synthesize this Embrace ${title} debate gate.
+
+Task: ${prompt}
+Gate style: ${style}
+Provider statuses: codex=${codex_status}, agy=${agy_status}, claude=${claude_status}
+
+Codex:
+${codex_view:-[no output]}
+
+Antigravity (agy):
+${agy_view:-[no output]}
+
+Claude:
+${claude_view:-[no output]}
+
+Return:
+1. Gate verdict
+2. Required actions before next phase
+3. Risks accepted if proceeding
+4. Provider participation summary"
+
+    synthesis=$(run_agent_sync "claude-sonnet" "$synthesis_prompt" 120 "synthesizer" "embrace-gate" 2>/dev/null) || true
+    if [[ -z "$synthesis" ]]; then
+        synthesis="Synthesis unavailable. Review provider outputs below before proceeding."
+    fi
+
+    local gate_file="${RESULTS_DIR}/embrace-gate-${gate_slug}-${task_group}.md"
+    cat > "$gate_file" << EOF
+# EMBRACE Debate Gate: ${title}
+
+**Generated:** $(date)
+**Task:** ${prompt}
+**Style:** ${style}
+**Context Artifact:** ${context_file}
+**Provider Statuses:** codex=${codex_status}, agy=${agy_status}, claude=${claude_status}
+
+---
+
+## Synthesis
+
+${synthesis}
+
+---
+
+## Provider Views
+
+### Codex (${codex_status})
+
+${codex_view:-No output.}
+
+### Antigravity / agy (${agy_status})
+
+${agy_view:-No output.}
+
+### Claude (${claude_status})
+
+${claude_view:-No output.}
+EOF
+
+    if declare -f save_session_checkpoint >/dev/null 2>&1; then
+        save_session_checkpoint "debate-${gate_slug}" "completed" "$gate_file"
+    fi
+    if declare -f write_structured_decision >/dev/null 2>&1; then
+        write_structured_decision \
+            "debate-synthesis" \
+            "embrace_debate_gate/${gate_slug}" \
+            "Embrace debate gate completed: ${prompt:0:80}" \
+            "" \
+            "high" \
+            "Provider statuses: codex=${codex_status}, agy=${agy_status}, claude=${claude_status}" \
+            "" 2>/dev/null || true
+    fi
+
+    EMBRACE_DEBATE_GATE_OUTPUT="$gate_file"
+    echo -e "${GREEN:-}✓${NC:-} Debate gate completed: $gate_file"
+    return 0
+}
+
+# ── embrace_full_workflow (moved from orchestrate.sh v9.22.1) ──
+embrace_full_workflow() {
+    local prompt="$1"
+    local task_group
+    task_group=$(date +%s)
+    local resume_from=""
+
+    echo ""
+    echo -e "${MAGENTA}${_BOX_TOP}${NC}"
+    echo -e "${MAGENTA}║  ${GREEN}EMBRACE${MAGENTA} - Full 4-Phase Workflow                         ║${NC}"
+    echo -e "${MAGENTA}║  Research → Define → Develop → Deliver                    ║${NC}"
+    echo -e "${MAGENTA}${_BOX_BOT}${NC}"
+    echo ""
+
+    log INFO "Starting complete Double Diamond workflow"
+
+    # v8.49.0: Clean up expired results from prior runs
+    cleanup_old_results
+
+    # v8.5: Show compact cost estimate in banner
+    show_cost_estimate "embrace" "${#prompt}"
+
+    # v8.48.0: Disable cron during long multi-phase workflows to prevent interference
+    if [[ "$SUPPORTS_DISABLE_CRON_ENV" == "true" ]]; then
+        export CLAUDE_CODE_DISABLE_CRON=1
+        log DEBUG "Cron jobs disabled for embrace workflow duration"
+    fi
+
+    # v8.19.0: Cleanup expired checkpoints
+    cleanup_expired_checkpoints 2>/dev/null || true
+
+    # v8.18.0: Reset lockouts for new workflow
+    reset_provider_lockouts
+
+    # v8.19.0: Inject high-importance observations into workflow context
+    # NOTE: Observations are VARIABLE content — appended after task prompt so that
+    # the stable persona/skill prefix (injected later by spawn_agent) stays cacheable
+    local high_obs
+    high_obs=$(search_observations "" 7 2>/dev/null) || true
+    if [[ -n "$high_obs" ]]; then
+        local obs_ctx="${high_obs:0:1500}"
+        prompt="${prompt}
+
+---
+
+## High-Importance Observations from Previous Sessions
+${obs_ctx}"
+        log DEBUG "Injected ${#obs_ctx} chars of high-importance observations"
+    fi
+
+    local requested_debate_gates
+    requested_debate_gates=$(embrace_normalize_debate_gates)
+
+    log INFO "Task: $prompt"
+    log INFO "Autonomy mode: $AUTONOMY_MODE"
+    log INFO "Requested debate gates: $requested_debate_gates"
+    [[ "$LOOP_UNTIL_APPROVED" == "true" ]] && log INFO "Loop-until-approved: enabled"
+
+    # v8.3: Export workflow phase for event-driven hooks (TeammateIdle, TaskCompleted)
+    export OCTOPUS_WORKFLOW_PHASE="init"
+    export OCTOPUS_WORKFLOW_TYPE="embrace"
+    export OCTOPUS_TASK_GROUP="$task_group"
+    export OCTOPUS_TOTAL_PHASES=4
+    export OCTOPUS_COMPLETED_PHASES=0
+
+    # v8.3: Write session state for hook handlers to read
+    # v8.5: Enhanced with phase_tasks and agent_queue for hook integration
+    _write_embrace_session_state() {
+        local phase="$1"
+        local status="$2"
+        local session_dir="${HOME}/.claude-octopus"
+        mkdir -p "$session_dir"
+        if command -v jq &> /dev/null; then
+            jq -n \
+                --arg phase "$phase" \
+                --arg status "$status" \
+                --arg workflow "embrace" \
+                --arg group "$task_group" \
+                --arg autonomy "$AUTONOMY_MODE" \
+                --argjson completed "$OCTOPUS_COMPLETED_PHASES" \
+                --argjson total "$OCTOPUS_TOTAL_PHASES" \
+                '{workflow: $workflow, current_phase: $phase, phase_status: $status,
+                  task_group: $group, autonomy_mode: $autonomy,
+                  completed_phases: $completed, total_phases: $total,
+                  phase_map: {probe: "grasp", grasp: "tangle", tangle: "ink", ink: "complete"},
+                  phase_tasks: {total: 0, completed: 0},
+                  agent_queue: [],
+                  quality_gates: {passed: false, failed: false},
+                  updated_at: now | todate}' \
+                > "$session_dir/session.json" 2>/dev/null || true
+        fi
+    }
+
+    _latest_embrace_output() {
+        local pattern="$1"
+        local latest
+        latest=$(ls -t $pattern 2>/dev/null | head -1) || true
+        [[ -n "$latest" && -f "$latest" ]] && printf '%s\n' "$latest"
+    }
+
+    _cleanup_embrace_exports() {
+        unset OCTOPUS_SKIP_PHASE_COST_PROMPT
+        unset OCTOPUS_WORKFLOW_PHASE
+        unset OCTOPUS_WORKFLOW_TYPE
+        unset OCTOPUS_TASK_GROUP
+        unset OCTOPUS_TOTAL_PHASES
+        unset OCTOPUS_COMPLETED_PHASES
+        unset CLAUDE_CODE_DISABLE_CRON 2>/dev/null || true
+    }
+
+    _abort_embrace_phase() {
+        local phase="$1"
+        local reason="$2"
+        local output="${3:-}"
+
+        log ERROR "EMBRACE stopped at ${phase}: ${reason}"
+        echo ""
+        echo -e "${RED:-}${_BOX_TOP}${NC:-}"
+        echo -e "${RED:-}║  EMBRACE stopped at ${phase}${NC:-}"
+        echo -e "${RED:-}${_BOX_BOT}${NC:-}"
+        echo -e "Reason: ${reason}"
+        [[ -n "$output" ]] && echo -e "Output: ${output}"
+        echo -e "Results: ${RESULTS_DIR}/"
+        echo ""
+
+        _write_embrace_session_state "$phase" "failed"
+        save_session_checkpoint "$phase" "failed" "$output"
+        handle_autonomy_checkpoint "$phase" "failed"
+        _cleanup_embrace_exports
+        return 1
+    }
+
+    _write_embrace_session_state "init" "starting"
+    echo ""
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log INFO "[DRY-RUN] Would embrace: $prompt"
+        log INFO "[DRY-RUN] Would run all 4 phases: probe → grasp → tangle → ink"
+        return 0
+    fi
+
+    # Session recovery check
+    if [[ "$RESUME_SESSION" == "true" ]] && check_resume_session; then
+        resume_from=$(get_resume_phase)
+        log INFO "Resuming from phase: $resume_from"
+    else
+        init_session "embrace" "$prompt"
+    fi
+
+    # Cost transparency (v7.18.0 - P0.0)
+    # Display estimated costs and require user approval BEFORE execution
+    if ! display_workflow_cost_estimate "Embrace (Full Double Diamond)" 4 4 2000; then
+        log "WARN" "Workflow cancelled by user after cost review"
+        return 1
+    fi
+
+    # Set flag to skip individual phase cost prompts (already shown above)
+    export OCTOPUS_SKIP_PHASE_COST_PROMPT="true"
+
+    # Pre-flight validation
+    if ! preflight_check; then
+        log ERROR "Pre-flight check failed. Aborting workflow."
+        return 1
+    fi
+
+    local workflow_dir="${RESULTS_DIR}/embrace-${task_group}"
+    mkdir -p "$workflow_dir"
+
+    # Track timing
+    local start_time=$SECONDS
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # v8.5: YAML RUNTIME DELEGATION
+    # If YAML workflow file exists and runtime is enabled, delegate to YAML runner
+    # Otherwise fall through to hardcoded logic (backward compatibility)
+    # ═══════════════════════════════════════════════════════════════════════════
+    local yaml_file="${PLUGIN_DIR}/config/workflows/embrace.yaml"
+    local use_yaml_runtime=false
+
+    case "$OCTOPUS_YAML_RUNTIME" in
+        enabled)
+            if [[ -f "$yaml_file" ]]; then
+                use_yaml_runtime=true
+            else
+                log "ERROR" "YAML runtime enabled but embrace.yaml not found: $yaml_file"
+                return 1
+            fi
+            ;;
+        auto)
+            if [[ -f "$yaml_file" ]] && [[ -z "$resume_from" || "$resume_from" == "null" ]]; then
+                # Auto mode: try YAML if file exists and not resuming
+                if parse_yaml_workflow "$yaml_file" 2>/dev/null; then
+                    use_yaml_runtime=true
+                    log "INFO" "YAML runtime auto-enabled: embrace.yaml found and valid"
+                else
+                    log "WARN" "YAML runtime auto-disabled: embrace.yaml parsing failed"
+                fi
+            fi
+            ;;
+        disabled)
+            log "DEBUG" "YAML runtime disabled by user"
+            ;;
+    esac
+
+    if [[ "$use_yaml_runtime" == "true" && ( "$requested_debate_gates" == "define" || "$requested_debate_gates" == "both" ) ]]; then
+        log "INFO" "YAML runtime disabled for this embrace run because explicit debate gates were requested"
+        use_yaml_runtime=false
+    fi
+
+    if [[ "$use_yaml_runtime" == "true" ]]; then
+        log "INFO" "Delegating to YAML workflow runtime for embrace workflow"
+        echo -e "${CYAN}Using YAML-driven workflow runtime (embrace.yaml)${NC}"
+        echo ""
+
+        local yaml_result
+        yaml_result=$(run_yaml_workflow "embrace" "$prompt" "$task_group")
+
+        # Mark workflow complete
+        export OCTOPUS_WORKFLOW_PHASE="complete"
+        export OCTOPUS_COMPLETED_PHASES=4
+        _write_embrace_session_state "complete" "finished"
+        complete_session
+
+        local duration=$((SECONDS - start_time))
+
+        echo ""
+        echo -e "${MAGENTA}${_BOX_TOP}${NC}"
+        echo -e "${MAGENTA}║  EMBRACE workflow complete! (YAML Runtime)                ║${NC}"
+        echo -e "${MAGENTA}${_BOX_BOT}${NC}"
+        echo ""
+        echo -e "Duration: ${duration}s"
+        echo -e "Autonomy: ${AUTONOMY_MODE}"
+        echo -e "Runtime: YAML (embrace.yaml)"
+        echo -e "Results: ${RESULTS_DIR}/"
+        echo ""
+
+        # v7.25.0: Display session metrics
+        if command -v display_session_metrics &>/dev/null; then
+            display_session_metrics 2>/dev/null || true
+            display_provider_breakdown 2>/dev/null || true
+            # v8.6.0: Per-phase cost breakdown
+            if command -v display_per_phase_cost_table &>/dev/null; then
+                display_per_phase_cost_table 2>/dev/null || true
+            fi
+        fi
+
+        _cleanup_embrace_exports
+        return 0
+    fi
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # HARDCODED PHASE LOGIC (fallback when YAML runtime not available)
+    # ═══════════════════════════════════════════════════════════════════════════
+    local probe_synthesis grasp_consensus tangle_validation
+    local define_gate_output="" develop_gate_output=""
+
+    # Phase 1: PROBE (Discover)
+    if [[ -z "$resume_from" || "$resume_from" == "null" ]]; then
+        export OCTOPUS_WORKFLOW_PHASE="probe"
+        _write_embrace_session_state "probe" "running"
+        echo ""
+        echo -e "${CYAN}[1/4] Starting PROBE phase (Discover)...${NC}"
+        echo ""
+        if ! probe_discover "$prompt"; then
+            _abort_embrace_phase "probe" "probe_discover returned non-zero"
+            return 1
+        fi
+        probe_synthesis=$(_latest_embrace_output "$RESULTS_DIR"/probe-synthesis-*.md)
+        if [[ -z "$probe_synthesis" ]]; then
+            _abort_embrace_phase "probe" "missing probe synthesis artifact (expected probe-synthesis-*.md)"
+            return 1
+        fi
+
+        # v7.25.0: Display phase metrics
+        if command -v display_phase_metrics &> /dev/null; then
+            display_phase_metrics "probe" 2>/dev/null || true
+        fi
+
+        # v8.14.0: Capture phase context in persistent state
+        update_context "discover" "$(head -20 "$probe_synthesis" 2>/dev/null | tr '\n' ' ')" 2>/dev/null || true
+
+        OCTOPUS_COMPLETED_PHASES=1
+        _write_embrace_session_state "probe" "completed"
+        save_session_checkpoint "probe" "completed" "$probe_synthesis"
+        handle_autonomy_checkpoint "probe" "completed"
+        sleep 1
+    else
+        probe_synthesis=$(get_phase_output "probe")
+        [[ -z "$probe_synthesis" ]] && probe_synthesis=$(_latest_embrace_output "$RESULTS_DIR"/probe-synthesis-*.md)
+        if [[ -z "$probe_synthesis" || ! -f "$probe_synthesis" ]]; then
+            _abort_embrace_phase "probe" "resume requested but probe synthesis artifact is missing"
+            return 1
+        fi
+        log INFO "Skipping probe phase (resuming)"
+    fi
+
+    # Phase 2: GRASP (Define)
+    if [[ -z "$resume_from" || "$resume_from" == "null" || "$resume_from" == "probe" ]]; then
+        export OCTOPUS_WORKFLOW_PHASE="grasp"
+        _write_embrace_session_state "grasp" "running"
+        echo ""
+        echo -e "${CYAN}[2/4] Starting GRASP phase (Define)...${NC}"
+        echo ""
+        if ! grasp_define "$prompt" "$probe_synthesis"; then
+            _abort_embrace_phase "grasp" "grasp_define returned non-zero" "$probe_synthesis"
+            return 1
+        fi
+        grasp_consensus=$(_latest_embrace_output "$RESULTS_DIR"/grasp-consensus-*.md)
+        if [[ -z "$grasp_consensus" ]]; then
+            _abort_embrace_phase "grasp" "missing grasp consensus artifact (expected grasp-consensus-*.md)" "$probe_synthesis"
+            return 1
+        fi
+
+        # v7.25.0: Display phase metrics
+        if command -v display_phase_metrics &> /dev/null; then
+            display_phase_metrics "grasp" 2>/dev/null || true
+        fi
+
+        # v8.14.0: Capture phase context in persistent state
+        update_context "define" "$(head -20 "$grasp_consensus" 2>/dev/null | tr '\n' ' ')" 2>/dev/null || true
+
+        OCTOPUS_COMPLETED_PHASES=2
+        _write_embrace_session_state "grasp" "completed"
+        save_session_checkpoint "grasp" "completed" "$grasp_consensus"
+        handle_autonomy_checkpoint "grasp" "completed"
+        sleep 1
+    else
+        grasp_consensus=$(get_phase_output "grasp")
+        [[ -z "$grasp_consensus" ]] && grasp_consensus=$(_latest_embrace_output "$RESULTS_DIR"/grasp-consensus-*.md)
+        if [[ -z "$grasp_consensus" || ! -f "$grasp_consensus" ]]; then
+            _abort_embrace_phase "grasp" "resume requested but grasp consensus artifact is missing" "$probe_synthesis"
+            return 1
+        fi
+        log INFO "Skipping grasp phase (resuming)"
+    fi
+
+    # Optional requested gate: Define → Develop.
+    # Autonomy controls whether humans are asked between phases; it must not
+    # silently waive a gate the user explicitly selected.
+    if embrace_debate_gate_requested "define-develop"; then
+        export OCTOPUS_WORKFLOW_PHASE="debate-define-develop"
+        _write_embrace_session_state "debate-define-develop" "running"
+        if ! embrace_debate_gate "define-develop" "$prompt" "$grasp_consensus"; then
+            _abort_embrace_phase "debate-define-develop" "requested debate gate failed" "$grasp_consensus"
+            return 1
+        fi
+        define_gate_output="$EMBRACE_DEBATE_GATE_OUTPUT"
+        if [[ -z "$define_gate_output" || ! -f "$define_gate_output" ]]; then
+            _abort_embrace_phase "debate-define-develop" "requested debate gate produced no artifact" "$grasp_consensus"
+            return 1
+        fi
+        _write_embrace_session_state "debate-define-develop" "completed"
+        handle_autonomy_checkpoint "debate-define-develop" "completed"
+        sleep 1
+    fi
+
+    # Phase 3: TANGLE (Develop)
+    if [[ -z "$resume_from" || "$resume_from" == "null" || "$resume_from" == "probe" || "$resume_from" == "grasp" ]]; then
+        export OCTOPUS_WORKFLOW_PHASE="tangle"
+        _write_embrace_session_state "tangle" "running"
+        echo ""
+        echo -e "${CYAN}[3/4] Starting TANGLE phase (Develop)...${NC}"
+        echo ""
+        if ! tangle_develop "$prompt" "$grasp_consensus"; then
+            tangle_validation=$(_latest_embrace_output "$RESULTS_DIR"/tangle-validation-*.md)
+            _abort_embrace_phase "tangle" "tangle_develop returned non-zero" "$tangle_validation"
+            return 1
+        fi
+        tangle_validation=$(_latest_embrace_output "$RESULTS_DIR"/tangle-validation-*.md)
+        if [[ -z "$tangle_validation" ]]; then
+            _abort_embrace_phase "tangle" "missing tangle validation artifact (expected tangle-validation-*.md)" "$grasp_consensus"
+            return 1
+        fi
+
+        # v7.25.0: Display phase metrics
+        if command -v display_phase_metrics &> /dev/null; then
+            display_phase_metrics "tangle" 2>/dev/null || true
+        fi
+
+        # Check quality gate status for autonomy
+        local tangle_status="completed"
+        if grep -q "Quality Gate: FAILED" "$tangle_validation" 2>/dev/null; then
+            tangle_status="warning"
+        fi
+        # v8.14.0: Capture phase context in persistent state
+        update_context "develop" "$(head -20 "$tangle_validation" 2>/dev/null | tr '\n' ' ')" 2>/dev/null || true
+
+        OCTOPUS_COMPLETED_PHASES=3
+        _write_embrace_session_state "tangle" "$tangle_status"
+        save_session_checkpoint "tangle" "$tangle_status" "$tangle_validation"
+        handle_autonomy_checkpoint "tangle" "$tangle_status"
+        sleep 1
+    else
+        tangle_validation=$(get_phase_output "tangle")
+        [[ -z "$tangle_validation" ]] && tangle_validation=$(_latest_embrace_output "$RESULTS_DIR"/tangle-validation-*.md)
+        if [[ -z "$tangle_validation" || ! -f "$tangle_validation" ]]; then
+            _abort_embrace_phase "tangle" "resume requested but tangle validation artifact is missing" "$grasp_consensus"
+            return 1
+        fi
+        log INFO "Skipping tangle phase (resuming)"
+    fi
+
+    # Optional requested gate: Develop → Deliver.
+    if embrace_debate_gate_requested "develop-deliver"; then
+        export OCTOPUS_WORKFLOW_PHASE="debate-develop-deliver"
+        _write_embrace_session_state "debate-develop-deliver" "running"
+        if ! embrace_debate_gate "develop-deliver" "$prompt" "$tangle_validation"; then
+            _abort_embrace_phase "debate-develop-deliver" "requested debate gate failed" "$tangle_validation"
+            return 1
+        fi
+        develop_gate_output="$EMBRACE_DEBATE_GATE_OUTPUT"
+        if [[ -z "$develop_gate_output" || ! -f "$develop_gate_output" ]]; then
+            _abort_embrace_phase "debate-develop-deliver" "requested debate gate produced no artifact" "$tangle_validation"
+            return 1
+        fi
+        _write_embrace_session_state "debate-develop-deliver" "completed"
+        handle_autonomy_checkpoint "debate-develop-deliver" "completed"
+        sleep 1
+    fi
+
+    # Phase 4: INK (Deliver)
+    export OCTOPUS_WORKFLOW_PHASE="ink"
+    _write_embrace_session_state "ink" "running"
+    echo ""
+    echo -e "${CYAN}[4/4] Starting INK phase (Deliver)...${NC}"
+    echo ""
+    if ! ink_deliver "$prompt" "$tangle_validation"; then
+        _abort_embrace_phase "ink" "ink_deliver returned non-zero" "$tangle_validation"
+        return 1
+    fi
+
+    # v7.25.0: Display phase metrics
+    if command -v display_phase_metrics &> /dev/null; then
+        display_phase_metrics "ink" 2>/dev/null || true
+    fi
+
+    # v8.14.0: Capture phase context in persistent state
+    local ink_output
+    ink_output=$(_latest_embrace_output "$RESULTS_DIR"/delivery-*.md)
+    if [[ -z "$ink_output" ]]; then
+        _abort_embrace_phase "ink" "missing delivery artifact (expected delivery-*.md)" "$tangle_validation"
+        return 1
+    fi
+    update_context "deliver" "$(head -20 "$ink_output" 2>/dev/null | tr '\n' ' ')" 2>/dev/null || true
+
+    OCTOPUS_COMPLETED_PHASES=4
+    export OCTOPUS_WORKFLOW_PHASE="complete"
+    _write_embrace_session_state "ink" "completed"
+    save_session_checkpoint "ink" "completed" "$ink_output"
+
+    # v8.18.0: Record phase completion decision
+    write_structured_decision \
+        "phase-completion" \
+        "embrace_full_workflow" \
+        "Full embrace workflow completed: ${prompt:0:80}" \
+        "" \
+        "high" \
+        "All 4 phases completed: probe → grasp → tangle → ink" \
+        "" 2>/dev/null || true
+
+    # v8.18.0: Earn skill from embrace completion
+    earn_skill \
+        "workflow-${prompt:0:30}" \
+        "embrace_full_workflow" \
+        "Full Double Diamond execution pattern" \
+        "For comprehensive end-to-end tasks" \
+        "probe→grasp→tangle→ink completed for: ${prompt:0:60}" 2>/dev/null || true
+
+    # Mark session complete
+    complete_session
+
+    # Summary
+    local duration=$((SECONDS - start_time))
+
+    echo ""
+    echo -e "${MAGENTA}${_BOX_TOP}${NC}"
+    echo -e "${MAGENTA}║  EMBRACE workflow complete!                               ║${NC}"
+    echo -e "${MAGENTA}${_BOX_BOT}${NC}"
+    echo ""
+    echo -e "Duration: ${duration}s"
+    echo -e "Autonomy: ${AUTONOMY_MODE}"
+    echo -e "Results: ${RESULTS_DIR}/"
+    echo ""
+    echo -e "${CYAN}Phase outputs:${NC}"
+    [[ -n "$probe_synthesis" ]] && echo -e "  Probe:  $probe_synthesis"
+    [[ -n "$grasp_consensus" ]] && echo -e "  Grasp:  $grasp_consensus"
+    [[ -n "$define_gate_output" ]] && echo -e "  Gate:   $define_gate_output"
+    [[ -n "$tangle_validation" ]] && echo -e "  Tangle: $tangle_validation"
+    [[ -n "$develop_gate_output" ]] && echo -e "  Gate:   $develop_gate_output"
+    echo -e "  Ink:    $(ls -t "$RESULTS_DIR"/delivery-*.md 2>/dev/null | head -1)"
+    echo ""
+
+    # v7.25.0: Display session metrics
+    if command -v display_session_metrics &> /dev/null; then
+        display_session_metrics 2>/dev/null || true
+        display_provider_breakdown 2>/dev/null || true
+        # v8.6.0: Per-phase cost breakdown
+        if command -v display_per_phase_cost_table &>/dev/null; then
+            display_per_phase_cost_table 2>/dev/null || true
+        fi
+    fi
+
+    # Clean up exported flags so they don't affect subsequent standalone calls
+    _cleanup_embrace_exports
 }

@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# Regression checks for compact probe synthesis fallback.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+HEURISTICS="$PROJECT_ROOT/scripts/lib/heuristics.sh"
+
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/../helpers/test-framework.sh"
+
+test_suite "probe compact synthesis fallback"
+
+test_case "heuristics.sh has valid bash syntax"
+if bash -n "$HEURISTICS" 2>/dev/null; then
+    test_pass
+else
+    test_fail "syntax error in heuristics.sh"
+fi
+
+# shellcheck source=/dev/null
+source "$HEURISTICS"
+
+TEST_ROOT="$(mktemp -d)"
+HOME="$TEST_ROOT/home"
+RESULTS_DIR="$TEST_ROOT/results"
+LOGS_DIR="$TEST_ROOT/logs"
+trap 'rm -rf "$TEST_ROOT"' EXIT
+
+mkdir -p "$HOME" "$RESULTS_DIR" "$LOGS_DIR"
+
+log() { :; }
+enhanced_error() { return 1; }
+get_cache_key() { echo "cache-key"; }
+save_to_cache() { :; }
+guard_output() { :; }
+run_agent_sync() { return 1; }
+
+make_payload() {
+    local token="$1"
+    local count="$2"
+    local i
+    for i in $(seq 1 "$count"); do
+        printf '%s line %04d: detailed probe finding with src/app/page.tsx and concrete notes\n' "$token" "$i"
+    done
+}
+
+task_group="compact"
+success_a="$RESULTS_DIR/codex-probe-${task_group}-0.md"
+success_b="$RESULTS_DIR/claude-sonnet-probe-${task_group}-1.md"
+failed="$RESULTS_DIR/gemini-probe-${task_group}-2.md"
+
+{
+    echo "# Agent: codex"
+    echo "# Phase: probe"
+    echo ""
+    echo "## Output"
+    make_payload "CODEX_RAW" 180
+    echo "RAW_TAIL_SHOULD_NOT_APPEAR"
+    echo ""
+    echo "## Status: SUCCESS"
+} > "$success_a"
+
+{
+    echo "# Agent: claude-sonnet"
+    echo "# Phase: probe"
+    echo ""
+    echo "## Output"
+    echo "[Auto-synthesis failed - raw findings below]"
+    make_payload "SONNET_RAW" 60
+    echo ""
+    echo "## Status: SUCCESS"
+} > "$success_b"
+
+{
+    echo "# Agent: gemini"
+    echo "# Phase: probe"
+    echo "## Status: FAILED (exit code: 1)"
+} > "$failed"
+
+OCTOPUS_PROBE_SYNTHESIS_FILE_CHARS=900
+OCTOPUS_PROBE_SYNTHESIS_CONTEXT_CHARS=4200
+
+test_case "compact probe context is bounded and sanitizes failed synthesis markers"
+context="$(build_probe_synthesis_context "$task_group")"
+if [[ ${#context} -le 5200 ]] && \
+   [[ "$context" == *"## Source: codex-probe-${task_group}-0.md"* ]] && \
+   [[ "$context" == *"## Source: claude-sonnet-probe-${task_group}-1.md"* ]] && \
+   [[ "$context" == *"truncated by probe synthesis context"* ]] && \
+   [[ "$context" == *"Prior auto-synthesis failed; raw fallback omitted"* ]] && \
+   [[ "$context" != *"[Auto-synthesis failed - raw findings below]"* ]] && \
+   [[ "$context" != *"RAW_TAIL_SHOULD_NOT_APPEAR"* ]] && \
+   [[ "$context" != *"gemini-probe-${task_group}-2.md"* ]]; then
+    test_pass
+else
+    test_fail "compact probe context did not stay bounded/sanitized"
+fi
+
+test_case "synthesis provider failure writes compact fallback, not raw dump"
+if synthesize_probe_results "$task_group" "Audit local templates" 2 >/dev/null 2>&1; then
+    synthesis_file="$RESULTS_DIR/probe-synthesis-${task_group}.md"
+    synthesis_content="$(cat "$synthesis_file")"
+    if [[ "$synthesis_content" == *"Automated probe synthesis unavailable."* ]] && \
+       [[ "$synthesis_content" == *"Compact Source Context"* ]] && \
+       [[ "$synthesis_content" != *"[Auto-synthesis failed - raw findings below]"* ]] && \
+       [[ "$synthesis_content" != *"RAW_TAIL_SHOULD_NOT_APPEAR"* ]]; then
+        test_pass
+    else
+        test_fail "probe fallback propagated raw artifacts"
+    fi
+else
+    test_fail "synthesize_probe_results returned non-zero in compact fallback scenario"
+fi
+
+test_summary

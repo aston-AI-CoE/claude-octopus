@@ -210,12 +210,23 @@ ${YELLOW}develop${NC} (alias: tangle) - Implementation phase
 ${YELLOW}Usage:${NC} $(basename "$0") develop <prompt> [define-file]
 
 Implements the solution with built-in quality validation.
-Uses a map-reduce pattern: decompose → parallel implement → synthesize.
+Uses a map-reduce pattern: decompose → parallel implement → validate → contextual code review.
 
 ${YELLOW}Quality Gates:${NC}
-  • ≥90%: ${GREEN}PASSED${NC} - proceed to delivery
-  • 75-89%: ${YELLOW}WARNING${NC} - proceed with caution
-  • <75%: ${RED}FAILED${NC} - needs review
+  • Tangle validation report checks subtask status and worktree evidence
+  • Contextual code review compares the diff against the task contract/decomposition
+  • severity=normal findings trigger a progress-supervised correction loop before delivery
+
+${YELLOW}Environment:${NC}
+  OCTOPUS_TANGLE_CODE_REVIEW=false              Skip contextual code review
+  OCTOPUS_TANGLE_REVIEW_CORRECTION_MODE=unbounded Progress-supervised loop (default)
+  OCTOPUS_TANGLE_REVIEW_CORRECTION_MODE=bounded   Opt into explicit round cap
+  OCTOPUS_TANGLE_REVIEW_CORRECTION_ROUNDS=3       Bound count when mode=bounded
+  OCTOPUS_TANGLE_CORRECTION_STALL_WINDOW=1800     Stop only after silence/no progress
+  OCTOPUS_TANGLE_CORRECTION_HARD_CAP=10           Absolute round ceiling, both modes (0 disables)
+  OCTOPUS_TANGLE_CORRECTION_POLL_SECS=30          Progress check cadence
+  OCTOPUS_TANGLE_REVIEW_TARGET=working-tree     Review target passed to code-review
+  OCTOPUS_TANGLE_INK=true                       Run optional ink/deliver after review passes
 
 ${YELLOW}Examples:${NC}
   $(basename "$0") develop "build the user authentication API"
@@ -482,6 +493,29 @@ ${YELLOW}Output:${NC}
   Results saved to: ~/.claude-octopus/results/grapple-*.md
 EOF
             ;;
+        council)
+            cat << EOF
+${YELLOW}council${NC} - Multi-LLM council advice and gated implementation
+
+${YELLOW}Usage:${NC} $(basename "$0") council [OPTIONS] <task>
+
+${YELLOW}Options:${NC}
+  --goal advice|decision|plan|implement|review
+  --domain auto|architecture|product|security|business|research|docs
+  --style balanced|adversarial|implementation|executive|red-team
+  --depth quick|standard|deep
+  --members auto|3|5|7
+  --persona <name>[,<name>]
+  --implement never|after-approval|plan-only
+  --worktree auto|on|off
+  --benchmark auto|on|off
+  --providers auto|claude,codex,agy,gemini,qwen,opencode,openrouter
+  --max-cost <usd>
+  --dry-run
+  --json
+  --output-dir <path>
+EOF
+            ;;
         squeeze|red-team)
             cat << EOF
 ${YELLOW}squeeze${NC} (alias: red-team) - Security testing workflow
@@ -610,6 +644,7 @@ ${MAGENTA}═══════════════════════�
   init --interactive      Full guided setup (7 steps)
   config                  Update preferences (v4.5)
   status                  Show running agents
+  agent-summary           Show current run provider status table
   kill [id|all]           Stop agents
   clean                   Clean workspace
   aggregate               Combine all results
@@ -672,8 +707,12 @@ ${YELLOW}Examples:${NC}
 
 ${YELLOW}Environment:${NC}
   CLAUDE_OCTOPUS_WORKSPACE  Override workspace (default: ~/.claude-octopus)
-  OPENAI_API_KEY            Required for Codex CLI
-  GEMINI_API_KEY            Required for Gemini CLI
+  OPENAI_API_KEY            Codex CLI (or 'codex login' OAuth)
+  GEMINI_API_KEY            Gemini CLI (or 'gemini' OAuth; GOOGLE_API_KEY also accepted)
+  PERPLEXITY_API_KEY        Perplexity Sonar web search
+  OPENROUTER_API_KEY        OpenRouter models
+  QWEN_API_KEY              Qwen CLI (Coding-Plan: OPENAI_API_KEY + OPENAI_BASE_URL also works;
+                            free OAuth tier was discontinued 2026-04-15)
 
 ${CYAN}https://github.com/nyldn/claude-octopus${NC}
 EOF

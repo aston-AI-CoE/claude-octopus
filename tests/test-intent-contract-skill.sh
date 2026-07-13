@@ -6,15 +6,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-SKILL_FILE="$PROJECT_ROOT/.claude/skills/skill-intent-contract.md"
+
+source "$SCRIPT_DIR/helpers/test-framework.sh"
+test_suite "Intent Contract Skill Implementation"
+
+SKILL_FILE="$(resolve_claude_skill_path "skill-intent-contract")"
 PLUGIN_JSON="$PROJECT_ROOT/.claude-plugin/plugin.json"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
 
 TEST_COUNT=0
 PASS_COUNT=0
@@ -24,22 +22,11 @@ echo -e "${BLUE}🧪 Testing Intent Contract Skill${NC}"
 echo ""
 
 # Helper functions
-pass() {
-    TEST_COUNT=$((TEST_COUNT + 1))
-    PASS_COUNT=$((PASS_COUNT + 1))
-    echo -e "${GREEN}✅ PASS${NC}: $1"
-}
+pass() { test_case "$1"; test_pass; }
 
-fail() {
-    TEST_COUNT=$((TEST_COUNT + 1))
-    FAIL_COUNT=$((FAIL_COUNT + 1))
-    echo -e "${RED}❌ FAIL${NC}: $1"
-    echo -e "   ${YELLOW}$2${NC}"
-}
+fail() { test_case "$1"; test_fail "${2:-$1}"; }
 
-info() {
-    echo -e "${BLUE}ℹ${NC}  $1"
-}
+info() { echo "$1"; }
 
 # Test 1: Check if skill file exists
 echo "Test 1: Checking if skill-intent-contract.md exists..."
@@ -65,7 +52,7 @@ fi
 # Test 3: Check registration in plugin.json
 echo ""
 echo "Test 3: Checking if skill is registered in plugin.json..."
-if grep -q '"\./\.claude/skills/skill-intent-contract\.md"' "$PLUGIN_JSON"; then
+if grep -q '"\./skills/skill-intent-contract"' "$PLUGIN_JSON"; then
     pass "skill-intent-contract.md is registered in plugin.json"
 else
     fail "skill not registered" "Should be listed in plugin.json skills array"
@@ -97,11 +84,11 @@ grep -qi "context.*constraint\|constraint.*context" "$SKILL_FILE" && has_context
 grep -qi "validation checklist\|validation.*check" "$SKILL_FILE" && has_validation=true
 
 passed_components=0
-$has_job_statement && ((passed_components++))
-$has_success_criteria && ((passed_components++))
-$has_boundaries && ((passed_components++))
-$has_context && ((passed_components++))
-$has_validation && ((passed_components++))
+$has_job_statement && ((passed_components++)) || true
+$has_success_criteria && ((passed_components++)) || true
+$has_boundaries && ((passed_components++)) || true
+$has_context && ((passed_components++)) || true
+$has_validation && ((passed_components++)) || true
 
 if [[ $passed_components -ge 4 ]]; then
     pass "Has $passed_components/5 key contract components"
@@ -174,9 +161,9 @@ fi
 echo ""
 echo "Test 12: Checking for workflow integration documentation..."
 workflows_mentioned=0
-grep -qi "embrace" "$SKILL_FILE" && ((workflows_mentioned++))
-grep -qi "discover\|probe" "$SKILL_FILE" && ((workflows_mentioned++))
-grep -qi "plan\|/plan" "$SKILL_FILE" && ((workflows_mentioned++))
+grep -qi "embrace" "$SKILL_FILE" && ((workflows_mentioned++)) || true
+grep -qi "discover\|probe" "$SKILL_FILE" && ((workflows_mentioned++)) || true
+grep -qi "plan\|/plan" "$SKILL_FILE" && ((workflows_mentioned++)) || true
 
 if [[ $workflows_mentioned -ge 2 ]]; then
     pass "Documents integration with $workflows_mentioned workflow(s)"
@@ -233,18 +220,4 @@ fi
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "${BLUE}Test Summary${NC}"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "Total tests:  ${BLUE}$TEST_COUNT${NC}"
-echo -e "Passed:       ${GREEN}$PASS_COUNT${NC}"
-echo -e "Failed:       ${RED}$FAIL_COUNT${NC}"
-echo ""
-
-if [[ $FAIL_COUNT -eq 0 ]]; then
-    echo -e "${GREEN}✅ All tests passed!${NC}"
-    echo ""
-    info "Intent contract skill is properly implemented"
-    exit 0
-else
-    echo -e "${RED}❌ Some tests failed${NC}"
-    exit 1
-fi
+test_summary

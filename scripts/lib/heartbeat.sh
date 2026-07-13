@@ -4,6 +4,12 @@
 # Extracted from orchestrate.sh (v8.19.0 heartbeat + v7.16.0 timeout)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# Opt-in lifecycle event stream — no-op unless OCTO_EVENT_LOG is set. Sourced
+# guarded so heartbeat stays usable even if events.sh is absent.
+_octo_heartbeat_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=/dev/null
+source "${_octo_heartbeat_lib_dir}/events.sh" 2>/dev/null || true
+
 start_heartbeat_monitor() {
     local pid="$1"
     local task_id="$2"
@@ -75,6 +81,7 @@ compute_dynamic_timeout() {
     case "$agent_type" in
         codex*)     provider_cap=150 ;;
         gemini*)    provider_cap=90 ;;
+        qwen*)      provider_cap=90 ;;   # oco-dar: Gemini-CLI fork — same profile; cap auth-hang risk
         claude-sonnet*|sonnet*) provider_cap=60 ;;
         perplexity*) provider_cap=45 ;;
     esac
@@ -133,6 +140,25 @@ run_with_timeout() {
     shift
 
     local exit_code
+    local _octo_cmd_label="${1:-unknown}"
+
+    if declare -f octo_event_emit >/dev/null 2>&1; then
+        octo_event_emit "dispatch.start" command="$_octo_cmd_label" timeout="$timeout_secs" || true
+    fi
+
+    # timeout_secs=0 means no absolute timeout. Callers that choose it must set
+    # OCTOPUS_UNBOUNDED_EXECUTION_SUPERVISED to document the external heartbeat,
+    # stall, or workflow-level watchdog responsible for recovery.
+    if [[ "$timeout_secs" =~ ^[0-9]+$ ]] && [[ "$timeout_secs" -eq 0 ]]; then
+        "$@"
+        exit_code=$?
+        if declare -f octo_event_emit >/dev/null 2>&1; then
+            local _octo_outcome="ok"
+            [[ $exit_code -eq 0 ]] || _octo_outcome="error"
+            octo_event_emit "dispatch.end" command="$_octo_cmd_label" exit_code="$exit_code" outcome="$_octo_outcome" timeout="none" || true
+        fi
+        return "$exit_code"
+    fi
 
     # v9.20.1: Detect if command is a shell function (e.g. perplexity_execute,
     # openrouter_execute). External timeout/gtimeout can only exec binaries —
@@ -142,21 +168,38 @@ run_with_timeout() {
         _cmd_is_function=true
     fi
 
-    # Use gtimeout (GNU) or timeout if available AND command is an external binary
+    # Use gtimeout (GNU) or timeout if available AND command is an external binary.
+    # oco-dar: `-k 10` escalates to SIGKILL 10s after the initial SIGTERM. A
+    # provider that catches SIGTERM and stalls (e.g. node mid-OAuth device-flow)
+    # would otherwise outlive the timeout — that is exactly how an expired-token
+    # qwen probe hung ~10min instead of dying at the per-agent cap.
     if [[ "$_cmd_is_function" == "false" ]] && command -v gtimeout &>/dev/null; then
-        gtimeout "$timeout_secs" "$@"
+        gtimeout -k 10 "$timeout_secs" "$@"
         exit_code=$?
     elif [[ "$_cmd_is_function" == "false" ]] && command -v timeout &>/dev/null; then
-        timeout "$timeout_secs" "$@"
+        timeout -k 10 "$timeout_secs" "$@"
         exit_code=$?
     else
-        # Fallback with proper cleanup (also used for shell functions)
+        # Fallback with proper cleanup (also used for shell functions).
+        # `<&0` explicitly inherits stdin from the caller: non-interactive bash
+        # otherwise redirects background-job stdin to /dev/null, which starves
+        # shell-function providers (perplexity_execute, openrouter_execute)
+        # that read their prompt from stdin. See issue #307.
         local cmd_pid monitor_pid
 
-        "$@" &
+        "$@" <&0 &
         cmd_pid=$!
 
-        ( sleep "$timeout_secs" && kill -TERM "$cmd_pid" 2>/dev/null ) &
+        # oco-dar: SIGTERM at the cap, then SIGKILL the process AND its children
+        # 10s later so a TERM-ignoring tree cannot wedge the workflow.
+        (
+            sleep "$timeout_secs"
+            kill -TERM "$cmd_pid" 2>/dev/null
+            pkill -TERM -P "$cmd_pid" 2>/dev/null || true
+            sleep 10
+            kill -KILL "$cmd_pid" 2>/dev/null
+            pkill -KILL -P "$cmd_pid" 2>/dev/null || true
+        ) &
         monitor_pid=$!
 
         if wait "$cmd_pid" 2>/dev/null; then
@@ -165,9 +208,10 @@ run_with_timeout() {
             exit_code=$?
         fi
 
-        # Clean up monitor process
+        # Stop the monitor and sweep any stragglers parented to the command.
         kill "$monitor_pid" 2>/dev/null
         wait "$monitor_pid" 2>/dev/null
+        pkill -KILL -P "$cmd_pid" 2>/dev/null || true
     fi
 
     # Enhanced timeout error messaging (v7.16.0 Feature 3)
@@ -190,7 +234,16 @@ run_with_timeout() {
         echo "   3. Check provider API status for slowness" >&2
         echo "" >&2
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
+        if declare -f octo_event_emit >/dev/null 2>&1; then
+            octo_event_emit "dispatch.timeout" command="$_octo_cmd_label" timeout="$timeout_secs" exit_code="$exit_code" || true
+        fi
         return 124
+    fi
+
+    if declare -f octo_event_emit >/dev/null 2>&1; then
+        local _octo_outcome="ok"
+        [[ $exit_code -eq 0 ]] || _octo_outcome="error"
+        octo_event_emit "dispatch.end" command="$_octo_cmd_label" exit_code="$exit_code" outcome="$_octo_outcome" || true
     fi
 
     return $exit_code

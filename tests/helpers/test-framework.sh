@@ -40,6 +40,59 @@ AFTER_ALL_HOOK=""
 # Test Suite Management
 #==============================================================================
 
+resolve_claude_skill_path() {
+    local name="$1"
+    local root="${PROJECT_ROOT:-$(pwd)}"
+
+    name="${name%.md}"
+
+    if [[ -f "$root/.claude/skills/${name}/SKILL.md" ]]; then
+        printf '%s\n' "$root/.claude/skills/${name}/SKILL.md"
+    elif [[ -f "$root/.claude/skills/${name}.md" ]]; then
+        printf '%s\n' "$root/.claude/skills/${name}.md"
+    else
+        printf '%s\n' "$root/.claude/skills/${name}/SKILL.md"
+    fi
+}
+
+claude_skill_slug() {
+    local path="$1"
+    local base
+    base="$(basename "$path")"
+
+    if [[ "$base" == "SKILL.md" ]]; then
+        basename "$(dirname "$path")"
+    else
+        basename "$path" .md
+    fi
+}
+
+list_claude_skill_files() {
+    local root="${PROJECT_ROOT:-$(pwd)}"
+
+    [[ -d "$root/.claude/skills" ]] || return 0
+
+    {
+        find "$root/.claude/skills" -maxdepth 1 -type f -name '*.md' -print 2>/dev/null
+        find "$root/.claude/skills" -mindepth 2 -maxdepth 2 -type f -name 'SKILL.md' -print 2>/dev/null
+    } | sort
+}
+
+resolve_claude_skill_template_path() {
+    local name="$1"
+    local root="${PROJECT_ROOT:-$(pwd)}"
+
+    name="${name%.tmpl}"
+
+    if [[ -f "$root/.claude/skills/${name}/${name}.tmpl" ]]; then
+        printf '%s\n' "$root/.claude/skills/${name}/${name}.tmpl"
+    elif [[ -f "$root/.claude/skills/${name}.tmpl" ]]; then
+        printf '%s\n' "$root/.claude/skills/${name}.tmpl"
+    else
+        printf '%s\n' "$root/.claude/skills/${name}/${name}.tmpl"
+    fi
+}
+
 test_suite() {
     local name="$1"
     TEST_SUITE_NAME="$name"

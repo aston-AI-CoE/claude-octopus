@@ -5,13 +5,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+source "$SCRIPT_DIR/../helpers/test-framework.sh"
+test_suite "skill template generation system"
+
 SKILLS_DIR="$PROJECT_ROOT/.claude/skills"
 BLOCKS_DIR="$PROJECT_ROOT/skills/blocks"
 GEN_SCRIPT="$PROJECT_ROOT/scripts/gen-skill-docs.sh"
 
-TEST_COUNT=0; PASS_COUNT=0; FAIL_COUNT=0
-pass() { TEST_COUNT=$((TEST_COUNT+1)); PASS_COUNT=$((PASS_COUNT+1)); echo "PASS: $1"; }
-fail() { TEST_COUNT=$((TEST_COUNT+1)); FAIL_COUNT=$((FAIL_COUNT+1)); echo "FAIL: $1 — $2"; }
+pass() { test_case "$1"; test_pass; }
+fail() { test_case "$1"; test_fail "${2:-$1}"; }
 
 # ── Generator script exists and is executable ────────────────────────────────
 
@@ -45,7 +48,10 @@ fi
 
 # ── Template files exist (at least 4) ───────────────────────────────────────
 
-tmpl_count=$(find "$SKILLS_DIR" -maxdepth 1 -name '*.tmpl' 2>/dev/null | wc -l | tr -d ' ')
+tmpl_count=$({
+    find "$SKILLS_DIR" -maxdepth 1 -type f -name '*.tmpl' -print 2>/dev/null
+    find "$SKILLS_DIR" -mindepth 2 -maxdepth 2 -type f -name '*.tmpl' -print 2>/dev/null
+} | wc -l | tr -d ' ')
 if [[ "$tmpl_count" -ge 4 ]]; then
     pass "at least 4 .tmpl files exist ($tmpl_count found)"
 else
@@ -55,7 +61,7 @@ fi
 # ── Verify the 4 DD flow templates exist ─────────────────────────────────────
 
 for tmpl_name in flow-discover.tmpl flow-define.tmpl flow-develop.tmpl flow-deliver.tmpl; do
-    if [[ -f "$SKILLS_DIR/$tmpl_name" ]]; then
+    if [[ -f "$(resolve_claude_skill_template_path "$tmpl_name")" ]]; then
         pass "$tmpl_name exists"
     else
         fail "$tmpl_name exists" "not found in $SKILLS_DIR"
@@ -65,7 +71,7 @@ done
 # ── Templates contain placeholders ──────────────────────────────────────────
 
 for tmpl_name in flow-discover.tmpl flow-define.tmpl flow-develop.tmpl flow-deliver.tmpl; do
-    tmpl_file="$SKILLS_DIR/$tmpl_name"
+    tmpl_file="$(resolve_claude_skill_template_path "$tmpl_name")"
     [[ -f "$tmpl_file" ]] || continue
 
     if grep -q '{{PREAMBLE}}' "$tmpl_file" 2>/dev/null; then
@@ -89,7 +95,7 @@ done
 
 # Quality gates placeholder only in develop and deliver templates
 for tmpl_name in flow-develop.tmpl flow-deliver.tmpl; do
-    tmpl_file="$SKILLS_DIR/$tmpl_name"
+    tmpl_file="$(resolve_claude_skill_template_path "$tmpl_name")"
     [[ -f "$tmpl_file" ]] || continue
 
     if grep -q '{{QUALITY_GATES}}' "$tmpl_file" 2>/dev/null; then
@@ -127,7 +133,7 @@ fi
 # Note: since v9.10.2, flow-*.md are directly authored (not generated from blocks)
 
 for md_name in flow-discover.md flow-define.md flow-develop.md flow-deliver.md; do
-    md_file="$SKILLS_DIR/$md_name"
+    md_file="$(resolve_claude_skill_path "$md_name")"
     if [[ -f "$md_file" ]]; then
         pass "$md_name exists"
     else
@@ -160,7 +166,7 @@ done
 
 if [[ -x "$GEN_SCRIPT" && -d "$BLOCKS_DIR" ]]; then
     # Intentionally make a file stale
-    echo "# stale marker" >> "$SKILLS_DIR/flow-discover.md"
+    echo "# stale marker" >> "$(resolve_claude_skill_path "flow-discover")"
 
     stale_exit=0
     stale_output=$("$GEN_SCRIPT" --dry-run 2>&1) || stale_exit=$?
@@ -176,10 +182,4 @@ if [[ -x "$GEN_SCRIPT" && -d "$BLOCKS_DIR" ]]; then
 else
     pass "template generation skipped (blocks removed, skills directly authored)"
 fi
-
-# ── Summary ──────────────────────────────────────────────────────────────────
-
-echo ""
-echo "=== Results: $PASS_COUNT/$TEST_COUNT passed, $FAIL_COUNT failed ==="
-
-[[ $FAIL_COUNT -eq 0 ]] && exit 0 || exit 1
+test_summary

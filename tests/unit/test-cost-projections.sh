@@ -4,20 +4,26 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-SKILL_FILE="$PROJECT_ROOT/.claude/skills/skill-cost-projections.md"
 
-TEST_COUNT=0; PASS_COUNT=0; FAIL_COUNT=0
-pass() { TEST_COUNT=$((TEST_COUNT+1)); PASS_COUNT=$((PASS_COUNT+1)); echo "PASS: $1"; }
-fail() { TEST_COUNT=$((TEST_COUNT+1)); FAIL_COUNT=$((FAIL_COUNT+1)); echo "FAIL: $1 — $2"; }
+source "$SCRIPT_DIR/../helpers/test-framework.sh"
+test_suite "skill-cost-projections: HUD cost projection from per-phase averages"
+
+SKILL_FILE="$(resolve_claude_skill_path "skill-cost-projections")"
+
+pass() { test_case "$1"; test_pass; }
+fail() { test_case "$1"; test_fail "${2:-$1}"; }
 
 assert_contains() {
   local output="$1" pattern="$2" label="$3"
-  echo "$output" | grep -qE "$pattern" && pass "$label" || fail "$label" "missing: $pattern"
+  # Herestring avoids macOS BSD-grep SIGPIPE on `echo | grep -q` under set -o pipefail:
+  # grep exits on first match before echo finishes writing → pipeline reports failure
+  # → pass branch never runs → false negative. No pipe, no SIGPIPE.
+  grep -qE "$pattern" <<< "$output" && pass "$label" || fail "$label" "missing: $pattern"
 }
 
 assert_not_contains() {
   local output="$1" pattern="$2" label="$3"
-  echo "$output" | grep -qE "$pattern" && fail "$label" "should not contain: $pattern" || pass "$label"
+  grep -qE "$pattern" <<< "$output" && fail "$label" "should not contain: $pattern" || pass "$label"
 }
 
 # ── File exists ──────────────────────────────────────────────────────────────
@@ -156,14 +162,4 @@ assert_not_contains "$DESC_VALUE" "independent|compound|team of teams|claude ins
 assert_not_contains "$SKILL_CONTENT" "gsd-2" "no attribution: does not reference gsd-2"
 
 assert_not_contains "$SKILL_CONTENT" "github\.com/[a-z].*source" "no attribution: no source repo references"
-
-# ── Summary ──────────────────────────────────────────────────────────────────
-
-echo ""
-echo "═══════════════════════════════════════════"
-echo "test-cost-projections: $PASS_COUNT/$TEST_COUNT passed"
-if [[ $FAIL_COUNT -gt 0 ]]; then
-  echo "FAILURES: $FAIL_COUNT"
-  exit 1
-fi
-echo "All tests passed."
+test_summary

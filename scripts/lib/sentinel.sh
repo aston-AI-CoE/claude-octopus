@@ -170,10 +170,10 @@ Provide:
 3. Key industry trends and disruption factors
 4. PESTLE factors affecting the decision
 
-Be specific with data where possible, noting assumptions." 180 "strategy-analyst" "advise") || {
+Be specific with data where possible, noting assumptions." "${TIMEOUT:-300}" "strategy-analyst" "advise") || {
         log WARN "Gemini failed for market analysis, falling back to Claude"
         echo -e " ${YELLOW}⚠${NC}  Gemini unavailable — falling back to Claude"
-        analysis=$(run_agent_sync "claude-sonnet" "You are a strategy analyst. Analyze the strategic context for: $prompt. Provide: market sizing, competitive landscape, industry trends, PESTLE factors." 180 "strategy-analyst" "advise") || true
+        analysis=$(run_agent_sync "claude-sonnet" "You are a strategy analyst. Analyze the strategic context for: $prompt. Provide: market sizing, competitive landscape, industry trends, PESTLE factors." "${TIMEOUT:-300}" "strategy-analyst" "advise") || true
     }
 
     echo -e "${CYAN}🦑 Phase 2/4: Applying strategic frameworks...${NC}"
@@ -186,10 +186,10 @@ Apply relevant strategic frameworks:
 2. Porter's Five Forces (if industry analysis is relevant)
 3. Strategic options matrix with trade-offs
 
-Context: $prompt" 180 "strategy-analyst" "advise") || {
+Context: $prompt" "${TIMEOUT:-300}" "strategy-analyst" "advise") || {
         log WARN "Gemini failed for strategic frameworks, falling back to Claude"
         echo -e " ${YELLOW}⚠${NC}  Gemini unavailable — falling back to Claude"
-        frameworks=$(run_agent_sync "claude-sonnet" "Based on this analysis: $analysis. Apply SWOT, Porter's Five Forces, and strategic options matrix. Context: $prompt" 180 "strategy-analyst" "advise") || true
+        frameworks=$(run_agent_sync "claude-sonnet" "Based on this analysis: $analysis. Apply SWOT, Porter's Five Forces, and strategic options matrix. Context: $prompt" "${TIMEOUT:-300}" "strategy-analyst" "advise") || true
     }
 
     echo -e "${CYAN}🦑 Phase 3/4: Building business case and recommendations...${NC}"
@@ -209,10 +209,10 @@ Develop:
 4. Success metrics and KPIs
 5. 90-day action plan
 
-Original question: $prompt" 180 "strategy-analyst" "advise") || {
+Original question: $prompt" "${TIMEOUT:-300}" "strategy-analyst" "advise") || {
         log WARN "Codex failed for recommendations, falling back to Claude"
         echo -e " ${YELLOW}⚠${NC}  Codex unavailable — falling back to Claude"
-        recommendations=$(run_agent_sync "claude-sonnet" "Based on analysis: $analysis and frameworks: $frameworks. Develop: strategic options, recommendation, risks, KPIs, 90-day plan. Question: $prompt" 180 "strategy-analyst" "advise") || true
+        recommendations=$(run_agent_sync "claude-sonnet" "Based on analysis: $analysis and frameworks: $frameworks. Develop: strategic options, recommendation, risks, KPIs, 90-day plan. Question: $prompt" "${TIMEOUT:-300}" "strategy-analyst" "advise") || true
     }
 
     echo -e "${CYAN}🦑 Phase 4/4: Crafting executive communication...${NC}"

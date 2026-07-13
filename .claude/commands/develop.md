@@ -16,11 +16,12 @@ aliases:
 
 ### EXECUTION MECHANISM — NON-NEGOTIABLE
 
-**You MUST execute this command by invoking the corresponding skill via the Skill tool. You are PROHIBITED from:**
-- ❌ Using the Agent tool to research/implement yourself instead of invoking the skill
-- ❌ Using WebFetch/Read/Grep as a substitute for multi-provider dispatch
-- ❌ Skipping `orchestrate.sh` calls because "I can do this faster directly"
-- ❌ Implementing the task using only Claude-native tools (Agent, Write, Edit)
+**You MUST execute this command via the Bash tool calling `orchestrate.sh develop`. You are PROHIBITED from:**
+- Using `Skill(skill: "octo:develop")` because it resolves back to this file and loops
+- Using `Skill(skill: "flow-develop", ...)` because that internal name is not resolvable by the Skill tool
+- Using the Agent tool, WebFetch, Read, or Grep as a substitute for multi-provider dispatch
+- Skipping `orchestrate.sh` calls because "I can do this faster directly"
+- Implementing the task using only Claude-native tools
 
 **Multi-LLM orchestration is the purpose of this command.** If you execute using only Claude, you've violated the command's contract.
 
@@ -28,20 +29,59 @@ aliases:
 
 When the user invokes this command (e.g., `/octo:develop <arguments>`):
 
-**✓ CORRECT - Use the Skill tool:**
+**Preflight — Ensure plugin root is resolvable (run via Bash tool FIRST):**
+
+```bash
+OCTO_ROOT="${HOME}/.claude-octopus/plugin"
+if [[ ! -x "$OCTO_ROOT/scripts/orchestrate.sh" ]]; then
+  helper="$OCTO_ROOT/scripts/helpers/ensure-plugin-root.sh"
+  if [[ ! -x "$helper" ]]; then
+    helper="$(find "${HOME}/.claude/plugins/cache" "${HOME}/Library/Application Support/Claude" "${LOCALAPPDATA:-/dev/null}/Claude" "${XDG_DATA_HOME:-${HOME}/.local/share}/Claude" -maxdepth 8 -path "*/nyldn-plugins/octo/*/scripts/helpers/ensure-plugin-root.sh" -print -quit 2>/dev/null)"
+  fi
+  [[ -x "$helper" ]] && bash "$helper" >/dev/null 2>&1 || true
+fi
+test -x "$OCTO_ROOT/scripts/orchestrate.sh" && echo "plugin-root:ok" || echo "plugin-root:missing"
 ```
-Skill(skill: "octo:develop", args: "<user's arguments>")
+
+If the output is `plugin-root:missing`, stop and ask the user to run `/octo:setup`.
+
+**Step 1 — Run provider preflight via Bash tool:**
+
+```bash
+bash "${HOME}/.claude-octopus/plugin/scripts/helpers/check-providers.sh"
+```
+
+Use the actual preflight output to display the workflow indicator before dispatch:
+
+```text
+🐙 **CLAUDE OCTOPUS ACTIVATED** - Multi-provider implementation mode
+```
+
+List available providers and mark missing providers as `(unavailable - skipping)`. If `OCTOPUS_COMPACT_BANNERS=true`, use this compact single-line format:
+
+```text
+🐙 develop — Multi-provider implementation mode | codex ✓ | gemini (unavailable - skipping)
+```
+
+If no external provider is available, stop and tell the user to run `/octo:setup`; do not fall back to Claude-native implementation.
+
+**Step 2 — Run orchestrate.sh via Bash tool:**
+
+```bash
+bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" develop "<user's arguments here>"
 ```
 
 **✗ INCORRECT:**
-```
-Skill(skill: "flow-develop", ...)  ❌ Wrong! Internal skill name, not resolvable by Skill tool
-Task(subagent_type: "octo:develop", ...)  ❌ Wrong! This is a skill, not an agent type
+
+```text
+Skill(skill: "octo:develop", ...)  ❌ Resolves to this command file — infinite loop
+Skill(skill: "flow-develop", ...)  ❌ Internal name, not resolvable by Skill tool
+Task(subagent_type: "octo:develop", ...)  ❌ This is a skill, not an agent type
 ```
 
 ### Post-Completion — Interactive Next Steps
 
-**CRITICAL: After the skill completes, you MUST ask the user what to do next. Do NOT end the session silently.**
+**CRITICAL: After the workflow completes, you MUST ask the user what to do next. Do NOT end the session silently.**
 
 ```javascript
 AskUserQuestion({
@@ -64,7 +104,16 @@ AskUserQuestion({
 
 ---
 
-**Auto-loads the develop skill for the implementation phase.**
+**Dispatches to the develop workflow via `orchestrate.sh` for the implementation phase.**
+
+### Model and Effort Policy
+
+- For develop/tangle work on Opus 4.8, use `xhigh` for complex implementation and `high` for ordinary work.
+- Fast Opus 4.8 mode is 2x standard cost ($10/$50 per MTok vs $5/$25 standard) and trades cost for lower latency. Legacy Opus 4.6 fast remains 6x standard cost.
+- Default to Opus 4.8 standard mode for multi-phase workflows; use fast mode only for interactive single-shot requests when explicitly selected.
+- Respect user overrides: `OCTOPUS_OPUS_MODE`, `OCTOPUS_OPUS_MODEL`, and `OCTOPUS_EFFORT_OVERRIDE`.
+- Record durable project memory for autonomy mode, provider availability, frequently used commands, prior project context, and model preferences.
+- If Claude Code dynamic workflows are available and the task is a huge single-Claude migration, prefer the native workflow path. Use Octopus develop when multi-provider implementation or validation is the value.
 
 ## Quick Usage
 

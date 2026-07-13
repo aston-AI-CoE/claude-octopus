@@ -6,16 +6,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-TEST_COUNT=0; PASS_COUNT=0; FAIL_COUNT=0
-pass() { TEST_COUNT=$((TEST_COUNT+1)); PASS_COUNT=$((PASS_COUNT+1)); echo "PASS: $1"; }
-fail() { TEST_COUNT=$((TEST_COUNT+1)); FAIL_COUNT=$((FAIL_COUNT+1)); echo "FAIL: $1 — $2"; }
+source "$SCRIPT_DIR/../helpers/test-framework.sh"
+test_suite "that all commands/skills calling orchestrate.sh have MANDATORY COMPLIANCE enforcement"
+
+
+pass() { test_case "$1"; test_pass; }
+fail() { test_case "$1"; test_fail "${2:-$1}"; }
 
 # ── Commands that call orchestrate.sh MUST have MANDATORY COMPLIANCE ─────────
 # Exceptions: utility commands that don't run multi-LLM workflows
 
 EXEMPT_COMMANDS="octo-auto octo-careful octo-claw octo-costs octo-dev octo-doctor octo-freeze octo-guard octo-history octo-km octo-model-config octo-setup octo-unfreeze"
 
-for f in "$PROJECT_ROOT"/commands/octo-*.md; do
+for f in "$PROJECT_ROOT"/.cursor-plugin/commands/octo-*.md; do
     name=$(basename "$f" .md)
 
     # Skip exempt utility commands
@@ -37,7 +40,7 @@ done
 # ── Skills that call orchestrate.sh MUST have enforcement ────────────────────
 # Exceptions: utility skills, template-only skills
 
-EXEMPT_SKILLS="skill-doctor sys-configure skill-finish-branch skill-verify"
+EXEMPT_SKILLS="skill-doctor sys-configure skill-finish-branch skill-verification-gate skill-verify"
 
 for f in "$PROJECT_ROOT"/skills/*/SKILL.md; do
     name=$(basename "$(dirname "$f")")
@@ -59,7 +62,7 @@ done
 
 # ── Enforcement blocks must include PROHIBITED ───────────────────────────────
 
-for f in "$PROJECT_ROOT"/commands/octo-*.md "$PROJECT_ROOT"/skills/*/SKILL.md; do
+for f in "$PROJECT_ROOT"/.cursor-plugin/commands/octo-*.md "$PROJECT_ROOT"/skills/*/SKILL.md; do
     if grep -q 'MANDATORY COMPLIANCE' "$f" 2>/dev/null; then
         name=$(basename "$f" .md)
         [[ "$name" == "SKILL" ]] && name=$(basename "$(dirname "$f")")
@@ -70,11 +73,4 @@ for f in "$PROJECT_ROOT"/commands/octo-*.md "$PROJECT_ROOT"/skills/*/SKILL.md; d
         fi
     fi
 done
-
-# ── Summary ──────────────────────────────────────────────────────────────────
-
-echo ""
-echo "═══════════════════════════════════════════════════"
-echo "mandatory-compliance: $PASS_COUNT/$TEST_COUNT passed"
-[[ $FAIL_COUNT -gt 0 ]] && echo "FAILURES: $FAIL_COUNT" && exit 1
-echo "All tests passed."
+test_summary

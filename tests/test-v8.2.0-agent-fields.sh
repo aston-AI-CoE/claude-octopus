@@ -13,6 +13,10 @@
 set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+source "$SCRIPT_DIR/helpers/test-framework.sh"
+test_suite "v8.2.0 Agent Persona Enhanced Fields & Skills Preloading"
+
 PLUGIN_DIR="$(dirname "$SCRIPT_DIR")"
 ORCHESTRATE_SH="${PLUGIN_DIR}/scripts/orchestrate.sh"
 # v9.12: Search orchestrate.sh + lib/*.sh for functions that may have been decomposed
@@ -26,12 +30,6 @@ MARKETPLACE_JSON="${PLUGIN_DIR}/.claude-plugin/marketplace.json"
 CHANGELOG_MD="$(dirname "$SCRIPT_DIR")/CHANGELOG.md"
 README_MD="${PLUGIN_DIR}/README.md"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
 
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -175,7 +173,7 @@ else
 fi
 
 # 2.7: load_agent_skill_content strips YAML frontmatter (awk pattern)
-if grep -A 10 'load_agent_skill_content()' "$ALL_SRC" | grep -q 'in_fm.*past_fm'; then
+if grep -A 25 'load_agent_skill_content()' "$ALL_SRC" | grep -q 'in_fm.*past_fm'; then
     assert_pass "2.7 load_agent_skill_content strips YAML frontmatter (awk pattern)"
 else
     assert_fail "2.7 load_agent_skill_content strips YAML frontmatter (awk pattern)"
@@ -262,8 +260,16 @@ else
     assert_fail "4.2 plugin.json version is 8.x/9.x" "Got: $pj_version"
 fi
 
-# 4.3: marketplace.json version is 8.x/9.x
-mj_version=$(grep '"version"' "$MARKETPLACE_JSON" | tail -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+# 4.3: marketplace.json version is 8.x/9.x for the octo plugin entry
+mj_version=$(python3 - "$MARKETPLACE_JSON" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+for plugin in data.get("plugins", []):
+    if plugin.get("name") == "octo":
+        print(plugin.get("version", ""))
+        break
+PY
+)
 if [[ "$mj_version" =~ ^(8|9)\. ]]; then
     assert_pass "4.3 marketplace.json version is 8.x/9.x ($mj_version)"
 else
@@ -312,16 +318,4 @@ echo ""
 # ═══════════════════════════════════════════════════════════════════════════════
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "${BLUE}Test Summary - v8.2.0 Agent Persona Enhanced Fields${NC}"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "Total tests:  ${BLUE}$TESTS_RUN${NC}"
-echo -e "Passed:       ${GREEN}$TESTS_PASSED${NC}"
-echo -e "Failed:       ${RED}$TESTS_FAILED${NC}"
-echo ""
-
-if [[ $TESTS_FAILED -eq 0 ]]; then
-    echo -e "${GREEN}✅ All v8.2.0 agent persona enhanced fields tests passed!${NC}"
-    exit 0
-else
-    echo -e "${RED}❌ $TESTS_FAILED test(s) failed${NC}"
-    exit 1
-fi
+test_summary

@@ -17,7 +17,7 @@
 
 set -eo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 REGISTRY_DIR="${HOME}/.claude-octopus/agents"
 REGISTRY_FILE="${REGISTRY_DIR}/registry.json"
 ARCHIVE_DIR="${REGISTRY_DIR}/archive"
@@ -273,7 +273,7 @@ cmd_health() {
     echo -e "${BLUE}Checking health of $count active agent(s)...${NC}"
     echo ""
 
-    local REACTIONS="${SCRIPT_DIR:-$(cd "$(dirname "$0")" && pwd)}/reactions.sh"
+    local REACTIONS="${SCRIPT_DIR:-$(cd "$(dirname "$0")" && pwd -P)}/reactions.sh"
 
     echo "$active_agents" | jq -r '.[].id' | while read -r id; do
         local branch current_status

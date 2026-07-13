@@ -5,11 +5,17 @@
 # Returns JSON decision: {"decision": "continue|block", "reason": "..."}
 
 set -euo pipefail
+# EXIT trap — emits diagnostic stderr ONLY when the hook exits non-zero, so
+# the Claude Code harness error "No stderr output" can never recur. EXIT (not
+# ERR) avoids over-firing on intermediate `grep -o`/`cmd | ...` inside $() that
+# the hook's logic already handles. See issue #313.
+_octo_hook_exit() { local c=$?; if [[ $c -ne 0 ]]; then echo "[hook:$(basename "$0")] exit $c" >&2 2>/dev/null || true; fi; return 0; }
+trap _octo_hook_exit EXIT
 
-# Respect bypassPermissions mode
-for _sf in "${CLAUDE_PROJECT_DIR:-.}/.claude/settings.local.json" "${CLAUDE_PROJECT_DIR:-.}/.claude/settings.json" "$HOME/.claude/settings.json"; do
-    [[ -f "$_sf" ]] && grep -q '"bypassPermissions"' "$_sf" 2>/dev/null && { echo '{"decision":"continue"}'; exit 0; }
-done
+
+# Note: this gate enforces per-job allowlists the user set in their scheduled
+# job config — bypassPermissions (a global CC prompt-skip setting) should not
+# silently weaken that per-job policy, so the bypass check has been removed.
 
 # Only active during scheduled job execution
 if [[ -z "${OCTOPUS_JOB_ID:-}" ]]; then

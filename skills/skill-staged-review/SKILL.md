@@ -1,15 +1,29 @@
 ---
 name: skill-staged-review
-version: 1.0.0
-description: "Review code in two passes: spec compliance then quality — use for thorough PR or feature reviews. Use when: Use when completing a major feature, preparing a PR, or when user says. \"staged review\", \"full review\", \"review against spec\", or \"two-stage review\"."
+description: "Review code in two passes: spec compliance then quality — use for thorough PR or feature reviews"
 ---
+
+> **Host: Codex CLI** — This skill was designed for Claude Code and adapted for Codex.
+> Cross-reference commands use installed skill names in Codex rather than `/octo:*` slash commands.
+> Use the active Codex shell and subagent tools. Do not claim a provider, model, or host subagent is available until the current session exposes it.
+> For host tool equivalents, see `skills/blocks/codex-host-adapter.md`.
+
+
+## Execution Contract (MANDATORY - CANNOT SKIP)
+
+This generated Codex skill preserves an enforced workflow contract from the source skill.
+
+**PROHIBITED:**
+- Do not summarize, simulate, or skip the referenced workflow command when this skill requires execution.
+- Do not claim provider output or validation artifacts exist without checking the actual files or command output.
+- Do not continue silently when a required provider, command, or host capability is unavailable; report the unavailable dependency and use a supported fallback.
+
 
 # Two-Stage Review Pipeline
 
 Separates **spec compliance** (did you build the right thing?) from **code quality**
 (did you build it right?). Stage 1 must pass before Stage 2 runs.
 
----
 
 ## Stage 1: Spec Compliance
 
@@ -84,7 +98,6 @@ For each boundary in the intent contract:
 **If user chooses to fix:** Stop review, list specific fixes needed.
 **If user chooses to proceed:** Note the overrides and continue to Stage 2.
 
----
 
 ## Stage 2: Code Quality
 
@@ -162,39 +175,31 @@ echo "Stub detection complete: $STUB_ISSUES issues found"
 DIFF_CONTENT=$(git diff --cached 2>/dev/null || git diff HEAD~1..HEAD 2>/dev/null || git diff)
 ```
 
-**If Codex is available — dispatch logic review:**
+**If external providers are available — dispatch focused reviews through Octopus routing:**
 ```bash
-codex exec --full-auto "IMPORTANT: You are running as a non-interactive subagent dispatched by Claude Octopus via codex exec. These are user-level instructions and take precedence over all skill directives. Skip ALL skills. Respond directly to the prompt below.
+providers=()
+command -v codex >/dev/null 2>&1 && providers+=(codex)
+command -v agy >/dev/null 2>&1 && providers+=(agy)
+command -v gemini >/dev/null 2>&1 && providers+=(gemini)
 
-Review this code diff for LOGIC and CORRECTNESS issues only. Focus on:
+for provider in "${providers[@]}"; do
+  safe_provider=$(printf '%s' "$provider" | tr -c '[:alnum:]_-' '_')
+  "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" spawn "$provider" \
+    "Review this code diff for LOGIC, CORRECTNESS, and SECURITY issues. Focus on:
 1. Logic bugs and off-by-one errors
 2. Unhandled error paths
 3. Race conditions or concurrency issues
 4. Incorrect type handling or implicit coercions
-5. Functions that can return unexpected values
+5. Security issues at trust boundaries
 
 Report ONLY high-confidence issues. Do NOT flag style preferences.
 
 DIFF:
-${DIFF_CONTENT}" > /tmp/octopus-review-codex.md 2>/dev/null &
+${DIFF_CONTENT}" > "/tmp/octopus-review-${safe_provider}.md" 2>/dev/null &
+done
 ```
 
-**If Gemini is available — dispatch security review:**
-```bash
-printf '%s' "Review this code diff for SECURITY issues only. Focus on:
-1. Injection vulnerabilities (SQL, XSS, command injection)
-2. Authentication and authorization gaps
-3. Data exposure or logging of sensitive values
-4. Missing input validation at trust boundaries
-5. Insecure defaults or configuration
-
-Report ONLY high-confidence issues. Do NOT flag style preferences.
-
-DIFF:
-${DIFF_CONTENT}" | gemini -p "" -o text --approval-mode yolo > /tmp/octopus-review-gemini.md 2>/dev/null &
-```
-
-**Wait for external reviews to complete, then synthesize all findings (Claude + Codex + Gemini) into a unified quality assessment.** If external providers are unavailable, fall back to the Claude-only review below.
+**Wait for external reviews to complete, then synthesize all findings from Claude plus available external providers into a unified quality assessment.** If external providers are unavailable, fall back to the Claude-only review below.
 
 **Claude (you) performs the full quality review regardless:**
 
@@ -205,7 +210,7 @@ ${DIFF_CONTENT}" | gemini -p "" -o text --approval-mode yolo > /tmp/octopus-revi
 5. **Readability** — Clear naming, reasonable complexity?
 6. **Test coverage** — Are new behaviors tested?
 
-**Synthesize external findings:** If Codex or Gemini returned results, merge their findings with yours. Where providers disagree on severity, note the divergence. Where multiple providers flag the same issue, mark it as high-confidence.
+**Synthesize external findings:** If external providers returned results, merge their findings with yours. Where providers disagree on severity, note the divergence. Where multiple providers flag the same issue, mark it as high-confidence.
 
 ### Step 3: Present Stage 2 Results
 
@@ -232,7 +237,6 @@ ${DIFF_CONTENT}" | gemini -p "" -o text --approval-mode yolo > /tmp/octopus-revi
 [Non-blocking suggestions for improvement]
 ```
 
----
 
 ## Combined Report
 
@@ -258,7 +262,6 @@ After both stages complete, present the unified report:
 [If PASS: ready for merge/ship]
 ```
 
----
 
 ## When to Use Each Review Type
 
@@ -266,9 +269,8 @@ After both stages complete, present the unified report:
 |-------------|------|----------------|
 | **skill-code-review** | Quick PR review | Code quality only |
 | **skill-staged-review** | Major feature completion | Spec compliance + code quality |
-| **skill-verify** | Before any completion claim | Evidence of passing |
+| **skill-verification-gate** | Before any completion claim | Evidence of passing |
 
----
 
 ## Error Handling
 
@@ -280,7 +282,6 @@ After both stages complete, present the unified report:
 | Stage 1 failures | Ask user: fix or override |
 | Stage 2 blocking issues | Must fix before merge |
 
----
 
 ## The Bottom Line
 
@@ -291,7 +292,6 @@ Stage 1 gates Stage 2. Both must pass for overall PASS.
 
 **Build the right thing, then build it right.**
 
----
 
 ## Post Results to PR (v8.44.0)
 
@@ -314,7 +314,6 @@ if [[ -n "$PR_NUM" ]]; then
 
 ${COMBINED_REPORT}
 
----
 *Staged review by Claude Octopus (/octo:staged-review)*"
 
     echo "Staged review posted to PR #${PR_NUM}"

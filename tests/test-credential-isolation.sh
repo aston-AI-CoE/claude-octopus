@@ -6,7 +6,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+source "$SCRIPT_DIR/helpers/test-framework.sh"
+test_suite "for credential isolation (v8.32.0)"
+
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$PLUGIN_DIR"
 ORCH="$PLUGIN_DIR/scripts/orchestrate.sh"
 # v9.12: Search orchestrate.sh + lib/*.sh for decomposed functions
 ALL_SRC=$(mktemp)
@@ -17,17 +22,9 @@ PASS=0
 FAIL=0
 TOTAL=0
 
-pass() {
-  PASS=$((PASS + 1))
-  TOTAL=$((TOTAL + 1))
-  echo "  ✅ PASS: $1"
-}
+pass() { test_case "$1"; test_pass; }
 
-fail() {
-  FAIL=$((FAIL + 1))
-  TOTAL=$((TOTAL + 1))
-  echo "  ❌ FAIL: $1"
-}
+fail() { test_case "$1"; test_fail "${2:-$1}"; }
 
 suite() {
   echo ""
@@ -46,8 +43,8 @@ else
   fail "build_provider_env() function missing"
 fi
 
-# 1.2 Codex scoping — only OPENAI_API_KEY
-CODEX_ENV=$(grep -A5 'codex\*)' "$ALL_SRC" | grep 'env -i' | head -1)
+# 1.2 Codex scoping — OPENAI_API_KEY plus explicit Codex config env only
+CODEX_ENV=$(grep -A40 'codex\*)' "$ALL_SRC" | grep 'PROVIDER_ENV_ARRAY=.*env -i' | head -1 || true)
 if echo "$CODEX_ENV" | grep -q 'OPENAI_API_KEY'; then
   pass "Codex env includes OPENAI_API_KEY"
 else
@@ -60,8 +57,55 @@ else
   pass "Codex env does NOT contain GEMINI_API_KEY"
 fi
 
+# 1.2b Codex CLI config preservation — CODEX_HOME + configured env_key
+CODEX_RUNTIME_HOME=$(mktemp -d)
+cat > "$CODEX_RUNTIME_HOME/config.toml" <<'EOF'
+model_provider = "router"
+model = "example/model"
+
+[model_providers.router]
+name = "Router"
+base_url = "https://router.example/v1"
+env_key = "ROUTER_API_KEY"
+wire_api = "chat"
+EOF
+OLD_HOME="${HOME:-}"
+OLD_CODEX_HOME="${CODEX_HOME:-}"
+OLD_OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+OLD_ROUTER_API_KEY="${ROUTER_API_KEY:-}"
+OLD_GEMINI_API_KEY="${GEMINI_API_KEY:-}"
+export HOME="$CODEX_RUNTIME_HOME-home"
+export CODEX_HOME="$CODEX_RUNTIME_HOME"
+export OPENAI_API_KEY="openai-test-key"
+export ROUTER_API_KEY="router-test-key"
+export GEMINI_API_KEY="gemini-should-not-leak"
+source "$PLUGIN_DIR/scripts/lib/provider-routing.sh"
+build_provider_env codex
+CODEX_RUNTIME_ENV=" ${PROVIDER_ENV_ARRAY[*]} "
+if echo "$CODEX_RUNTIME_ENV" | grep -q " CODEX_HOME=$CODEX_RUNTIME_HOME "; then
+  pass "Codex env preserves CODEX_HOME"
+else
+  fail "Codex env missing CODEX_HOME"
+fi
+if echo "$CODEX_RUNTIME_ENV" | grep -q " ROUTER_API_KEY=router-test-key "; then
+  pass "Codex env includes config.toml env_key"
+else
+  fail "Codex env missing config.toml env_key"
+fi
+if echo "$CODEX_RUNTIME_ENV" | grep -q " GEMINI_API_KEY="; then
+  fail "Codex env leaks unrelated provider key"
+else
+  pass "Codex env does NOT leak unrelated provider key"
+fi
+export HOME="$OLD_HOME"
+if [[ -n "$OLD_CODEX_HOME" ]]; then export CODEX_HOME="$OLD_CODEX_HOME"; else unset CODEX_HOME; fi
+if [[ -n "$OLD_OPENAI_API_KEY" ]]; then export OPENAI_API_KEY="$OLD_OPENAI_API_KEY"; else unset OPENAI_API_KEY; fi
+if [[ -n "$OLD_ROUTER_API_KEY" ]]; then export ROUTER_API_KEY="$OLD_ROUTER_API_KEY"; else unset ROUTER_API_KEY; fi
+if [[ -n "$OLD_GEMINI_API_KEY" ]]; then export GEMINI_API_KEY="$OLD_GEMINI_API_KEY"; else unset GEMINI_API_KEY; fi
+rm -rf "$CODEX_RUNTIME_HOME" "$CODEX_RUNTIME_HOME-home"
+
 # 1.3 Gemini scoping — only GEMINI_API_KEY + GOOGLE_API_KEY
-GEMINI_ENV=$(grep -A5 'gemini\*)' "$ALL_SRC" | grep 'env -i' | head -1)
+GEMINI_ENV=$(grep -A16 'gemini\*)' "$ALL_SRC" | grep 'PROVIDER_ENV_ARRAY=.*env -i' | head -1 || true)
 if echo "$GEMINI_ENV" | grep -q 'GEMINI_API_KEY'; then
   pass "Gemini env includes GEMINI_API_KEY"
 else
@@ -74,19 +118,59 @@ else
   pass "Gemini env does NOT contain OPENAI_API_KEY"
 fi
 
-# 1.4 Perplexity scoping — only PERPLEXITY_API_KEY
-PERP_ENV=$(grep -A5 'perplexity\*)' "$ALL_SRC" | grep 'env -i' | head -1)
-if echo "$PERP_ENV" | grep -q 'PERPLEXITY_API_KEY'; then
-  pass "Perplexity env includes PERPLEXITY_API_KEY"
+# 1.4 Perplexity — shell function provider, env -i skipped (#300)
+# perplexity_execute is a bash function dispatched by get_agent_command();
+# env -i cannot exec shell functions, so build_provider_env returns empty.
+PERP_CASE=$(grep -A70 'build_provider_env()' "$ALL_SRC" | grep -A10 'perplexity\*)' | head -11 || true)
+PERP_ENV=$(echo "$PERP_CASE" | grep 'env -i' | head -1 || true)
+if echo "$PERP_CASE" | grep -q 'resolve_provider_env.*PERPLEXITY_API_KEY'; then
+  pass "Perplexity resolves PERPLEXITY_API_KEY before dispatch"
 else
-  fail "Perplexity env missing PERPLEXITY_API_KEY"
+  fail "Perplexity missing PERPLEXITY_API_KEY resolve"
 fi
 
-if echo "$PERP_ENV" | grep -q 'OPENAI_API_KEY\|GEMINI_API_KEY'; then
-  fail "Perplexity env leaks other provider keys"
+if echo "$PERP_CASE" | grep -q 'return 0'; then
+  pass "Perplexity correctly returns empty env prefix (shell function)"
 else
-  pass "Perplexity env does NOT contain other provider keys"
+  fail "Perplexity should return 0 (no env -i for shell function provider)"
 fi
+
+if grep -q 'PROVIDER_ENV_ARRAY=()' "$ALL_SRC" && grep -q 'PROVIDER_ENV_ARRAY\[@\]' "$ALL_SRC"; then
+  pass "Provider env uses argv array tokens"
+else
+  fail "Provider env array token handling missing"
+fi
+
+if grep -A20 'build_provider_env()' "$ALL_SRC" | grep -q 'MINGW.*return 0\|MSYS.*return 0\|Windows.*return 0'; then
+  fail "Windows still disables env isolation instead of preserving PATH spaces with arrays"
+else
+  pass "Windows PATH spaces do not disable env isolation"
+fi
+
+# 1.6 Missing API keys are tolerated under set -e (#336)
+for provider in codex gemini perplexity openrouter; do
+  test_case "build_provider_env $provider tolerates absent API keys under set -e"
+  tmp_home=$(mktemp -d)
+  tmp_pwd=$(mktemp -d)
+  case_output=""
+  if case_output=$(HOME="$tmp_home" bash -c '
+      set -eo pipefail
+      cd "$1"
+      unset OPENAI_API_KEY GEMINI_API_KEY GOOGLE_API_KEY PERPLEXITY_API_KEY OPENROUTER_API_KEY
+      source "$2/scripts/lib/provider-routing.sh"
+      build_provider_env "$3"
+      echo ok
+    ' _ "$tmp_pwd" "$PLUGIN_DIR" "$provider" 2>&1); then
+    if [[ "$case_output" == *"ok"* ]]; then
+      test_pass
+    else
+      test_fail "build_provider_env $provider returned without confirmation"
+    fi
+  else
+    test_fail "build_provider_env $provider exited under set -e: $case_output"
+  fi
+  rm -rf "$tmp_home" "$tmp_pwd"
+done
 
 # ─────────────────────────────────────────────────────────────────────
 # Suite 2: build_provider_env() is wired into spawn_agent()
@@ -112,7 +196,7 @@ fi
 # ─────────────────────────────────────────────────────────────────────
 suite "3. Parallel Work Package Isolation"
 
-PARALLEL_SKILL="$PLUGIN_DIR/.claude/skills/flow-parallel.md"
+PARALLEL_SKILL="$(resolve_claude_skill_path "flow-parallel")"
 
 # 3.1 launch.sh template strips provider keys
 if grep -q 'unset OPENAI_API_KEY' "$PARALLEL_SKILL"; then
@@ -204,9 +288,4 @@ fi
 # ─────────────────────────────────────────────────────────────────────
 # Summary
 # ─────────────────────────────────────────────────────────────────────
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  Results: $PASS/$TOTAL passed, $FAIL failed"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-[[ "$FAIL" -eq 0 ]] && exit 0 || exit 1
+test_summary

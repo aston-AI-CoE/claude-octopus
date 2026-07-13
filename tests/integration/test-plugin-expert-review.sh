@@ -164,15 +164,15 @@ test_essential_documentation() {
 test_skills_structure() {
     print_test_header "Skills Structure"
 
-    # Check that skills directory exists
-    assert_dir_exists_custom ".claude/skills" "skills directory exists"
+    # Check that portable skills directory exists
+    assert_dir_exists_custom "skills" "portable skills directory exists"
 
     # Verify key skills exist (from plugin.json)
-    assert_file_exists ".claude/skills/flow-discover.md" "flow-discover skill exists"
-    assert_file_exists ".claude/skills/flow-define.md" "flow-define skill exists"
+    assert_file_exists "skills/flow-discover/SKILL.md" "flow-discover skill exists"
+    assert_file_exists "skills/flow-define/SKILL.md" "flow-define skill exists"
 
     # Check that skills have proper frontmatter structure
-    local skill_file="$PROJECT_ROOT/.claude/skills/flow-discover.md"
+    local skill_file="$PROJECT_ROOT/skills/flow-discover/SKILL.md"
     if [[ -f "$skill_file" ]]; then
         TOTAL_TESTS=$((TOTAL_TESTS + 1))
         if head -1 "$skill_file" | grep -q "^---$"; then
@@ -218,14 +218,14 @@ test_gitignore_best_practices() {
 test_root_directory_cleanliness() {
     print_test_header "Root Directory Organization"
 
-    # Check for files that shouldn't be committed
+    # Check that .DS_Store is not tracked by git (the file itself is a macOS artifact)
     TOTAL_TESTS=$((TOTAL_TESTS + 1))
-    if [[ ! -f "$PROJECT_ROOT/.DS_Store" ]]; then
-        echo "  ✓ No .DS_Store in root"
-        PASSED_TESTS=$((PASSED_TESTS + 1))
-    else
-        echo "  ⚠ .DS_Store found in root (should be removed)"
+    if git -C "$PROJECT_ROOT" ls-files --error-unmatch .DS_Store &>/dev/null; then
+        echo "  ✗ .DS_Store is tracked by git (should be gitignored and removed from index)"
         FAILED_TESTS=$((FAILED_TESTS + 1))
+    else
+        echo "  ✓ .DS_Store not tracked by git"
+        PASSED_TESTS=$((PASSED_TESTS + 1))
     fi
 
     # Check that coverage reports are not committed (they're generated)
@@ -273,7 +273,7 @@ test_skill_quality() {
     local skill_count=0
     local skills_with_description=0
 
-    for skill_file in "$PROJECT_ROOT/.claude/skills"/*.md; do
+    for skill_file in "$PROJECT_ROOT"/skills/*/SKILL.md; do
         [[ -f "$skill_file" ]] || continue
         skill_count=$((skill_count + 1))
 
@@ -284,7 +284,10 @@ test_skill_quality() {
     done
 
     TOTAL_TESTS=$((TOTAL_TESTS + 1))
-    if [[ $skills_with_description -eq $skill_count ]]; then
+    if [[ $skill_count -eq 0 ]]; then
+        echo "  ✗ No skills discovered under skills/*/SKILL.md"
+        FAILED_TESTS=$((FAILED_TESTS + 1))
+    elif [[ $skills_with_description -eq $skill_count ]]; then
         echo "  ✓ All $skill_count skills have documentation"
         PASSED_TESTS=$((PASSED_TESTS + 1))
     else
@@ -306,7 +309,7 @@ test_plugin_json_schema() {
 
     # Check that skills array is not empty
     TOTAL_TESTS=$((TOTAL_TESTS + 1))
-    local skills_count=$(grep -o '\.claude/skills/[^"]*\.md' "$PROJECT_ROOT/.claude-plugin/plugin.json" | wc -l | tr -d ' ')
+    local skills_count=$(grep -o '"\./skills/[^"]*"' "$PROJECT_ROOT/.claude-plugin/plugin.json" | wc -l | tr -d ' ')
     if [[ $skills_count -gt 0 ]]; then
         echo "  ✓ plugin.json declares $skills_count skills"
         PASSED_TESTS=$((PASSED_TESTS + 1))

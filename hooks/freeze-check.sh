@@ -7,14 +7,18 @@
 #
 # Kill switch: OCTO_FREEZE_MODE=off — disables freeze boundary enforcement
 set -euo pipefail
+# EXIT trap — emits diagnostic stderr ONLY when the hook exits non-zero, so
+# the Claude Code harness error "No stderr output" can never recur. EXIT (not
+# ERR) avoids over-firing on intermediate `grep -o`/`cmd | ...` inside $() that
+# the hook's logic already handles. See issue #313.
+_octo_hook_exit() { local c=$?; if [[ $c -ne 0 ]]; then echo "[hook:$(basename "$0")] exit $c" >&2 2>/dev/null || true; fi; return 0; }
+trap _octo_hook_exit EXIT
 
-# Kill switch
+_HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_HOOK_DIR/../scripts/lib/session-id.sh" 2>/dev/null || true
+
+# Kill switch — freeze mode is opt-in via /octo:freeze; OCTO_FREEZE_MODE=off is the dedicated off-switch
 [[ "${OCTO_FREEZE_MODE:-on}" == "off" ]] && { echo '{"decision":"allow"}'; exit 0; }
-
-# Respect bypassPermissions mode — hooks must not override the user's CLI permission setting
-for _sf in "${CLAUDE_PROJECT_DIR:-.}/.claude/settings.local.json" "${CLAUDE_PROJECT_DIR:-.}/.claude/settings.json" "$HOME/.claude/settings.json"; do
-    [[ -f "$_sf" ]] && grep -q '"bypassPermissions"' "$_sf" 2>/dev/null && { echo '{"decision":"allow"}'; exit 0; }
-done
 
 # Read tool input from stdin
 if command -v timeout &>/dev/null; then
@@ -25,14 +29,18 @@ fi
 [[ -z "$INPUT" ]] && INPUT='{}'
 
 # Only gate Edit and Write tools
-TOOL_NAME=$(echo "$INPUT" | grep -o '"tool_name":"[^"]*"' | head -1 | cut -d'"' -f4)
+TOOL_NAME=$(echo "$INPUT" | grep -o '"tool_name":"[^"]*"' 2>/dev/null | head -1 | cut -d'"' -f4 || true)
 if [[ "$TOOL_NAME" != "Edit" && "$TOOL_NAME" != "Write" ]]; then
     echo '{"decision":"allow"}'
     exit 0
 fi
 
 # Check if freeze mode is active
-STATE_FILE="/tmp/octopus-freeze-${CLAUDE_SESSION_ID:-$$}.txt"
+if declare -f octo_session_state_file >/dev/null 2>&1; then
+    STATE_FILE=$(octo_session_state_file "freeze" "txt" "$INPUT")
+else
+    STATE_FILE="/tmp/octopus-freeze-${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-$$}}.txt"
+fi
 if [[ ! -f "$STATE_FILE" ]]; then
     echo '{"decision":"allow"}'
     exit 0
@@ -46,7 +54,7 @@ if [[ -z "$FREEZE_DIR" ]]; then
 fi
 
 # Extract file_path from input
-FILE_PATH=$(echo "$INPUT" | grep -o '"file_path":"[^"]*"' | head -1 | cut -d'"' -f4)
+FILE_PATH=$(echo "$INPUT" | grep -o '"file_path":"[^"]*"' 2>/dev/null | head -1 | cut -d'"' -f4 || true)
 if [[ -z "$FILE_PATH" ]]; then
     echo '{"decision":"allow"}'
     exit 0

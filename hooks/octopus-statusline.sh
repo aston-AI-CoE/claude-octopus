@@ -12,6 +12,13 @@
 # See: https://code.claude.com/docs/en/statusline
 
 set -euo pipefail
+# EXIT trap — emits diagnostic stderr ONLY when the hook exits non-zero, so
+# the Claude Code harness error "No stderr output" can never recur. EXIT (not
+# ERR) avoids over-firing on intermediate `grep -o`/`cmd | ...` inside $() that
+# the hook's logic already handles. See issue #313.
+_octo_hook_exit() { local c=$?; if [[ $c -ne 0 ]]; then echo "[hook:$(basename "$0")] exit $c" >&2 2>/dev/null || true; fi; return 0; }
+trap _octo_hook_exit EXIT
+
 
 # Read stdin — Claude Code always closes the pipe, no timeout needed
 input=$(cat 2>/dev/null || true)
@@ -19,6 +26,21 @@ input=$(cat 2>/dev/null || true)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HUD_MJS="${SCRIPT_DIR}/octopus-hud.mjs"
+
+# Remote web sessions do not need the full terminal HUD or OAuth/keychain probes.
+if [[ "${CLAUDE_CODE_REMOTE:-}" == "true" || "${OCTOPUS_REMOTE_SESSION:-false}" == "true" ]]; then
+    case "${OCTOPUS_REMOTE_STATUSLINE:-minimal}" in
+        off) exit 0 ;;
+        full) ;;
+        *)
+            PCT=$(printf '%s' "$input" | grep -o '"used_percentage"[[:space:]]*:[[:space:]]*[0-9.]*' | head -1 | grep -o '[0-9.]*$' || true)
+            [[ -z "$PCT" ]] && PCT=0
+            PCT=${PCT%%.*}
+            echo "[Octopus] remote ${PCT}% context"
+            exit 0
+            ;;
+    esac
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TIER 1: Node.js HUD — requires Node 16+ (for node: protocol imports)
@@ -49,7 +71,7 @@ if command -v jq &>/dev/null; then
 
     # Context bridge for cross-hook awareness
     _SESSION_ID=$(echo "$input" | jq -r '.session_id // empty' 2>/dev/null)
-    _SESSION_ID="${_SESSION_ID:-${CLAUDE_SESSION_ID:-unknown}}"
+    _SESSION_ID="${_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-unknown}}}"
     _BRIDGE="/tmp/octopus-ctx-${_SESSION_ID}.json"
     (umask 0177; printf '{"session_id":"%s","used_pct":%s,"remaining_pct":%s,"ts":%s}\n' \
         "$_SESSION_ID" "$PCT" "$((100-PCT))" "$(date +%s)" \

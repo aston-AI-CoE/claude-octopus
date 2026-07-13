@@ -8,6 +8,13 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 
 set -euo pipefail
+# EXIT trap — emits diagnostic stderr ONLY when the hook exits non-zero, so
+# the Claude Code harness error "No stderr output" can never recur. EXIT (not
+# ERR) avoids over-firing on intermediate `grep -o`/`cmd | ...` inside $() that
+# the hook's logic already handles. See issue #313.
+_octo_hook_exit() { local c=$?; if [[ $c -ne 0 ]]; then echo "[hook:$(basename "$0")] exit $c" >&2 2>/dev/null || true; fi; return 0; }
+trap _octo_hook_exit EXIT
+
 
 SESSION_FILE="${HOME}/.claude-octopus/session.json"
 METRICS_DIR="${HOME}/.claude-octopus/metrics"
@@ -196,8 +203,16 @@ rm -f "${HOME}/.claude-octopus/.reload-signal" 2>/dev/null || true
 
 # Clean up session title sentinel files (from user-prompt-submit.sh auto-titling)
 # Keep last 20 (by mtime), remove the rest to prevent accumulation
-find "${HOME}/.claude-octopus/" -maxdepth 1 -name ".session-titled-*" -type f 2>/dev/null \
-    | xargs ls -t 2>/dev/null | tail -n +21 | xargs rm -f 2>/dev/null || true
+# Guard on a nonzero match count first: when find matches nothing, `xargs ls -t`
+# still runs `ls -t` with no arguments (xargs' default on empty input), which
+# lists CWD instead of "${HOME}/.claude-octopus/" and can delete unrelated
+# files ranked oldest-by-mtime there. See #563.
+SESSION_TITLE_FILES=$(find "${HOME}/.claude-octopus/" -maxdepth 1 -name ".session-titled-*" -type f 2>/dev/null) || true
+SESSION_TITLE_COUNT=$(printf '%s\n' "$SESSION_TITLE_FILES" | grep -c . 2>/dev/null) || true
+if [[ "$SESSION_TITLE_COUNT" -gt 20 ]]; then
+    printf '%s\n' "$SESSION_TITLE_FILES" \
+        | xargs ls -t 2>/dev/null | tail -n +21 | xargs rm -f 2>/dev/null || true
+fi
 
 # Session manager cleanup: retain 10 most recent sessions
 if [[ -x "${CLAUDE_PLUGIN_ROOT:-}/scripts/session-manager.sh" ]]; then

@@ -1,20 +1,25 @@
 {
   "name": "nyldn-plugins",
   "owner": {
-    "name": "nyldn"
+    "name": "nyldn",
+    "url": "https://github.com/nyldn"
   },
   "metadata": {
-    "description": "Multi-tentacled orchestration plugin for Claude Code",
-    "version": "9.21.0"
+    "description": "nyldn plugins for Claude Code workflows.",
+    "version": "9.50.0"
   },
   "plugins": [
     {
       "name": "octo",
-      "source": "./",
-      "description": "v9.21.0 - Multi-LLM orchestration for Claude Code. Route tasks to Codex, Gemini, Perplexity, Copilot, Qwen, Ollama, OpenCode. 137 CC feature flags, token compression (~7K/session saved), interactive setup wizard. 32 personas, 48 commands, 51 skills. Run /octo:setup.",
-      "version": "9.21.0",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/nyldn/claude-octopus.git"
+      },
+      "description": "v9.52.0 - Reliability wave: tangle contextual review correction loop with hard round ceiling, progress-supervised review rounds (per-agent stall watch, descendant-tree kills), council diversity and agy pin fixes, marketplace generator source-of-truth fix, provider troubleshooting runbook and cost-expectations docs. 32 personas, 50 commands, 58 skills. Run /octo:setup.",
+      "version": "9.52.0",
       "author": {
-        "name": "nyldn"
+        "name": "nyldn",
+        "url": "https://github.com/nyldn"
       },
       "repository": "https://github.com/nyldn/claude-octopus",
       "homepage": "https://github.com/nyldn/claude-octopus",
@@ -23,25 +28,37 @@
         "multi-llm",
         "multi-agent",
         "orchestration",
-        "cowork",
-        "double-diamond",
+        "claude-code-plugin",
         "codex",
         "gemini",
-        "copilot",
-        "qwen",
-        "ollama",
-        "perplexity",
-        "openrouter",
-        "multi-provider",
-        "provider-routing",
-        "adversarial-review",
-        "claude-code-plugin",
-        "tdd",
-        "debugging",
         "code-review",
-        "research"
+        "automation"
       ],
       "category": "orchestration"
+    },
+    {
+      "name": "img",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/nyldn/img.git"
+      },
+      "description": "Generate and edit images with OpenAI GPT Image 2 and Gemini 3.1 Flash Image Preview.",
+      "version": "0.1.0",
+      "author": {
+        "name": "nyldn",
+        "url": "https://github.com/nyldn"
+      },
+      "repository": "https://github.com/nyldn/img",
+      "homepage": "https://github.com/nyldn/img",
+      "license": "MIT",
+      "keywords": [
+        "image-generation",
+        "gpt-image-2",
+        "gemini-3.1-flash-image-preview",
+        "claude-code-plugin",
+        "codex"
+      ],
+      "category": "creative"
     }
   ]
 }

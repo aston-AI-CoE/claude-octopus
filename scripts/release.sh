@@ -8,18 +8,24 @@
 #   ./scripts/release.sh 8.22.6 "Fix OpenClaw register crash"
 #
 # What it does:
-#   1. Updates version in all 5 files (package.json, plugin.json, marketplace.json, README, CHANGELOG)
+#   1. Updates core version files plus public adapter manifests
 #   2. Commits on a new branch
 #   3. Pushes and creates a PR
 #   4. Waits for required CI checks
 #   5. Merges the PR
 #   6. Creates a GitHub release with tag
-#   7. Updates the submodule in the dev repo (if detected)
+#   7. Syncs the shared nyldn/plugins marketplace entry
+#   8. Updates the submodule in the dev repo (if detected)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# shellcheck source=scripts/lib/release-changelog.sh
+source "$SCRIPT_DIR/lib/release-changelog.sh"
+# shellcheck source=scripts/lib/release-ci.sh
+source "$SCRIPT_DIR/lib/release-ci.sh"
 
 # --- Args ---
 
@@ -33,8 +39,14 @@ VERSION="$1"
 SUMMARY="$2"
 DATE=$(date +%Y-%m-%d)
 BRANCH="release/v${VERSION}"
+REMOTE="${OCTO_RELEASE_REMOTE:-origin}"
 
 cd "$PLUGIN_ROOT"
+
+# gh infers the target repo from remotes independently of $REMOTE, so a dev
+# clone pointing $REMOTE at the canonical repo (with origin left on a fork)
+# would otherwise create the PR/release against the wrong repo. Pin it.
+REPO_SLUG="$(git remote get-url "$REMOTE" | sed -E 's#^(git@|https://)([^:/]+)[:/]##; s#\.git$##')"
 
 # --- Preflight ---
 
@@ -43,12 +55,20 @@ if ! git diff --quiet 2>/dev/null; then
     exit 1
 fi
 
-if [[ "$(git branch --show-current)" != "main" ]]; then
-    echo "Error: must be on main branch."
+# RELEASING.md §0 allows two flows: run from main and let this script cut the
+# release branch, or (worktree flow) cut ${BRANCH} from origin/main yourself
+# and run this script already checked out on it.
+CURRENT_BRANCH="$(git branch --show-current)"
+if [[ "$CURRENT_BRANCH" != "main" && "$CURRENT_BRANCH" != "$BRANCH" ]]; then
+    echo "Error: must be on main, or on ${BRANCH} cut from main (see RELEASING.md §0)."
     exit 1
 fi
+ON_RELEASE_BRANCH=false
+[[ "$CURRENT_BRANCH" == "$BRANCH" ]] && ON_RELEASE_BRANCH=true
 
-git pull --quiet origin main
+if [[ "$ON_RELEASE_BRANCH" == "false" ]]; then
+    git pull --quiet "$REMOTE" main
+fi
 
 CURRENT=$(python3 -c "import json; print(json.load(open('package.json'))['version'])")
 echo "Releasing: ${CURRENT} → ${VERSION}"
@@ -57,7 +77,7 @@ echo ""
 
 # --- 1. Update version files ---
 
-echo "1/7 Updating version files..."
+echo "1/8 Updating version files..."
 
 # package.json
 python3 -c "
@@ -95,38 +115,136 @@ json.dump(m, open('.claude-plugin/marketplace.json', 'w'), indent=2)
 print('   .claude-plugin/marketplace.json')
 "
 
-# README badge
-sed -i '' "s/Version-[0-9]*\.[0-9]*\.[0-9]*-blue/Version-${VERSION}-blue/g" README.md
-sed -i '' "s/Version [0-9]*\.[0-9]*\.[0-9]*/Version ${VERSION}/g" README.md
-echo "   README.md"
+# Public adapter manifests — keep every public root surface on the release version
+python3 -c "
+import json, pathlib, re, sys
 
-# CHANGELOG
-CHANGELOG_ENTRY="## [${VERSION}] - ${DATE}"
-if ! grep -q "\\[${VERSION}\\]" CHANGELOG.md 2>/dev/null; then
-    # Prepend new entry
-    TEMP=$(mktemp)
-    echo "${CHANGELOG_ENTRY}" > "$TEMP"
-    echo "" >> "$TEMP"
-    echo "### Changed" >> "$TEMP"
-    echo "" >> "$TEMP"
-    echo "- ${SUMMARY}" >> "$TEMP"
-    echo "" >> "$TEMP"
-    echo "---" >> "$TEMP"
-    echo "" >> "$TEMP"
-    cat CHANGELOG.md >> "$TEMP"
-    mv "$TEMP" CHANGELOG.md
-    echo "   CHANGELOG.md (new entry)"
-else
-    echo "   CHANGELOG.md (entry already exists)"
-fi
+version = '${VERSION}'
+
+with open('.claude-plugin/plugin.json') as f:
+    plugin = json.load(f)
+command_count = len(plugin.get('commands', []))
+skill_count = len(plugin.get('skills', []))
+
+persona_dir = pathlib.Path('agents/personas')
+if not persona_dir.is_dir():
+    print('ERROR: agents/personas is missing; cannot calculate adapter manifest counts', file=sys.stderr)
+    raise SystemExit(1)
+persona_count = len(list(persona_dir.glob('*.md')))
+if persona_count == 0:
+    print('ERROR: agents/personas contains no persona markdown files', file=sys.stderr)
+    raise SystemExit(1)
+
+droid_dir = pathlib.Path('agents/droids')
+if not droid_dir.is_dir():
+    print('ERROR: agents/droids is missing; cannot calculate browse manifest counts', file=sys.stderr)
+    raise SystemExit(1)
+droid_count = len(list(droid_dir.glob('*.md')))
+
+with open('.claude-plugin/routines.json') as f:
+    routines = json.load(f)
+routine_count = len(routines.get('routines', []))
+
+with open('.claude-plugin/hooks.json') as f:
+    hooks = json.load(f)
+hook_event_count = len(hooks)
+
+count_phrase = f'{persona_count} personas, {command_count} commands, {skill_count} skills'
+expert_count_phrase = f'{persona_count} expert personas, {command_count} commands, {skill_count} skills'
+specialized_count_phrase = f'{command_count} commands, {skill_count} skills, {persona_count} specialized personas'
+
+for path in ('README.md', '.claude-plugin/README.md'):
+    readme_path = pathlib.Path(path)
+    text = readme_path.read_text()
+    text = re.sub(r'\*\*\d+ specialized personas\*\*', f'**{persona_count} specialized personas**', text)
+    text = re.sub(r'\*\*\d+ commands\*\*', f'**{command_count} commands**', text)
+    text = re.sub(r'\*\*\d+ skills\*\*', f'**{skill_count} skills**', text)
+    text = re.sub(r'\b\d+ commands, \d+ skills, \d+ specialized personas\b', specialized_count_phrase, text)
+    text = re.sub(r'\ball \d+ commands\b', f'all {command_count} commands', text)
+    if path == 'README.md':
+        text = re.sub(r'Version-\d+\.\d+\.\d+-blue', f'Version-{version}-blue', text)
+        text = re.sub(r'Version \d+\.\d+\.\d+', f'Version {version}', text)
+    readme_path.write_text(text)
+print('   README count surfaces')
+
+routines['$comment'] = re.sub(r'\(v\d+\.\d+\.\d+\)', f'(v{version})', routines.get('$comment', ''))
+with open('.claude-plugin/routines.json', 'w') as f:
+    json.dump(routines, f, indent=2)
+    f.write('\n')
+print('   .claude-plugin/routines.json')
+
+plugin_manifest_path = pathlib.Path('.claude-plugin/plugin-manifest.json')
+with plugin_manifest_path.open() as f:
+    plugin_manifest = json.load(f)
+plugin_manifest['version'] = version
+components = plugin_manifest.setdefault('components', {})
+components.setdefault('commands', {})['count'] = command_count
+agents = components.setdefault('agents', {})
+agents['count'] = persona_count + droid_count
+agent_breakdown = agents.setdefault('breakdown', {})
+agent_breakdown['personas'] = persona_count
+agent_breakdown['droids'] = droid_count
+components.setdefault('skills', {})['count'] = skill_count
+components.setdefault('hooks', {})['events'] = hook_event_count
+components.setdefault('routines', {})['count'] = routine_count
+with plugin_manifest_path.open('w') as f:
+    json.dump(plugin_manifest, f, indent=2)
+    f.write('\n')
+print('   .claude-plugin/plugin-manifest.json')
+
+path = pathlib.Path('.claude-plugin/marketplace.json')
+with open(path) as f:
+    data = json.load(f)
+for item in data.get('plugins', []):
+    if item.get('name') == 'octo':
+        desc = item.get('description', '')
+        item['description'] = re.sub(r'\d+ personas, \d+ commands, \d+ skills', count_phrase, desc)
+with open(path, 'w') as f:
+    json.dump(data, f, indent=2)
+    f.write('\n')
+print('   .claude-plugin/marketplace.json counts')
+
+for path in ('.codex-plugin/plugin.json', '.cursor-plugin/plugin.json', '.factory-plugin/plugin.json'):
+    with open(path) as f:
+        data = json.load(f)
+    data['version'] = version
+    if path == '.codex-plugin/plugin.json':
+        interface = data.setdefault('interface', {})
+        desc = interface.get('longDescription', '')
+        desc = re.sub(r'\\d+ personas, \\d+ commands, \\d+ skills', count_phrase, desc)
+        interface['longDescription'] = desc
+    if path == '.factory-plugin/plugin.json':
+        data['description'] = f\"Multi-tentacled orchestrator using Double Diamond methodology. v{version}. {expert_count_phrase}. Commands '/octo:*'. Run /octo:setup for guided setup. Compatible with Claude Code and Factory AI Droid.\"
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=2)
+        f.write('\\n')
+    print(f'   {path}')
+
+path = '.factory-plugin/marketplace.json'
+with open(path) as f:
+    data = json.load(f)
+data.setdefault('metadata', {})['version'] = version
+for item in data.get('plugins', []):
+    if item.get('name') == 'claude-octopus':
+        item['version'] = version
+        item['description'] = f'v{version} - Multi-AI orchestration with Double Diamond workflow. {count_phrase}. Run /octo:setup after install.'
+with open(path, 'w') as f:
+    json.dump(data, f, indent=2)
+    f.write('\\n')
+print(f'   {path}')
+"
+
+octo_release_update_changelog CHANGELOG.md "$VERSION" "$DATE" "$SUMMARY"
 
 echo ""
 
 # --- 2. Commit ---
 
-echo "2/7 Committing..."
-git checkout -b "$BRANCH" --quiet
-git add package.json .claude-plugin/plugin.json .claude-plugin/marketplace.json README.md CHANGELOG.md
+echo "2/8 Committing..."
+if [[ "$ON_RELEASE_BRANCH" == "false" ]]; then
+    git checkout -b "$BRANCH" --quiet
+fi
+git add package.json .claude-plugin/plugin.json .claude-plugin/marketplace.json .claude-plugin/plugin-manifest.json .claude-plugin/routines.json .codex-plugin/plugin.json .cursor-plugin/plugin.json .factory-plugin/plugin.json .factory-plugin/marketplace.json README.md CHANGELOG.md
 git commit --quiet -m "chore: release v${VERSION} — ${SUMMARY}
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
@@ -135,19 +253,23 @@ echo ""
 
 # --- 3. Push ---
 
-echo "3/7 Pushing..."
+echo "3/8 Pushing..."
 # --no-verify: skip pre-push hook (CI validates on PR; pre-push re-runs tests already run at commit)
-if ! git push --quiet --no-verify -u origin "$BRANCH" 2>&1 | grep -v "^remote:"; then
+PUSH_OUTPUT=$(git push --quiet --no-verify -u "$REMOTE" "$BRANCH" 2>&1) || {
+    printf '%s\n' "$PUSH_OUTPUT" | grep -v "^remote:" || true
     echo "   ERROR: Push failed. Aborting release."
     exit 1
-fi
+}
+printf '%s\n' "$PUSH_OUTPUT" | grep -v "^remote:" || true
 echo "   Pushed"
 echo ""
 
 # --- 4. Create PR ---
 
-echo "4/7 Creating PR..."
+echo "4/8 Creating PR..."
 PR_URL=$(gh pr create \
+    -R "$REPO_SLUG" \
+    --head "$BRANCH" \
     --title "chore: release v${VERSION}" \
     --body "## Release v${VERSION}
 
@@ -162,14 +284,14 @@ echo ""
 
 # --- 5. Wait for CI ---
 
-echo "5/7 Waiting for CI..."
+echo "5/8 Waiting for CI..."
 # Poll until required checks finish (max 5 minutes)
 DEADLINE=$((SECONDS + 300))
 while [[ $SECONDS -lt $DEADLINE ]]; do
-    CHECKS=$(gh pr checks "$PR_NUM" 2>&1 || true)
-    SMOKE=$(echo "$CHECKS" | grep "Smoke Tests" | awk '{print $2}' || echo "pending")
-    UNIT=$(echo "$CHECKS" | grep "Unit Tests" | awk '{print $2}' || echo "pending")
-    INTEG=$(echo "$CHECKS" | grep "Integration Tests" | awk '{print $2}' || echo "pending")
+    CHECKS=$(gh pr checks "$PR_NUM" -R "$REPO_SLUG" --json name,state 2>&1 || true)
+    SMOKE=$(octo_pr_check_state "$CHECKS" "Smoke Tests")
+    UNIT=$(octo_pr_check_state "$CHECKS" "Unit Tests")
+    INTEG=$(octo_pr_check_state "$CHECKS" "Integration Tests")
 
     if [[ "$SMOKE" == "pass" && "$UNIT" == "pass" && "$INTEG" == "pass" ]]; then
         echo "   Smoke: pass | Unit: pass | Integration: pass"
@@ -178,7 +300,7 @@ while [[ $SECONDS -lt $DEADLINE ]]; do
 
     if [[ "$SMOKE" == "fail" || "$UNIT" == "fail" || "$INTEG" == "fail" ]]; then
         echo "   CI FAILED — Smoke: ${SMOKE} | Unit: ${UNIT} | Integration: ${INTEG}"
-        echo "   Fix failures, then run: gh pr merge ${PR_NUM} --merge"
+        echo "   Fix failures, then run: gh pr merge ${PR_NUM} --merge -R ${REPO_SLUG}"
         exit 1
     fi
 
@@ -187,21 +309,33 @@ done
 
 if [[ $SECONDS -ge $DEADLINE ]]; then
     echo "   CI timed out after 5 minutes."
-    echo "   Check manually: gh pr checks ${PR_NUM}"
-    echo "   Then merge: gh pr merge ${PR_NUM} --merge"
+    echo "   Check manually: gh pr checks ${PR_NUM} -R ${REPO_SLUG}"
+    echo "   Then merge: gh pr merge ${PR_NUM} --merge -R ${REPO_SLUG}"
     exit 1
 fi
 echo ""
 
 # --- 6. Merge + Release ---
 
-echo "6/7 Merging and creating release..."
-gh pr merge "$PR_NUM" --merge --quiet 2>/dev/null || gh pr merge "$PR_NUM" --merge
-git checkout main --quiet
-git pull --quiet origin main
-git branch -d "$BRANCH" --quiet 2>/dev/null || true
+echo "6/8 Merging and creating release..."
+gh pr merge "$PR_NUM" -R "$REPO_SLUG" --merge --quiet 2>/dev/null || gh pr merge "$PR_NUM" -R "$REPO_SLUG" --merge
+
+if [[ "$ON_RELEASE_BRANCH" == "true" ]]; then
+    # main is normally still checked out in the worktree this release branch
+    # was cut from; don't touch this worktree's checkout or delete the
+    # branch we're standing on. Just fetch the merge commit to tag it.
+    git fetch --quiet "$REMOTE" main
+    MERGE_SHA=$(git rev-parse FETCH_HEAD)
+else
+    git checkout main --quiet
+    git pull --quiet "$REMOTE" main
+    git branch -d "$BRANCH" --quiet 2>/dev/null || true
+    MERGE_SHA=$(git rev-parse main)
+fi
 
 gh release create "v${VERSION}" \
+    -R "$REPO_SLUG" \
+    --target "$MERGE_SHA" \
     --title "v${VERSION} — ${SUMMARY}" \
     --notes "### Changed
 - ${SUMMARY}
@@ -209,6 +343,8 @@ gh release create "v${VERSION}" \
 **Full Changelog**: https://github.com/nyldn/claude-octopus/compare/v${CURRENT}...v${VERSION}" \
     --quiet 2>/dev/null || \
 gh release create "v${VERSION}" \
+    -R "$REPO_SLUG" \
+    --target "$MERGE_SHA" \
     --title "v${VERSION} — ${SUMMARY}" \
     --notes "### Changed
 - ${SUMMARY}
@@ -219,9 +355,15 @@ echo "   Merged PR #${PR_NUM}"
 echo "   Release: https://github.com/nyldn/claude-octopus/releases/tag/v${VERSION}"
 echo ""
 
-# --- 7. Update submodule (if in dev repo) ---
+# --- 7. Sync shared marketplace ---
 
-echo "7/7 Updating submodule..."
+echo "7/8 Syncing shared marketplace..."
+"$SCRIPT_DIR/sync-shared-marketplace.sh"
+echo ""
+
+# --- 8. Update submodule (if in dev repo) ---
+
+echo "8/8 Updating submodule..."
 DEV_ROOT="$(cd "$PLUGIN_ROOT/.." && pwd)"
 if [[ -f "$DEV_ROOT/.gitmodules" ]] && grep -q "plugin" "$DEV_ROOT/.gitmodules" 2>/dev/null; then
     cd "$DEV_ROOT"

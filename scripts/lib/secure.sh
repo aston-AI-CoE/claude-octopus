@@ -20,8 +20,9 @@ sanitize_external_content() {
     [[ -z "$content" ]] && return
 
     # Generate random 16-char hex nonce
+    # Fallback uses $RANDOM^3 + epoch because BSD `date +%s%N` returns a literal N on macOS
     local nonce
-    nonce=$(head -c 8 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n' 2>/dev/null) || nonce="$(date +%s%N)"
+    nonce=$(head -c 8 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n' 2>/dev/null) || nonce="${RANDOM}${RANDOM}${RANDOM}$(date +%s)"
 
     echo "<!-- BEGIN-UNTRUSTED:${label}:${nonce} -->
 ${content}

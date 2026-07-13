@@ -1,9 +1,25 @@
 ---
 command: review
-description: Expert multi-LLM code review with inline PR comments — competes with CC Code Review
+description: Enhanced multi-LLM review with inline PR comments — escalation path beyond Claude-native /review
 ---
 
 # /octo:review
+
+## MANDATORY COMPLIANCE — DO NOT SKIP
+
+**When the user explicitly invokes `/octo:review`, you MUST execute the enhanced multi-provider review workflow below.** You are PROHIBITED from substituting Claude-native `/review`, direct reading, or a single-model review unless the user changes commands.
+
+## Positioning
+
+Three review entry points coexist in Claude Code v2.1.111+ — pick the right one per context:
+
+| Command | Scope | Providers | When |
+|---|---|---|---|
+| Claude-native `/review` | Single-turn, current diff | Claude only | Ordinary review, one perspective suffices |
+| `/ultrareview` (CC v2.1.111+) | Cloud, parallel multi-agent | Claude parallelism | Pre-merge PR review without leaving CC |
+| `/octo:review` (this) | Multi-LLM, inline PR comments | Claude + available providers | Provider diversity, adversarial cross-check, stricter escalation |
+
+Use `/octo:review` when the user explicitly wants enhanced multi-LLM review, multiple model opinions, provider diversity, or stricter escalation workflows. If CC v2.1.111+ and the user just says "review this", prefer `/ultrareview` unless provider diversity is specifically requested.
 
 When the user invokes this command (e.g., `/octo:review <arguments>`):
 
@@ -13,6 +29,7 @@ When the user invokes this command (e.g., `/octo:review <arguments>`):
 echo "PROVIDER_CHECK_START"
 printf "codex:%s\n" "$(command -v codex >/dev/null 2>&1 && echo available || echo missing)"
 printf "gemini:%s\n" "$(command -v gemini >/dev/null 2>&1 && echo available || echo missing)"
+printf "agy:%s\n" "$(command -v agy >/dev/null 2>&1 && echo available || echo missing)"
 printf "perplexity:%s\n" "$([ -n "${PERPLEXITY_API_KEY:-}" ] && echo available || echo missing)"
 printf "opencode:%s\n" "$(command -v opencode >/dev/null 2>&1 && echo available || echo missing)"
 printf "copilot:%s\n" "$(command -v copilot >/dev/null 2>&1 && echo available || echo missing)"
@@ -22,16 +39,61 @@ printf "openrouter:%s\n" "$([ -n "${OPENROUTER_API_KEY:-}" ] && echo available |
 echo "PROVIDER_CHECK_END"
 ```
 
-Then display the banner with ACTUAL results:
+Then render the banner from actual provider checks. Do not hand-write or summarize this banner; run this block and display its output exactly. The output MUST include the Antigravity line even when `agy` is missing.
+
+```bash
+status_cli() {
+  command -v "$1" >/dev/null 2>&1 && echo "Available ✓" || echo "Not installed ✗"
+}
+
+status_env() {
+  [[ -n "${1:-}" ]] && echo "Configured ✓" || echo "Not configured ✗"
+}
+
+codex_status="$(status_cli codex)"
+gemini_status="$(status_cli gemini)"
+agy_status="$(status_cli agy)"
+opencode_status="$(status_cli opencode)"
+copilot_status="$(status_cli copilot)"
+qwen_status="$(status_cli qwen)"
+if command -v ollama >/dev/null 2>&1 && curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
+  ollama_status="Available ✓"
+else
+  ollama_status="Not installed ✗"
+fi
+perplexity_status="$(status_env "${PERPLEXITY_API_KEY:-}")"
+
+cat <<BANNER
+🐙 **CLAUDE OCTOPUS ACTIVATED** — Multi-LLM Code Review
+
+Providers:
+🔴 Codex CLI: ${codex_status}
+🟡 Gemini CLI: ${gemini_status}
+🧭 Antigravity CLI: ${agy_status}
+🟤 OpenCode: ${opencode_status}
+🟢 Copilot CLI: ${copilot_status}
+🟠 Qwen CLI: ${qwen_status}
+⚫ Ollama: ${ollama_status}
+🔵 Claude: Available ✓ — architecture and synthesis
+🟣 Perplexity: ${perplexity_status}
+BANNER
+```
+
+The rendered banner must look like this shape, with ACTUAL statuses:
 
 ```
 🐙 **CLAUDE OCTOPUS ACTIVATED** — Multi-LLM Code Review
 
 Providers:
-🔴 Codex CLI: [Available ✓ / Not installed ✗] — logic and correctness
-🟡 Gemini CLI: [Available ✓ / Not installed ✗] — security and edge cases
+🔴 Codex CLI: [Available ✓ / Not installed ✗]
+🟡 Gemini CLI: [Available ✓ / Not installed ✗]
+🧭 Antigravity CLI: [Available ✓ / Not installed ✗]
+🟤 OpenCode: [Available ✓ / Not installed ✗]
+🟢 Copilot CLI: [Available ✓ / Not installed ✗]
+🟠 Qwen CLI: [Available ✓ / Not installed ✗]
+⚫ Ollama: [Available ✓ / Not installed ✗]
 🔵 Claude: Available ✓ — architecture and synthesis
-🟣 Perplexity: [Available ✓ / Not configured ✗] — CVE lookup
+🟣 Perplexity: [Configured ✓ / Not configured ✗]
 ```
 
 **PROHIBITED: Displaying only "🔵 Claude: Available ✓" without checking and listing other providers.**
@@ -55,7 +117,7 @@ If `AUTONOMY_MODE` env var is `autonomous`, or session is running headlessly, or
 1. Run `git diff --cached` — if non-empty, `target=staged`
 2. Run `gh pr view --json number` — if open PR exists, set `target=<pr_number>`
 3. Otherwise `target=working-tree`
-4. Set `provenance=unknown`, `autonomy=autonomous`, `publish=ask`, `debate=auto`, `focus=["correctness","security","architecture","tdd"]`
+4. Set `provenance=unknown`, `autonomy=autonomous`, `publish=ask`, `debate=auto`, `history=auto`, `focus=["correctness","security","architecture","tdd"]`
 
 **Otherwise (supervised mode), you MUST use AskUserQuestion to ask these questions:**
 
@@ -123,21 +185,46 @@ const profile = {
   provenance: <answer>,                // "human" | "ai-assisted" | "autonomous" | "unknown"
   autonomy: <detected mode>,           // "supervised" | "autonomous"
   publish: <answer>,                   // "ask" | "auto" | "never"
-  debate: "auto"                       // always default to auto debate
+  debate: "auto",                      // always default to auto debate
+  history: "auto"                      // "auto" | "fresh"
 }
 ```
+
+If the user includes `fresh` in the command text, do not treat it as a file path. Keep the normal target inference and set `history: "fresh"` so this run ignores prior PR review rounds.
+
+## Step 2.5: Ensure plugin root is resolvable (run via Bash tool)
+
+```bash
+OCTO_ROOT="${HOME}/.claude-octopus/plugin"
+if [[ ! -x "$OCTO_ROOT/scripts/orchestrate.sh" ]]; then
+  helper="$OCTO_ROOT/scripts/helpers/ensure-plugin-root.sh"
+  if [[ ! -x "$helper" ]]; then
+    helper="$(find "${HOME}/.claude/plugins/cache" "${HOME}/Library/Application Support/Claude" "${LOCALAPPDATA:-/dev/null}/Claude" "${XDG_DATA_HOME:-${HOME}/.local/share}/Claude" -maxdepth 8 -path "*/nyldn-plugins/octo/*/scripts/helpers/ensure-plugin-root.sh" -print -quit 2>/dev/null)"
+  fi
+  [[ -x "$helper" ]] && bash "$helper" >/dev/null 2>&1 || true
+fi
+test -x "$OCTO_ROOT/scripts/orchestrate.sh" && echo "plugin-root:ok" || echo "plugin-root:missing"
+```
+
+If the output is `plugin-root:missing`, stop and ask the user to run `/octo:setup`.
 
 ## Step 3: Execute Review Pipeline
 
 Run via Bash tool:
 
 ```bash
-/path/to/orchestrate.sh code-review '<profile-json>'
+${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh code-review '<profile-json>'
 ```
 
 Where `<profile-json>` is the JSON profile built in Step 2.
 
 The pipeline runs 3 rounds (parallel fleet → verification → synthesis) and outputs findings. If a PR is open and publish is not "never", it offers to post inline comments.
+
+Round-aware PR history is enabled automatically for open PR reviews. Local state is stored at `~/.claude-octopus/pr-state/<host>/<owner>/<repo>/<pr>.json` and is used to show addressed, persistent, new, and regressed finding counts across repeated `/octo:review` runs. Set `OCTOPUS_PR_HISTORY=0` before invoking the command to disable all history reads and writes.
+
+Each review also writes a local proof packet under `~/.claude-octopus/runs/<run-id>/`. The packet includes `state.json`, `proof.jsonl`, `summary.md`, findings artifacts, and provider substitution records so review claims can be checked after the chat scroll is gone. Set `OCTOPUS_PROOF_PACKET=0` to disable proof packet writes.
+
+If a project already has `graphify-out/GRAPH_REPORT.md`, `/octo:review` also passes a compact Graphify companion context into the reviewer prompt as an orientation map. This is passive: Octopus does not build or refresh the graph during review, and `OCTOPUS_GRAPHIFY=0` disables the injection.
 
 ## What `/octo:review` checks
 

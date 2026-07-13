@@ -9,6 +9,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+source "$SCRIPT_DIR/../helpers/test-framework.sh"
+test_suite "Claude Code version detection and SUPPORTS_* feature flags"
+
 ORCH_MAIN="$PROJECT_ROOT/scripts/orchestrate.sh"
 
 # Combined search target (functions decomposed to lib/ in v9.7.7+)
@@ -16,9 +20,8 @@ ORCH=$(mktemp)
 trap 'rm -f "$ORCH"' EXIT
 cat "$ORCH_MAIN" "$PROJECT_ROOT/scripts/lib/"*.sh > "$ORCH" 2>/dev/null
 
-TEST_COUNT=0; PASS_COUNT=0; FAIL_COUNT=0
-pass() { TEST_COUNT=$((TEST_COUNT+1)); PASS_COUNT=$((PASS_COUNT+1)); echo "PASS: $1"; }
-fail() { TEST_COUNT=$((TEST_COUNT+1)); FAIL_COUNT=$((FAIL_COUNT+1)); echo "FAIL: $1 — $2"; }
+pass() { test_case "$1"; test_pass; }
+fail() { test_case "$1"; test_fail "${2:-$1}"; }
 
 # ╔══════════════════════════════════════════════════════════════════════╗
 # ║  1. Minimum version requirement                                     ║
@@ -72,6 +75,18 @@ for flag in SUPPORTS_ALLOW_READ_SANDBOX SUPPORTS_COPY_INDEX \
             SUPPORTS_PRETOOLUSE_DENY_PRIORITY SUPPORTS_SENDMESSAGE_AUTO_RESUME \
             SUPPORTS_AGENT_NO_RESUME_PARAM SUPPORTS_PLUGIN_VALIDATE_FRONTMATTER \
             SUPPORTS_BRANCH_COMMAND SUPPORTS_BG_BASH_5GB_KILL; do
+    if grep -c "${flag}=false" "$ORCH" >/dev/null 2>&1; then
+        pass "Declaration: $flag"
+    else
+        fail "Declaration: $flag" "missing ${flag}=false"
+    fi
+done
+
+# v2.1.154-157 flags
+for flag in SUPPORTS_OPUS_4_8 SUPPORTS_DYNAMIC_WORKFLOWS \
+            SUPPORTS_LEAN_SYSTEM_PROMPT_DEFAULT SUPPORTS_AGENT_SETTINGS_AGENT_FIELD \
+            SUPPORTS_SKILLS_AUTO_PLUGIN_LOAD SUPPORTS_ENTER_WORKTREE_SWITCH \
+            SUPPORTS_TOOL_DECISION_PARAMS_OTEL; do
     if grep -c "${flag}=false" "$ORCH" >/dev/null 2>&1; then
         pass "Declaration: $flag"
     else
@@ -161,6 +176,39 @@ for flag in SUPPORTS_ALLOW_READ_SANDBOX SUPPORTS_COPY_INDEX \
     fi
 done
 
+# --- v2.1.154 block ---
+if grep -c 'version_compare.*2\.1\.154' "$PROJECT_ROOT/scripts/lib/providers.sh" >/dev/null 2>&1; then
+    pass "v2.1.154 detection block exists"
+else
+    fail "v2.1.154 detection block exists" "no version_compare for 2.1.154"
+fi
+
+v21154_block=$(grep -A10 'version_compare.*2\.1\.154' "$PROJECT_ROOT/scripts/lib/providers.sh" | head -10)
+for flag in SUPPORTS_OPUS_4_8 SUPPORTS_DYNAMIC_WORKFLOWS SUPPORTS_LEAN_SYSTEM_PROMPT_DEFAULT; do
+    if echo "$v21154_block" | grep -c "$flag=true" >/dev/null 2>&1; then
+        pass "v2.1.154 block sets: $flag"
+    else
+        fail "v2.1.154 block sets: $flag" "not found in v2.1.154 detection block"
+    fi
+done
+
+# --- v2.1.157 block ---
+if grep -c 'version_compare.*2\.1\.157' "$PROJECT_ROOT/scripts/lib/providers.sh" >/dev/null 2>&1; then
+    pass "v2.1.157 detection block exists"
+else
+    fail "v2.1.157 detection block exists" "no version_compare for 2.1.157"
+fi
+
+v21157_block=$(grep -A10 'version_compare.*2\.1\.157' "$PROJECT_ROOT/scripts/lib/providers.sh" | head -10)
+for flag in SUPPORTS_AGENT_SETTINGS_AGENT_FIELD SUPPORTS_SKILLS_AUTO_PLUGIN_LOAD \
+            SUPPORTS_ENTER_WORKTREE_SWITCH SUPPORTS_TOOL_DECISION_PARAMS_OTEL; do
+    if echo "$v21157_block" | grep -c "$flag=true" >/dev/null 2>&1; then
+        pass "v2.1.157 block sets: $flag"
+    else
+        fail "v2.1.157 block sets: $flag" "not found in v2.1.157 detection block"
+    fi
+done
+
 # ╔══════════════════════════════════════════════════════════════════════╗
 # ║  4. Logging lines                                                   ║
 # ╚══════════════════════════════════════════════════════════════════════╝
@@ -190,6 +238,17 @@ done
 # v2.1.77 labels
 for label in "Allow Read Sandbox" "SendMessage Auto Resume" "Agent No Resume Param" \
              "Plugin Validate Frontmatter" "Branch Command" "BG Bash 5GB Kill"; do
+    if grep -c "$label" "$ORCH" >/dev/null 2>&1; then
+        pass "Logged: $label"
+    else
+        fail "Logged: $label" "not found in detection logging"
+    fi
+done
+
+# v2.1.154-157 labels
+for label in "Opus 4.8" "Dynamic Workflows" "Lean Prompt Default" \
+             "Agent Settings Agent Field" "Skills Auto Plugin Load" \
+             "EnterWorktree Switch" "Tool Decision Params OTel"; do
     if grep -c "$label" "$ORCH" >/dev/null 2>&1; then
         pass "Logged: $label"
     else
@@ -291,7 +350,7 @@ else
 fi
 
 # flow-develop.md: no Agent(resume=), uses SendMessage
-develop_skill="$PROJECT_ROOT/.claude/skills/flow-develop.md"
+develop_skill="$(resolve_claude_skill_path "flow-develop")"
 if [[ -f "$develop_skill" ]]; then
     old_resume_count="$(grep -c 'Agent.*resume=' "$develop_skill" 2>/dev/null)" || old_resume_count=0
     if [[ "$old_resume_count" -eq 0 ]]; then
@@ -366,50 +425,50 @@ echo ""
 echo "=== 7. Skill Frontmatter ==="
 
 # context: fork on heavy skills
-for skill in skill-prd.md skill-code-review.md skill-debate.md skill-deep-research.md; do
-    skill_path="$PROJECT_ROOT/.claude/skills/$skill"
+for skill in skill-prd skill-code-review skill-debate skill-deep-research; do
+    skill_path="$(resolve_claude_skill_path "$skill")"
     if [[ -f "$skill_path" ]] && grep -q '^context: fork' "$skill_path"; then
-        pass "$skill has context: fork"
+        pass "$skill.md has context: fork"
     else
-        fail "$skill has context: fork" "missing or file not found"
+        fail "$skill.md has context: fork" "missing or file not found"
     fi
 done
 
 # agent field on specialized skills
-if grep -q '^agent: Plan' "$PROJECT_ROOT/.claude/skills/skill-prd.md"; then
+if grep -q '^agent: Plan' "$(resolve_claude_skill_path "skill-prd")"; then
     pass "skill-prd.md has agent: Plan"
 else
     fail "skill-prd.md agent" "missing agent: Plan"
 fi
 
-for skill in skill-code-review.md skill-deep-research.md; do
-    skill_path="$PROJECT_ROOT/.claude/skills/$skill"
+for skill in skill-code-review skill-deep-research; do
+    skill_path="$(resolve_claude_skill_path "$skill")"
     if [[ -f "$skill_path" ]] && grep -q '^agent: Explore' "$skill_path"; then
-        pass "$skill has agent: Explore"
+        pass "$skill.md has agent: Explore"
     else
-        fail "$skill agent" "missing agent: Explore"
+        fail "$skill.md agent" "missing agent: Explore"
     fi
 done
 
 # Session ID in flow banners
-for skill in flow-discover.md flow-define.md flow-develop.md flow-deliver.md; do
-    skill_path="$PROJECT_ROOT/.claude/skills/$skill"
+for skill in flow-discover flow-define flow-develop flow-deliver; do
+    skill_path="$(resolve_claude_skill_path "$skill")"
     if [[ -f "$skill_path" ]] && grep -q 'Session: \${CLAUDE_SESSION_ID}' "$skill_path"; then
-        pass "$skill has session ID in banner"
+        pass "$skill.md has session ID in banner"
     else
-        fail "$skill session ID" "missing Session: \${CLAUDE_SESSION_ID}"
+        fail "$skill.md session ID" "missing Session: \${CLAUDE_SESSION_ID}"
     fi
 done
 
 # Native background tasks docs
-if grep -q 'Native Background Tasks' "$PROJECT_ROOT/.claude/skills/flow-discover.md"; then
+if grep -q 'Native Background Tasks' "$(resolve_claude_skill_path "flow-discover")"; then
     pass "flow-discover.md has native background tasks documentation"
 else
     fail "flow-discover.md background tasks" "missing Native Background Tasks section"
 fi
 
 # LSP integration guidance
-if grep -q 'LSP Integration' "$PROJECT_ROOT/.claude/skills/skill-architecture.md"; then
+if grep -q 'LSP Integration' "$(resolve_claude_skill_path "skill-architecture")"; then
     pass "skill-architecture.md has LSP integration guidance"
 else
     fail "skill-architecture.md LSP" "missing LSP Integration section"
@@ -417,23 +476,23 @@ fi
 
 # YAML frontmatter validity
 valid=true
-for skill in skill-prd.md skill-code-review.md skill-debate.md skill-deep-research.md; do
-    skill_path="$PROJECT_ROOT/.claude/skills/$skill"
+for skill in skill-prd skill-code-review skill-debate skill-deep-research; do
+    skill_path="$(resolve_claude_skill_path "$skill")"
     if [[ -f "$skill_path" ]]; then
         if ! head -n 1 "$skill_path" | grep -q "^---$"; then
-            echo "  $skill: Missing opening YAML delimiter"
+            echo "  $skill.md: Missing opening YAML delimiter"
             valid=false
         fi
         if ! awk '/^---$/{count++; if(count==2) found=1} END{exit !found}' "$skill_path"; then
-            echo "  $skill: Missing closing YAML delimiter"
+            echo "  $skill.md: Missing closing YAML delimiter"
             valid=false
         fi
         if ! grep -q "^name:" "$skill_path"; then
-            echo "  $skill: Missing name field"
+            echo "  $skill.md: Missing name field"
             valid=false
         fi
     else
-        echo "  $skill: File not found"
+        echo "  $skill.md: File not found"
         valid=false
     fi
 done
@@ -467,9 +526,4 @@ fi
 # ╔══════════════════════════════════════════════════════════════════════╗
 # ║  Summary                                                            ║
 # ╚══════════════════════════════════════════════════════════════════════╝
-echo ""
-echo "═══════════════════════════════════════"
-echo "  CC version detection: $PASS_COUNT/$TEST_COUNT passed, $FAIL_COUNT failed"
-echo "═══════════════════════════════════════"
-
-[[ $FAIL_COUNT -eq 0 ]] && exit 0 || exit 1
+test_summary

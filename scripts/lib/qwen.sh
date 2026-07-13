@@ -1,41 +1,57 @@
 #!/usr/bin/env bash
 # Qwen CLI provider execution (v9.10.0)
 # Fork of Gemini CLI — same flags, different binary.
-# Auth: Qwen OAuth free tier (1000-2000 req/day), stored in ~/.qwen/
+# Auth: API key / Coding-Plan (QWEN_API_KEY, or OPENAI_API_KEY+OPENAI_BASE_URL).
+#   NOTE: the Qwen free OAuth tier was discontinued 2026-04-15 and its token
+#   auto-refresh is broken; an expired ~/.qwen/oauth_creds.json never recovers.
 # Source-safe: no main execution block.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Check if Qwen CLI is available and authenticated
-# Returns 0 if ready, 1 if not
-qwen_is_available() {
-    if ! command -v qwen &>/dev/null; then
-        return 1
+# Get the auth method currently in use (for doctor/setup reporting)
+# Returns: "env:QWEN_API_KEY", "env:OPENAI_COMPAT", "oauth",
+# "oauth-expired", "oauth-unvalidated", "config", or "none"
+#
+# oco-dar: an EXPIRED oauth_creds.json must report "oauth-expired" (treated as
+# unauthenticated by callers), not "oauth" — otherwise dispatch launches an
+# interactive browser device-auth flow that hangs the workflow.
+qwen_auth_method() {
+    if [[ -n "${QWEN_API_KEY:-}" ]]; then
+        echo "env:QWEN_API_KEY"
+        return
     fi
-    # Check auth: OAuth creds first (primary), then API key fallback
+    if [[ -n "${OPENAI_API_KEY:-}" && -n "${OPENAI_BASE_URL:-}" ]]; then
+        echo "env:OPENAI_COMPAT"
+        return
+    fi
     if [[ -f "${HOME}/.qwen/oauth_creds.json" ]]; then
-        return 0
+        if declare -f octo_oauth_token_valid >/dev/null 2>&1; then
+            if octo_oauth_token_valid "${HOME}/.qwen/oauth_creds.json"; then
+                echo "oauth"
+            else
+                echo "oauth-expired"
+            fi
+        else
+            # Validator unavailable (auth.sh not sourced) — fail closed so an
+            # unvalidated OAuth file never re-enables the stale-token hang path.
+            echo "oauth-unvalidated"
+        fi
+        return
     fi
     if [[ -f "${HOME}/.qwen/config.json" ]]; then
-        return 0
-    fi
-    if [[ -n "${QWEN_API_KEY:-}" ]]; then
-        return 0
-    fi
-    return 1
-}
-
-# Get the auth method currently in use (for doctor/setup reporting)
-# Returns: "oauth", "config", "env:QWEN_API_KEY", or "none"
-qwen_auth_method() {
-    if [[ -f "${HOME}/.qwen/oauth_creds.json" ]]; then
-        echo "oauth"
-    elif [[ -f "${HOME}/.qwen/config.json" ]]; then
         echo "config"
-    elif [[ -n "${QWEN_API_KEY:-}" ]]; then
-        echo "env:QWEN_API_KEY"
     else
         echo "none"
     fi
+}
+
+# Is qwen usable right now? (binary present AND a valid, non-expired auth source)
+# Returns 0 if usable, 1 otherwise. Single source of truth for dispatch gating.
+qwen_is_usable() {
+    command -v qwen >/dev/null 2>&1 || return 1
+    case "$(qwen_auth_method)" in
+        env:QWEN_API_KEY|env:OPENAI_COMPAT|oauth|config) return 0 ;;
+        *) return 1 ;;   # oauth-expired, oauth-unvalidated, none
+    esac
 }
 
 # Execute a prompt via Qwen CLI headless mode
@@ -51,12 +67,29 @@ qwen_execute() {
         return 1
     fi
 
+    if declare -f qwen_is_usable >/dev/null 2>&1 && ! qwen_is_usable; then
+        log ERROR "qwen: not usable (auth: $(qwen_auth_method)). Set QWEN_API_KEY or configure Coding-Plan (OPENAI_API_KEY + OPENAI_BASE_URL)."
+        return 1
+    fi
+
     local timeout="${OCTOPUS_QWEN_TIMEOUT:-90}"
 
     [[ "${VERBOSE:-}" == "true" ]] && log DEBUG "qwen_execute: type=$agent_type, timeout=${timeout}s, auth=$(qwen_auth_method)" || true
 
+    # OPENAI_COMPAT auth (OPENAI_API_KEY + OPENAI_BASE_URL) needs an explicit
+    # --auth-type: the qwen CLI does not auto-detect it from env vars alone
+    # in non-interactive mode (Issue #566).
+    local qwen_auth_args=()
+    if [[ "$(qwen_auth_method)" == "env:OPENAI_COMPAT" ]]; then
+        qwen_auth_args=(--auth-type openai)
+    fi
+
     local response exit_code
-    response=$(timeout "$timeout" qwen -p "$prompt" --approval-mode yolo -o text --no-ask-user 2>&1) && exit_code=0 || exit_code=$?
+    if declare -f run_with_timeout >/dev/null 2>&1; then
+        response=$(NO_BROWSER=1 NODE_NO_WARNINGS=1 run_with_timeout "$timeout" qwen -p "$prompt" --approval-mode yolo -o text "${qwen_auth_args[@]}" 2>&1) && exit_code=0 || exit_code=$?
+    else
+        response=$(NO_BROWSER=1 NODE_NO_WARNINGS=1 timeout -k 10 "$timeout" qwen -p "$prompt" --approval-mode yolo -o text "${qwen_auth_args[@]}" 2>&1) && exit_code=0 || exit_code=$?
+    fi
 
     # Handle errors
     if [[ $exit_code -ne 0 ]]; then
@@ -66,7 +99,7 @@ qwen_execute() {
         fi
         # Check for auth errors
         if printf '%s' "$response" | grep -qiE 'unauthorized|auth|login|token'; then
-            log ERROR "qwen: Auth failure — run: qwen (to trigger OAuth) or set QWEN_API_KEY"
+            log ERROR "qwen: Auth failure — set QWEN_API_KEY or configure Coding-Plan (OPENAI_API_KEY + OPENAI_BASE_URL)"
             return 1
         fi
         log WARN "qwen: Exit code $exit_code"

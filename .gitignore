@@ -118,3 +118,12 @@ coverage-report.html
 *.key
 *.pem
 .tmp.*
+.claude/settings.local.json
+
+# AgentOps session artifacts (auto-added by ao init)
+.agents/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key

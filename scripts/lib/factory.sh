@@ -164,14 +164,14 @@ After all scenarios, output:
 
     # Cross-model holdout evaluation for objectivity
     local eval_result
-    eval_result=$(run_agent_sync "gemini" "$holdout_prompt" 180 "qa-reviewer" "factory" 2>/dev/null) || true
+    eval_result=$(run_agent_sync "gemini" "$holdout_prompt" "${TIMEOUT:-300}" "qa-reviewer" "factory" 2>/dev/null) || true
 
     if [[ -z "$eval_result" ]]; then
-        eval_result=$(run_agent_sync "codex" "$holdout_prompt" 180 "qa-reviewer" "factory" 2>/dev/null) || true
+        eval_result=$(run_agent_sync "codex" "$holdout_prompt" "${TIMEOUT:-300}" "qa-reviewer" "factory" 2>/dev/null) || true
     fi
 
     if [[ -z "$eval_result" ]]; then
-        eval_result=$(run_agent_sync "claude" "$holdout_prompt" 180 "qa-reviewer" "factory" 2>/dev/null) || true
+        eval_result=$(run_agent_sync "claude" "$holdout_prompt" "${TIMEOUT:-300}" "qa-reviewer" "factory" 2>/dev/null) || true
     fi
 
     if [[ -z "$eval_result" ]]; then

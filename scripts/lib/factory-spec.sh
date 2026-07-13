@@ -203,7 +203,7 @@ ${supplemental}"
     # Fallback to Claude if both external providers failed
     if [[ -z "$scenarios" ]]; then
         log WARN "External providers unavailable for scenario generation, using Claude"
-        scenarios=$(run_agent_sync "claude" "$scenario_prompt" 180 "qa-engineer" "factory" 2>/dev/null) || true
+        scenarios=$(run_agent_sync "claude" "$scenario_prompt" "${TIMEOUT:-300}" "qa-engineer" "factory" 2>/dev/null) || true
     fi
 
     if [[ -z "$scenarios" ]]; then

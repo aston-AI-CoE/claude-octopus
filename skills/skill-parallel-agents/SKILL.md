@@ -1,8 +1,13 @@
 ---
 name: skill-parallel-agents
-version: 1.0.0
-description: "Multi-tentacled orchestration using Double Diamond methodology. Use when: PRIORITY TRIGGERS (always invoke immediately):. \"/octo:multi\" (explicit command). \"run this with all providers\", \"run with all providers\""
+description: "Decompose large tasks across parallel agents — use for migrations, multi-file refactors, or batch work"
 ---
+
+> **Host: Codex CLI** — This skill was designed for Claude Code and adapted for Codex.
+> Cross-reference commands use installed skill names in Codex rather than `/octo:*` slash commands.
+> Use the active Codex shell and subagent tools. Do not claim a provider, model, or host subagent is available until the current session exposes it.
+> For host tool equivalents, see `skills/blocks/codex-host-adapter.md`.
+
 
 # Claude Octopus - Multi-Tentacled Orchestrator
 
@@ -16,7 +21,6 @@ description: "Multi-tentacled orchestration using Double Diamond methodology. Us
 
 **This skill exists specifically for multi-provider parallel work. If you catch yourself thinking "I'll just do this myself" — STOP.**
 
----
 
 **Multi-tentacled orchestrator for Claude Code** - using Double Diamond methodology for comprehensive problem exploration, consensus building, and validated delivery.
 
@@ -99,7 +103,7 @@ Claude Octopus uses **visual indicators** so you always know which AI is respond
 | 🐙 | **Parallel Mode** | Multiple CLIs orchestrated via orchestrate.sh |
 | 🔴 | **Codex CLI** | OpenAI Codex (your OPENAI_API_KEY) |
 | 🟡 | **Gemini CLI** | Google Gemini (your GEMINI_API_KEY) |
-| 🔵 | **Claude Subagent** | Claude Code Task tool (built-in) |
+| 🔵 | **Claude Subagent** | Claude Code host subagent tool (built-in) |
 
 ### What Triggers External CLIs vs Subagents
 
@@ -119,9 +123,8 @@ Claude Octopus uses **visual indicators** so you always know which AI is respond
 
 **Why this matters:** External CLIs use your OpenAI/Google API quotas and incur costs. Claude subagents are included with Claude Code at no additional charge.
 
-When you see 🐙 **CLAUDE OCTOPUS ACTIVATED**, external CLI providers (Codex/Gemini) will be invoked for multi-perspective analysis.
+When you see 🐙 **CLAUDE OCTOPUS ACTIVATED**, external CLI providers such as Codex, Gemini, Antigravity, and others will be invoked for multi-perspective analysis.
 
----
 
 ## Force Multi-Provider Mode
 
@@ -144,7 +147,7 @@ You can also force multi-provider mode with natural language:
 
 ```
 "Run this with all providers: What is JWT?"
-"I want all three AI models to look at our architecture"
+"I want multiple AI models to look at our architecture"
 "Get multiple perspectives on this design decision"
 "Use all providers for explaining caching strategies"
 "Force multi-provider analysis of our API design"
@@ -193,9 +196,8 @@ Providers:
 🔵 Claude - [Role in this task]
 ```
 
-Followed by results from each provider marked with their indicators (🔴 🟡 🔵).
+Followed by results from each provider marked with their indicators (for example 🔴 🟡 🧭 🔵).
 
----
 
 ## Prerequisites Check (Automatic - Fast Detection)
 
@@ -435,7 +437,7 @@ Different models have different blind spots. Crossfire commands force models to 
 
 *Two tentacles wrestling until consensus*
 
-Codex and Gemini each propose solutions, then critique each other's work. A synthesis determines the winner.
+Available providers each propose solutions, then critique each other's work. A synthesis determines the winner.
 
 ```
 ┌─────────────┐     ┌─────────────┐
@@ -680,7 +682,7 @@ cost_optimization:
 
 ### OpenRouter Fallback
 
-OpenRouter provides 400+ models as a universal fallback when Codex/Gemini are unavailable:
+OpenRouter provides 400+ models as a universal fallback when direct external CLIs are unavailable:
 
 ```bash
 # Set up OpenRouter API key

@@ -16,6 +16,9 @@ PLUGIN_JSON="$PROJECT_ROOT/.claude-plugin/plugin.json"
 HOOKS_JSON="$PROJECT_ROOT/.claude-plugin/hooks.json"
 COMMANDS_DIR="$PROJECT_ROOT/.claude/commands"
 SKILL_DEBUG="$PROJECT_ROOT/.claude/skills/skill-debug.md"
+if [[ ! -f "$SKILL_DEBUG" ]]; then
+    SKILL_DEBUG="$PROJECT_ROOT/.claude/skills/skill-debug/SKILL.md"
+fi
 
 # ── Hook script existence and executability ──────────────────────────
 
@@ -100,7 +103,7 @@ test_careful_sql_patterns() {
 
 test_careful_git_force_push() {
     test_case "careful-check.sh detects git push --force"
-    if grep -c 'git.*push.*--force\|git.*push.*-f' "$CAREFUL_HOOK" >/dev/null 2>&1; then
+    if grep -Ec 'git.*push.*--force|git.*push.*-f' "$CAREFUL_HOOK" >/dev/null 2>&1; then
         test_pass
     else
         test_fail "git push --force pattern not found"
@@ -118,7 +121,7 @@ test_careful_git_reset_hard() {
 
 test_careful_git_checkout_dot() {
     test_case "careful-check.sh detects git checkout ./restore ."
-    if grep -c 'git.*checkout.*\.\|git.*restore.*\.' "$CAREFUL_HOOK" >/dev/null 2>&1; then
+    if grep -Ec 'git.*checkout.*\.|git.*restore.*\.' "$CAREFUL_HOOK" >/dev/null 2>&1; then
         test_pass
     else
         test_fail "git checkout ./restore . pattern not found"
@@ -267,12 +270,12 @@ test_hooks_registered_in_hooks_json() {
 # ── Skill-debug auto-freeze integration ──────────────────────────────
 
 test_debug_skill_autofreeze() {
-    test_case "skill-debug.md references auto-freeze integration"
+    test_case "skill-debug references auto-freeze integration"
     if grep -c 'octopus-freeze' "$SKILL_DEBUG" >/dev/null 2>&1 && \
        grep -c 'unfreeze' "$SKILL_DEBUG" >/dev/null 2>&1; then
         test_pass
     else
-        test_fail "auto-freeze integration not found in skill-debug.md"
+        test_fail "auto-freeze integration not found in skill-debug"
     fi
 }
 

@@ -36,7 +36,7 @@ Skills that invoke orchestrate.sh MUST use the **Validation Gate Pattern** to en
    - Verify via filesystem checks, not assumptions
    - Fail explicitly if validation doesn't pass
 
-See `.claude/skills/skill-deep-research.md` for reference implementation.
+See `.claude/skills/skill-deep-research/SKILL.md` for reference implementation.
 
 ---
 
@@ -88,3 +88,58 @@ E2E test scripts are in the private dev repo (`docs/e2e/`), not in this public p
 ### Dynamic Fleet Dispatch
 
 `scripts/helpers/build-fleet.sh` is the single source of truth for provider-to-perspective assignment. Enforces model family diversity (OpenAI, Google, Microsoft, Alibaba, Anthropic). Never hardcode provider names in skills.
+
+---
+
+## Release Validation
+
+Run the local release validator before tagging a plugin release:
+
+```bash
+bash scripts/validate-release.sh
+```
+
+The validator checks manifest syntax, command registration, plugin validation through `claude plugin validate`, and a packaged zip smoke build. On Claude Code v2.1.128+, `--plugin-dir` can load a plugin zip archive; on v2.1.129+, `--plugin-url` can load that archive from an HTTP URL for the current session.
+
+Runtime plugin loading is opt-in because it invokes Claude Code:
+
+```bash
+OCTOPUS_RELEASE_RUNTIME_SMOKE=1 bash scripts/validate-release.sh
+```
+
+That mode creates a temporary plugin zip, loads it with `claude --plugin-dir <zip>`, serves it locally, then loads it with `claude --plugin-url http://127.0.0.1:<port>/octo-plugin.zip`. Both calls use stream-json with hook events enabled so `init.plugin_errors` surfaces plugin load failures in the release log.
+
+Use `OCTOPUS_RELEASE_SMOKE_MAX_BUDGET_USD` to lower or raise the Claude Code budget cap for the runtime smoke, and `OCTOPUS_RELEASE_SMOKE_PORT` if the default localhost port is busy.
+
+## Agent lifecycle events
+
+Octopus emits provider and dispatch telemetry to the JSONL event stream controlled by `OCTO_EVENT_LOG`. Agent spawn/completion events use the same surface:
+
+```bash
+export OCTO_EVENT_LOG=auto
+```
+
+Event names:
+
+```text
+agent.spawned
+agent.completed
+```
+
+Lifecycle event attributes include `provider`, `agent_type`, `task_id`, `role`, `phase`, `pid`, `result_file`, `results_dir`, `workspace_dir`, `exit_code`, `status`, `root_session_id`, and `parent_session_id`.
+
+External control planes that need an immediate callback instead of tailing the JSONL file can also set an optional best-effort hook:
+
+```bash
+export OCTOPUS_AGENT_LIFECYCLE_HOOK=/path/to/hook
+export OCTOPUS_AGENT_LIFECYCLE_HOOK_LOG=/tmp/octopus-agent-hook.log  # optional
+```
+
+The hook is invoked as:
+
+```bash
+$OCTOPUS_AGENT_LIFECYCLE_HOOK spawned
+$OCTOPUS_AGENT_LIFECYCLE_HOOK completed
+```
+
+The hook receives the same lifecycle metadata through `OCTOPUS_AGENT_*` environment variables. Hook stdout/stderr are redirected to the optional hook log or `/dev/null`; hook failures are ignored so observer outages never fail agent execution.

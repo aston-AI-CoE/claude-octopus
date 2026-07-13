@@ -148,27 +148,58 @@ display_rich_progress() {
     local -a agent_names=()
     local -a agent_types=()
 
-    # Build agent info from task IDs
+    # Build agent info from task IDs, preferring caller-supplied dynamic fleet
+    # metadata when a workflow selected providers at runtime.
     for i in $(seq 0 $((total_agents - 1))); do
-        local agent="gemini"
-        [[ $((i % 2)) -eq 0 ]] && agent="codex"
+        local agent=""
+        if declare -p OCTO_PROGRESS_AGENT_TYPES >/dev/null 2>&1; then
+            agent="${OCTO_PROGRESS_AGENT_TYPES[$i]:-}"
+        fi
+        if [[ -z "$agent" ]]; then
+            agent="gemini"
+            [[ $((i % 2)) -eq 0 ]] && agent="codex"
+        fi
         agent_types+=("$agent")
 
-        case $i in
-            0) agent_names+=("Problem Analysis") ;;
-            1) agent_names+=("Solution Research") ;;
-            2) agent_names+=("Edge Cases") ;;
-            3) agent_names+=("Feasibility") ;;
-            *) agent_names+=("Agent $i") ;;
-        esac
+        local agent_name=""
+        if declare -p OCTO_PROGRESS_AGENT_NAMES >/dev/null 2>&1; then
+            agent_name="${OCTO_PROGRESS_AGENT_NAMES[$i]:-}"
+        fi
+        if [[ -n "$agent_name" ]]; then
+            agent_names+=("$agent_name")
+        else
+            case $i in
+                0) agent_names+=("Problem Analysis") ;;
+                1) agent_names+=("Solution Research") ;;
+                2) agent_names+=("Edge Cases") ;;
+                3) agent_names+=("Feasibility") ;;
+                *) agent_names+=("Agent $i") ;;
+            esac
+        fi
     done
 
     # Progress bar function
     local bar_width=20
 
+    # Watchdog: every agent already runs under run_with_timeout, so the fleet
+    # should finish within TIMEOUT plus dispatch overhead. A straggler PID that
+    # never reaps (zombie, stuck watcher child) would otherwise block this loop
+    # forever and the synthesis step downstream would never run (bug 260609).
+    local watchdog_limit=$(( ${TIMEOUT:-300} + ${OCTOPUS_PROGRESS_GRACE:-120} ))
+
     while true; do
         local all_done=true
         local completed=0
+
+        if (( $(date +%s) - start_time > watchdog_limit )); then
+            echo ""
+            echo -e "${YELLOW}⚠ Progress watchdog: agents still reported running after ${watchdog_limit}s (timeout ${TIMEOUT:-300}s + grace). Terminating stragglers and continuing to synthesis with completed results.${NC}"
+            local straggler_pid
+            for straggler_pid in "${pids[@]}"; do
+                kill -0 "$straggler_pid" 2>/dev/null && kill -TERM "$straggler_pid" 2>/dev/null || true
+            done
+            break
+        fi
 
         # Clear previous output (move cursor up and clear)
         [[ $completed -gt 0 ]] && printf "\033[%dA" $((total_agents + 4))
@@ -247,7 +278,14 @@ display_rich_progress() {
 
             # Display row with emoji for agent type
             local agent_emoji="🔴"
-            [[ "$agent_type" == "gemini" ]] && agent_emoji="🟡"
+            case "$agent_type" in
+                gemini*) agent_emoji="🟡" ;;
+                claude*) agent_emoji="🔵" ;;
+                perplexity*) agent_emoji="🟣" ;;
+                copilot*) agent_emoji="🟢" ;;
+                qwen*) agent_emoji="🟤" ;;
+                opencode*) agent_emoji="⚫" ;;
+            esac
 
             printf " %b %s %-18s [%b%s%b] %6s\n" \
                 "$status_icon" \
@@ -408,12 +446,11 @@ save_session_checkpoint() {
     update_metrics "phases_completed" "1" 2>/dev/null || true
     write_state_md 2>/dev/null || true
 
-    # v8.57: Notify claude-mem of phase completion (non-blocking, fault-tolerant)
-    local bridge_script="${SCRIPT_DIR}/claude-mem-bridge.sh"
-    if [[ -x "$bridge_script" ]] && "$bridge_script" available >/dev/null 2>&1; then
+    # Route through memory contract so any enabled backend picks it up (#220).
+    if [[ "$(memory_available 2>/dev/null)" == "true" ]]; then
         local workflow_name
         workflow_name=$(jq -r '.workflow // "unknown"' "$SESSION_FILE" 2>/dev/null || echo "unknown")
-        "$bridge_script" observe "decision" \
+        memory_observe "decision" \
             "Octopus ${phase} phase ${status}" \
             "Workflow: ${workflow_name}, Phase: ${phase}, Status: ${status}, Output: ${output_file}" \
             2>/dev/null &

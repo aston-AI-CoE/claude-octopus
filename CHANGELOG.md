@@ -1,3 +1,777 @@
+# Changelog
+
+## [Unreleased]
+
+### Fixed
+
+- **Repository review follow-ups**: clarified README provider counting and cost assumptions, routed marketplace-sync errors through the script logger, and made release manifest updates portable while keeping browse-manifest hook and routine counts current.
+
+## [9.52.0] - 2026-07-09
+
+### Added
+
+- **docs/TROUBLESHOOTING.md**: user-facing provider-auth runbook — per-provider availability checks and fix commands for all eleven seats, plus the common non-auth failures (circuit-breaker skips, quota-dead providers, fail-closed Ollama pulls, Fable 5 refusals, session provider disable).
+- **README cost expectations**: "What a Typical Run Costs" table (probe/debate/council/embrace token volumes and dollar ranges) and a collapsed "Upgrading to 9.5x" note covering the GPT-5.4→5.5 default shift and the claude-sdk/Fable 5 env var families.
+- **Tangle contextual review correction loop** (#593, community contribution by @Jhacarreiro; hardening by maintainers): after the tangle validation gate, a contextual code review runs against the develop diff and blocking findings feed a correction loop (delta → single-finding → cleanup-and-fix strategies) until blockers reach zero or a guard trips. Guards: convergence limit (`OCTOPUS_TANGLE_CONVERGENCE_NO_PROGRESS_ROUNDS`, default 3 no-progress rounds), stall watchdog (`OCTOPUS_TANGLE_CORRECTION_STALL_WINDOW`, default 1800s), opt-in bounded mode (`OCTOPUS_TANGLE_REVIEW_CORRECTION_MODE=bounded` + `OCTOPUS_TANGLE_REVIEW_CORRECTION_ROUNDS`), and a maintainer-added absolute round ceiling (`OCTOPUS_TANGLE_CORRECTION_HARD_CAP`, default 10, applies in both modes, 0 opts out) so the default unbounded mode cannot spin paid provider calls indefinitely. The loop was extracted into `tangle_contextual_review_gate()` and covered by behavioral tests (`tests/unit/test-tangle-correction-loop-behavior.sh`) driving stubbed rounds and asserting round counts and exit codes.
+
+### Changed
+
+- **sync-marketplace.sh now derives the marketplace blurb from `plugin.json`'s description** instead of from marketplace.json's own previous description. The old self-referential read meant the summary could only change via a hand-edit to a file documented as never-hand-edit, and its strip regex missed hand-written "N agents," fragments — which is how the v9.50/v9.51 marketplace shipped a doubled counts sentence. The strip now also removes agents/personas count fragments.
+- **README correctness sweep**: provider count updated to ten (Grok/xAI seat from v9.48 and the claude-sdk seat from v9.50 were missing), Codex model references updated from GPT-5.4 to GPT-5.5 (matches the resolver default), Claude Code minimum corrected from v2.1.14+ to v2.1.50+ (matches plugin-manifest compatibility), three dead doc links removed (FEATURE-GAP, PLUGIN-ARCHITECTURE, CLI-REFERENCE), the hardcoded "117 suites passing" badge dropped, and the Documentation section now links TROUBLESHOOTING, PROVIDERS, DEVELOPER, SCHEDULER, PRIVACY, SECURITY, and RELEASING.
+- **RELEASING.md §2 now leads with `scripts/release.sh`** (the bump script existed but the doc described a manual table); release.sh additionally bumps the `routines.json` `$comment` version it previously missed.
+- **Repo-rules meta-audit** (CLAUDE.md/AGENTS.md): marketplace-blurb rule now states the plugin.json source of truth; exec-bit rule notes that local test runs chmod fixtures; the beads memory ruling clarifies that this repo's Session Completion push mandate is the explicit authority bd's conservative profile asks for.
+- **Timeout model for supervised long dispatches** (#593): design-review ceremony, ink delivery review, tangle decompose/reformat, and the new correction loop now dispatch with `timeout_secs=0` (no wall clock) under heartbeat/stall supervision; `run_with_timeout` gained an explicit `0 = unlimited` bypass covering both the GNU-timeout and in-process fallback paths. Per-provider caps (e.g. `OCTOPUS_GEMINI_TIMEOUT`) still apply.
+- **`code-review` on a clean tree now exits non-zero** (#593): `review_run` returns 1 when there is no diff to review ("nothing to review" is no longer a pass). Scripts that ran `octo code-review` on clean trees and relied on exit 0 must handle exit 1.
+
+### Fixed
+
+- **tests/smoke/test-monolith-guard.sh cap tightened from 22,600 to 3,400 lines** — orchestrate.sh is 3,123 lines post-decomposition, so the old cap could never trip and the guard was vacuous.
+- **docs/README.md command count corrected** from 47 to 50.
+- **Review aggregation and progress supervision hardened** (#592, community contribution by @Jhacarreiro; maintainer takeover to land): review rounds now run without a wall-clock cap under progress-stall supervision (`OCTOPUS_REVIEW_STALL_WINDOW`, default 1800s), Round 1 codex empty-output-with-reconnect failures retry once, findings extraction tolerates prose-wrapped JSON, and severity counting is pipefail-safe. Maintainer fixes on top of the contribution: the stall fingerprint is scoped to each agent's own artifacts (previously it hashed all of RESULTS_DIR, so any concurrent activity reset every agent's stall timer); stall kills walk the full descendant tree (a single-level `pkill -P` could orphan the grandchild provider CLI mid-billing); and the findings extractor prefers the last non-empty findings array so a provider echoing the prompt's `{"findings": []}` format example cannot erase real findings. The `timeout_secs=0` contract this relies on is the `run_with_timeout` bypass that shipped with #593.
+
+### Removed
+
+- Dead one-shot scripts with zero references: `scripts/integrate-v2.1.20-features.sh`, `scripts/test-v7.13.0-features.sh`, `scripts/apply-octopus-theme.js`.
+
+## [9.51.0] - 2026-07-09
+
+### Added
+
+- **RELEASING.md**: ordered release checklist covering every version-string location, the derived-artifact generators, CI-parity validation, exec-bit checks, fork-PR run approval, the tag-on-merge-commit rule, and GitHub Release creation. Encodes the three CI rounds the v9.50.0 release burned on undocumented generators.
+- **docs/PROVIDERS.md**: provider wiring map. Seven wiring points across five files per provider, with anchors and the traps that have bitten real PRs (case-glob ordering, the two provider-routing whitelists, exec bits, the stdin shim contract, secret-scanner quoting, nested-session markers).
+- **`make sync` / `make sync-check` / `make ci-local`**: one target to regenerate all derived artifacts, one to verify them, and a CI-parity target that mirrors the required checks plus CI-only verifications so local green predicts remote green.
+- **Executable-bit lint in CI** (Portability Lint job): PRs fail if tracked files change mode vs the base branch; the `allow-mode-change` PR label bypasses intentional changes. Root cause class of PR #579's "Permission denied" failures, now caught pre-merge.
+- **"Repo Orientation for Agents" section in CLAUDE.md** (mirrored in AGENTS.md): derived-artifacts table, hard rules distilled from real CI failures, and a memory ruling for the beads blocked-writes failure mode (do not migrate; record in handoff and flag).
+- **Fable 5 dispatch profile (`skills/blocks/fable5-prompting.md`)**: prompting rules for `claude-fable-5` pins, distilled from Anthropic's Fable 5 prompting guide and the fable5-optimizer project. Covers prompt anti-patterns (reasoning-echo asks trigger the `reasoning_extraction` refusal; token countdowns; aggressive MUST/CRITICAL emphasis; micromanaged step plans), `high`-effort discipline (the Opus 4.8 `xhigh` phase table does not carry over), refusal fallback to Opus 4.8, and judgment-vs-mechanical seat routing with a risk-surface escalation list. Wired into CLAUDE.md (cost + effort sections), `skill-meta-prompt` (model-specific prompt adjustments), `octopus-security-audit` (never dispatch security passes to Fable 5 — its safety classifiers can refuse adversarial phrasing), and `model-cost-compare` (risk-surface escalation step, Fable 5 security guardrail).
+- **Fable 5 mode auto-enforcement (`scripts/lib/fable5.sh`)**: detecting a `claude-fable-5` pin (`OCTOPUS_OPUS_MODEL` or `OCTOPUS_CLAUDE_SDK_MODEL`) now auto-enables three guards with a one-line banner. (1) Security reroute: the model resolver and `claude-opus` dispatch swap `claude-opus-4.8` in for Fable 5 on security dispatches (security-auditor role, squeeze workflow) — its safety classifiers can refuse adversarial security phrasing. (2) Effort clamp: `get_effort_level` clamps `xhigh`/`max` to `high` for opus-seat Fable pins, including explicit `OCTOPUS_EFFORT_OVERRIDE` values (Fable 5 effort applies per tool call; higher settings widen scope at 2x cost without extending runs). (3) Refusal retry: `claude-sdk-exec.sh` retries a refused/empty Fable 5 dispatch once on `claude-opus-4-8` (`OCTOPUS_FABLE5_NO_RETRY=1` opts out), mirroring the agy silent-empty replay. Master switch `OCTOPUS_FABLE5_MODE=auto|off|on`. A new SessionStart hook (`hooks/fable5-inject.sh`) injects the dispatch profile summary when a pin is detected.
+
+### Fixed
+
+- **`OCTOPUS_OPUS_MODEL=claude-fable-5` now reaches the dispatched model flag.** The `claude-opus` dispatch case always passed the bare `--model opus` alias, which the host resolves to its default Opus — so a Fable 5 pin changed cost labels and resolver output but never the model actually dispatched (the claude-sdk seat was the only real Fable 5 path). The dispatch command now emits `--model claude-fable-5` for pinned non-security dispatches and `--model claude-opus-4-8` for security dispatches.
+
+## [9.50.0] - 2026-07-08
+
+Claude Code 2026 compatibility layer release.
+
+### Added
+
+- **Routine manifest (`.claude-plugin/routines.json`)**: saved automation configs for Claude Code routines. Ships four routines (nightly security audit, weekly provider health, weekly usage digest, PR-open review), each mapping a schedule or GitHub event trigger to an `/octo:` command with an explicit provider roster and cost note. All routines ship disabled; enable per-project.
+- **SubagentStop gate hook (`hooks/subagent-stop-gate.sh`)**: runs after `subagent-result-capture.sh` in the SubagentStop chain. Attributes each finished subagent to its provider, computes a 0-100 quality heuristic, appends a JSONL usage record to `~/.claude-octopus/usage/subagent-usage.jsonl`, and pre-screens council verdict blocks for a recognizable verdict token. Non-blocking by default; `OCTOPUS_SUBAGENT_GATE_STRICT=true` blocks malformed verdicts and summaries below the `OCTOPUS_SUBAGENT_MIN_QUALITY` floor before they reach the lead.
+- **`/octo:usage` cost attribution**: new command backed by `scripts/helpers/usage-report.sh`. Reads usage JSONL records plus `results/**/summary.json` roster artifacts and produces a per-provider, per-skill, and per-MCP-server token and cost breakdown in Claude Code's `/usage` schema (`claude-code/usage-v1`), as a table or JSON.
+- **Worktree background isolation opt-out**: `OCTOPUS_WORKTREE_BG_ISOLATION=false` (mirror of Claude Code's `worktree.bgIsolation` session flag) disables worktree cloning for background agents; detection downgrades `SUPPORTS_WORKTREE_ISOLATION` and `hooks/worktree-setup.sh` short-circuits, so fast direct-edit runs skip the clone entirely. Default remains isolation on.
+- **Claude Agent SDK provider seat (`claude-sdk`)**: setting `CLAUDE_SDK_API_KEY` unlocks a new seat routed through `scripts/helpers/claude-sdk-exec.sh`, giving workflows Opus 4.8 and the 1M-token context window independent of the host session. Prefers the `claude-agent` SDK CLI, falls back to headless `claude --print` with session markers stripped. Model via `OCTOPUS_CLAUDE_SDK_MODEL` (default `claude-opus-4-8`); wired through dispatch, model resolution, allowlists (`OCTOPUS_CLAUDE_SDK_ALLOWED_MODELS`), routing, detection, and health checks.
+- **Skills starter pack (`skills/octopus-starter-pack/`)**: four opinionated starter skills: `debate-kickoff` (frame a decision as a seated multi-model debate), `council-verdicts` (interpret quorum, dissent, and cross-lab validity of a council run), `provider-health` (one-screen availability/auth/cost posture summary), and `model-cost-compare` (map a task to the cheapest adequate seat with a price spread).
+- **Plugin browse manifest (`.claude-plugin/plugin-manifest.json`)**: `/plugin browse` metadata (2026-06 schema) with projected context cost (about 4.2K tokens baseline), component inventory (50 commands, 42 agents, 58 skills, 20 hook events, 4 routines), and Claude Code compatibility range.
+- **Antigravity adapter (`agy-exec.sh`) hardened**: `OCTOPUS_AGY_SANDBOX=off` drops the `--sandbox` restriction, `OCTOPUS_AGY_INCLUDE_DIRS` (comma-separated) whitelists extra read dirs via `--add-dir`, and a single replay-from-stdin retry recovers a silent-empty success (opt out with `OCTOPUS_AGY_NO_RETRY=1`). The adapter stays a thin, env-driven wrapper — no model-fallback chain or error classifier.
+
+### Changed
+
+- **SubagentStop is now a two-hook chain**: `subagent-result-capture.sh` (result file bridging) then `subagent-stop-gate.sh` (quality/cost/verdict gate). Existing capture behavior is unchanged.
+- **Plugin metadata refreshed across all manifests** (`.claude-plugin`, `.codex-plugin`, `.cursor-plugin`, `.factory-plugin`): descriptions and component counts now reflect 50 commands, 42 agents, and 58 skills.
+
+### Fixed
+
+- **Session `results`/`logs`/`plans` dirs are now created early** in `orchestrate.sh`, before any subcommand dispatches provider seats. Codex/agy seats write into `RESULTS_DIR` during dispatch and previously crashed when it was missing. The `mkdir -p` is cheap and idempotent.
+- **Ollama and Codex OSS models can no longer trigger an unbounded auto-pull on fallback.** Both `ollama run <model>` and the Codex CLI's built-in OSS/local-model handling silently download a missing model, so a provider-failure cascade could kick off an unbounded multi-GB pull with no human in the loop (observed: a ~42 GB pull). All Ollama dispatch now routes through a fail-closed shim (`scripts/helpers/ollama-run.sh`), and Codex dispatch for OSS models (e.g. `gpt-oss:*`) routes through `scripts/helpers/codex-run.sh`; both share the guard in `scripts/helpers/ollama-pull-guard.lib.sh` and refuse to pull an absent model unless `OCTOPUS_OLLAMA_ALLOW_PULL=true`, capping an allowed pull at `OCTOPUS_OLLAMA_MAX_PULL_GB` (default 20). Cloud Codex models (e.g. `gpt-5.x`, `o3`, `gpt-4.1`, `gpt-5.2-codex`) are unaffected and bypass the guard.
+- **The agy council seat now records its real model instead of `"default"`.** `agy-exec` runs `agy --print` with `--model default` (agy uses whatever is picked in its own `/model` UI), so the roster artifact and preflight banner logged the opaque string `default` for the agy seat — making a Codex+agy panel's cross-lab-vs-same-lineage status unverifiable from `summary.json`. New `agy_current_model()` (`lib/providers.sh`) honors `OCTOPUS_AGY_MODEL`, else resolves the selection from `~/.gemini/antigravity-cli/settings.json`, else fails safe to `default (unresolved)`; it's wired into `council_roster_entry_json` and the preflight banner. Purely diagnostic — never gates logic, and guarded with `declare -f` so standalone runs fall back to prior behavior.
+
+## [9.48.0] - 2026-07-06
+
+### Added
+
+- **xAI Grok CLI as a first-class provider** (#542). New `grok` provider (`xai` family): stdin dispatch via `scripts/helpers/grok-exec.sh`, `scripts/lib/grok.sh`, detection, routing, doctor checks, fleet inclusion in `build-fleet.sh`, and model-config catalog entries. Available in debate/brainstorm alongside the other providers.
+
+### Fixed
+
+- **`atomic_json_update` recovers from a crashed lock holder** (#557, #559). The `mkdir`-based lock now records the holder PID + acquisition timestamp; a contender reclaims a lock whose holder is gone (dead PID) or that has outlived `OCTO_LOCK_STALE_SECS` (default 30s), via a race-safe grab-verify-restore that always respects a live holder. Previously a SIGKILL/crash left the lock dir behind and blocked every later caller until timeout.
+- **Running the unit suite no longer deletes tracked repo files** (#563). `test-hook-err-traps.sh` invoked every hook with `CLAUDE_PLUGIN_ROOT` and CWD pointed at the live checkout, so a hook resolving a path/glob from either (e.g. `session-end.sh`'s CWD-scan memory-dir fallback) could delete `Makefile`/`LICENSE`/`GOALS.md`/`PRODUCT.md`. Hooks now run against a disposable tree copy with a throwaway CWD and `CLAUDE_PROJECT_DIR`; a sentinel fails the suite if a tracked file ever disappears.
+- **Late tangle completions are reconciled on their final status** (#560). Success detection now reads the latest `## Status:` line (so a task that completes late and appends a newer status is judged on its final state, not an earlier SUCCESS) while keeping the blocker-output guard.
+- **Corrected a stale cache-key sanitization test assertion** (#583) that reported a false failure after the resolver moved to sanitizing the canonical provider name.
+
+## [9.47.2] - 2026-07-06
+
+### Fixed
+
+- **Qwen/OpenCode/Agy dispatch gaps closed** (#566, #568). Qwen dispatch now passes the required `--auth-type`, OpenCode model resolution is wired up (no more hang), and the provider smoke test actually exercises Agy.
+- **`agy` is the research-phase default** (#569). Research routing now selects agy (the Google seat) where it previously fell through, aligning research with the rest of the workflow routing.
+- **Codex plugin marketplace name mismatch fixed** (#570). The `.codex-plugin` manifest name now matches what the release/validation scripts expect, so plugin-name validation passes.
+- **Tangle dispatch and quality gates hardened** (#571) and **hard-gate failures now retry** (#572). Tangle dispatch runs with stdin isolation and the quality gates retry transient hard-gate failures instead of aborting the run.
+- **`session-end.sh` sentinel cleanup guarded against empty-match CWD deletion** (#567). A cleanup glob that could match nothing and delete the working directory is now guarded, preventing accidental repo-root deletion.
+- **Council quorum now gates on distinct APPROVING vendors, not just distinct responders.** Each non-chair seat's response must end with `VERDICT: APPROVE|REVISE|BLOCK`; the runner reads the last such line (missing/ambiguous → REVISE, fail-safe). A vendor counts toward quorum only if it responded substantively **and** none of its seats dissented, so a split double-seated vendor (one seat APPROVE, one REVISE) can no longer cherry-pick its approving seat into a passing quorum. Standard/deep now require ≥2 distinct approving vendors; `summary.json` adds `distinct_approving_providers` + `approving_providers`. Fixes false `met:true` in the 2-vendor era (sail-cruisey #1992/#1994/#1983). Quick depth (required 1) is unchanged. Layers on the distinct-responder/substantive guard below.
+
+- **Council advice quorum now requires ≥2 DISTINCT providers with substantive responses.** Previously `quorum.met` for `standard`/`deep` depth was true as long as `received_non_chair >= required`, counting a seat on dispatch exit code alone — so a single-vendor result (e.g. 3× codex because agy/gemini returned empty) and even seats that exit 0 while reviewing nothing (the host self-dispatch stub, empty/~1B provider returns) all counted, producing false `met:true`. Now each responding seat's provider is recorded only when its response is non-empty **and** substantive (rejecting the host stub and short "cannot access the files" degenerate reviews, brevity-gated so long real reviews pass); gate-depth councils require ≥2 distinct providers, and `summary.json` reports `distinct_providers` + `responding_providers`. `quick` depth (required 1) is unchanged.
+
+## [9.47.1] - 2026-07-02
+
+### Fixed
+
+- **`atomic_json_update` is now race-safe under concurrent agent status writes** (#557, #558). Concurrent writers no longer clobber each other's updates when multiple agents report status at once; the read-modify-write is serialized under a lock. (A follow-up, #559, tracks stale-lock recovery for crashed lock holders.)
+- **agy model pins validate dynamically** (#555). Model-pin validation queries the available agy model set instead of a hardcoded list, so a valid pin is no longer rejected when the catalog changes.
+- **Late tangle completions retry with feedback** (#546). Tangle output failures that arrive after the initial window are retried with the failure feedback attached, instead of being dropped.
+
+## [9.47.0] - 2026-07-01
+
+### Added
+
+- **`review.finding` and `synthesis` lifecycle events** complete the #498 event vocabulary (the other two, `provider.selected` and `circuit-breaker.*`, shipped in 9.46.0). `review.finding` fires once per Round 1 code-review finding with `provider`, `severity`, `message`, and `round` attributes, capturing per-provider attribution before findings are merged and de-duplicated. `synthesis` fires when a synthesis artifact is produced (attributes `phase`, `provider`, `count`), wired into the review/deliver workflow (`review.sh`, success branch only) and the parallel aggregator (`parallel.sh`, attributing the provider that actually produced the artifact). `octo-hud` renders both, coloring `review.finding` by severity. The `synthesis` event also fires from the council chair-synthesis success path (`council.sh`, attributing the chair member's provider) and the debate final synthesis (`debate.sh`, attributing the moderator or quorum path), each guarded against the fallback branches so attribution is never wrong. This fully closes #498. (#498)
+
+### Fixed
+
+- **`/octo:plan` now signals degradation when native plan mode blocks artifact writes** (#514, #515). When plan mode restricts Write/Edit, `/octo:plan` emits a visible "OCTO PLAN DEGRADED" warning and skips the intent-contract and plan-save steps (which would silently fail) instead of falling through to generic native planning. The command's `plan.md` and the `plan-mode-interceptor.sh` hook now prescribe verbatim-matching warning text.
+
+### Changed
+
+- **CI: bump `actions/checkout` from 6 to 7** (#531).
+
+## [9.46.0] - 2026-07-01
+
+### Added
+
+- **Antigravity CLI (`agy`) is now the default Google seat** across all multi-LLM workflows, replacing the sunset Gemini CLI (#524). Probe, discover, define, develop, deliver, parallel map/reduce, and Double-Diamond synthesis paths now route Google work to `agy`.
+- **Agent lifecycle events** emitted across dispatch for observability (#511), plus `provider.selected` and circuit-breaker lifecycle events. `OCTO_EVENT_LOG` telemetry is enabled by default in `orchestrate.sh`.
+- **`octo-hud` local event-stream monitor** renders the `OCTO_EVENT_LOG` stream without scraping the terminal (#510).
+- **Council seats every available provider org** rather than just two (#513), and **qwen is now a seatable council provider org** (#520).
+- **GA `gemini-3.5-flash` and `gemini-3.1-flash-lite`** added to the model catalog.
+
+### Changed
+
+- **Doctor surfaces the fix inline by default.** `warn`/`fail` rows now always print their actionable detail (e.g. `Run: ollama serve`) without requiring `--verbose`; `pass` rows stay quiet unless `--verbose`.
+- **Setup dashboard shows concrete next-step commands** for unconfigured providers (codex/gemini/perplexity/cursor-agent), so a fresh install tells the user exactly what to export or install.
+
+### Fixed
+
+- **gemini-image migrated off the deprecated `gemini-3-pro-image-preview`** before Google's 2026-06-25 shutdown (#493, oco-803). Image routing now defaults to the GA `gemini-3-pro-image` (Nano Banana Pro); `gemini-3.1-flash-image` (Nano Banana 2, fast tier) added to the catalog; the preview entry is retained with `deprecated` status so pinned configs degrade gracefully. Cost table and `octo-model-config` catalog refreshed.
+- **API-key providers no longer dispatch into a quota-dead key** (#494, oco-cbb). Perplexity payloads now cap output via `OCTOPUS_PERPLEXITY_MAX_TOKENS` (default 4096). New opt-in proactive health probe (`octo_provider_probe`, gated by `OCTOPUS_PREFLIGHT_PROBE=1`) validates perplexity/openrouter keys before dispatch and marks the provider `degraded` on 401/402/429; it fails open on transient network errors so a flaky connection never hides a working provider.
+- **Parallel probe path skips quota-dead providers** (#495). `auto-route.sh` consults `octo_quota_is_dead` before adding a provider to the fan-out, so a perplexity 401 or gemini capacity-exhaustion this session no longer re-dispatches and burns time.
+- **Provider reliability bundle**: Gemini research-phase timeout controls, parallel probe fast-fail on quota and terminal errors, plus related hardening (#496).
+- **Quota watcher narrowed to terminal-only errors** with a two-poll grace window (#516, #517); **Gemini retryable-throttle lines are excluded from quota fast-fail** (#536, #537).
+- **First-run provider health hardened**; setup dashboard shows the accurate `agy` model when `OCTOPUS_AGY_MODEL` is set; `agy`/`agy-research`/`antigravity` added to the bare-provider skip-list in routing.
+- **Tangle workflow hardening**: honor the coding-agent override (#543), recover tasks missing done markers (#545), honor decompose routing on reformat retry (#547), and retry output failures with feedback.
+- **Quality retry honors env configuration and supports unlimited retries** (#548); **provider history injection can now be disabled** (#544).
+- **agy migration completed** in the parallel aggregator and probe/discover dispatch (#538) and in `parallel.sh` `map_reduce`/`fan_out` (#539).
+- **Hardened OpenAI-compatible agent** dispatch args (#535) and transport (#512); `octo_write_stable_script_shim` refuses self-targeting writes; `[REASONING]` subtask routing gains an availability check and fallback.
+- **Docs**: fixed stale `tests/run-pre-push.sh` references in CONTRIBUTING and the PR template (#505, #541); corrected the README version badge.
+
+## [9.45.0] - 2026-06-14
+
+### Added
+
+- **Antigravity CLI (`agy`) as a first-class provider.** Stdin dispatch via `scripts/helpers/agy-exec.sh` (`agy --print --sandbox --print-timeout`), detection, routing, doctor checks, env-overridable version floor (`OCTO_AGY_MIN_VERSION`), the 🧭 indicator, and `OCTOPUS_AGY_MODEL`/`OCTOPUS_AGY_PRINT_TIMEOUT` controls. Minimal `env -i` isolation with opt-in `OCTOPUS_ALLOW_FULL_AGY_ENV` (#489, closes #423).
+- **Generic OpenAI-compatible tool-loop agent** (`openai-compatible-agent`) for any OpenAI-API-compatible endpoint (#465).
+- **Tangle agent routing overrides** via `octopus_agent_override` and `OCTOPUS_TANGLE_DECOMPOSE_AGENT`/`OCTOPUS_TANGLE_DECOMPOSE_FALLBACK_AGENT`/`OCTOPUS_TANGLE_AGENT` (#488, was #462).
+- **`OCTOPUS_CODEX_BIN` and `OCTOPUS_CLAUDE_BIN` overrides** to point Octopus at codex-/claude-compatible wrappers without replacing the binary on PATH (#453, #487).
+
+### Changed
+
+- **Codex `danger-full-access` sandbox mode** is now permitted when explicitly selected (#470).
+- **Gemini skip-trust** flag is applied only on CLI versions that support it (#461).
+
+### Fixed
+
+- Preserve Codex provider config (`CODEX_HOME` and the configured `env_key`) through credential-isolated dispatch for `codex*` agents (#452).
+- Tangle decomposition now reformats unsafe decompositions and fails closed (no monolithic direct fallback) instead of silently degrading (#459); same-subtask write-scope overlaps are ignored rather than rejected (#486, was #460).
+- Four Linux fresh-install bugs: CWD-relative `OCTO_ROOT`, doctor abort on stale check, missing council `RESULTS_DIR`, and a self-symlink loop (#482, closes #481).
+
+## [9.44.1] - 2026-06-14
+
+### Added
+
+- `scripts/helpers/audit-provider-contracts.sh` release-gate audit for provider drift: provider states must stay `available|missing|degraded`, qwen auth must fail closed when OAuth cannot be validated, stale free-tier setup guidance must not reappear, and provider version floors must remain env-overridable.
+- `scripts/lib/events.sh` opt-in JSONL event emitter plus `check-providers.sh` `provider.status` events when `OCTO_EVENT_LOG` is set. Normal provider-check stdout is unchanged.
+- `docs/roadmaps/2026-06-13-next-minor-major.md` captures the June 2026 Claude Code plugin research and maps it into the next minor and major Octopus direction.
+
+### Fixed
+
+- Pass `GOOGLE_CLOUD_PROJECT`, `GCLOUD_PROJECT`, and `CLOUDSDK_CORE_PROJECT` through Gemini environment isolation so Vertex-backed Gemini auth keeps its project context (#472).
+- Lower the Gemini CLI version floor to `0.45.0` and honor `OCTO_*_MIN_VERSION` overrides for provider checks (#475).
+- `detect_providers` no longer treats a bare qwen OAuth file as dispatchable when the qwen auth validator is unavailable; it reports `oauth-unvalidated` instead. Setup guidance now points users at `QWEN_API_KEY` or Coding-Plan auth rather than the retired free tier.
+- `scripts/lib/events.sh` no longer sets shell options at the top, so sourcing it no longer leaks `set -e`/`pipefail` into the calling shell (#479).
+
+## [9.44.0] - 2026-06-10
+
+
+### Added
+
+- **Claude Fable 5 (Mythos-class) as opt-in premium Claude model.** `claude-fable-5` added to the model catalog and pricing tables ($10/$50 per MTok, 1M context, 128K output). Opt in by pinning `OCTOPUS_OPUS_MODEL=claude-fable-5`; never auto-selected because it costs 2x Opus 4.8 and Anthropic retains prompts/outputs up to 30 days for safety classifiers.
+- **GPT-5.5 and GPT-5.5 Pro in the model catalog** with June 2026 pricing ($5/$30 and $30/$180 per MTok).
+
+### Changed
+
+- **GPT-5.5 is the new Codex premium default.** Hard-coded resolver fallbacks, role-to-agent mappings (architect, reviewer, implementer), provider-routing defaults, and config templates move from `gpt-5.4` to `gpt-5.5`. `gpt-5.4` remains in the catalog and is still selectable.
+
+### Fixed
+
+- **Duplicate case arms made pricing/catalog entries unreachable.** `gpt-5.4-mini` was listed twice in `models.sh` and `cost.sh`; `cost.sh` also had a duplicate `o3` arm with a conflicting price and a stray duplicate `gpt-5.4` arm. Dead arms removed.
+- **`test-command-frontmatter.sh` always exited 0.** It tracked failures in its own counter but never propagated them, so three red assertions (doctor.md registration) shipped unnoticed. The test now exits 1 when any check fails.
+- **Native `/doctor` was shadowed again.** `.claude/commands/doctor.md` and its plugin.json registration (regressed in 6e0cb4a) are removed, restoring the v9.41.0 decision to keep diagnostics in `skills/skill-doctor` and `orchestrate.sh doctor`. OpenClaw registry rebuilt; README command count updated.
+
+## [9.43.0] - 2026-06-09
+
+
+### Fixed
+
+- **Expired-token providers were dispatched and could hang the workflow** (oco-dar). The pre-flight check only verified a provider binary existed, not that its auth was valid, so qwen — whose free OAuth tier was discontinued 2026-04-15 and whose token had expired — was dispatched and launched an interactive browser device-auth flow that wedged a probe for ~10 minutes. Now: (1) a shared expiry-aware validator (`octo_oauth_token_valid`) parses `expiry_date` and fails closed; (2) `qwen_auth_method` reports `oauth-expired` for a stale token and recognizes API-key / OpenAI-compatible Coding-Plan env auth; (3) `qwen_is_usable` gates pre-flight, fleet selection, embrace dispatch, and direct qwen execution; (4) `check-providers.sh` reports `qwen:degraded` (skipped, with a reason) instead of `available`; (5) `run_with_timeout` escalates SIGTERM to SIGKILL (`-k 10`) and sweeps child processes so a TERM-ignoring tree dies at the cap; (6) qwen dispatch sets `NO_BROWSER=1` as defense-in-depth. Gemini is intentionally not expiry-gated; its token refresh is reliable and the timeout-kill hardening covers it. Doctor and setup guidance now point at API-key / Coding-Plan auth, not the dead browser OAuth flow.
+- **Qwen doctor version floor matched the old Octopus feature version instead of the qwen CLI version scheme** (oco-7ri). `OCTO_QWEN_MIN_VERSION` now defaults to `0.14.0`, so doctor can reach auth-state guidance for current qwen-code installs instead of always reporting `0.x` as outdated.
+- **Providers dispatched from the plugin directory instead of the user's project** (bug report 260609). Command docs instructed `cd "${HOME}/.claude-octopus/plugin"` before `orchestrate.sh`, so `PROJECT_ROOT=$PWD` pointed at the plugin checkout and every provider sandbox (codex workdir, gemini workspace, copilot, claude subagents) could not read project files. Docs now invoke `orchestrate.sh` by absolute path from the project directory; `orchestrate.sh` falls back to `CLAUDE_PROJECT_DIR` (or warns) when invoked from inside the plugin install; `OCTOPUS_PROJECT_DIR` added as an explicit override; `probe-single` now cds to `PROJECT_ROOT` before dispatch.
+- **Bare provider names in `routing.roles`/`routing.phases` leaked as model names.** `"researcher": "perplexity"` produced `codex exec --model perplexity` (400 on ChatGPT accounts) and a gemini model 404 plus fallback retry. The model resolver now treats bare provider names as provider routes and falls through to the provider's own default model.
+- **Spawned `claude --print` subagents could not Read files** ("Read is blocked in the current permission mode"). Claude dispatch commands now pre-approve `Read,Glob,Grep`; implementer/developer roles additionally run with `--permission-mode acceptEdits` and `Edit,Write`.
+- **`probe-synthesis-*.md` never written when a straggler stream blocked the wait loop.** `display_rich_progress` now has a watchdog (`TIMEOUT` + `OCTOPUS_PROGRESS_GRACE`, default 120s grace) that terminates stragglers and proceeds to synthesis with completed results.
+- **Perplexity failures were silent** (empty result file, "(no output captured)", no error). Curl failures, timeouts, and empty or contentless responses now log errors and fail the agent; the empty-output placeholder names the provider and points at `doctor`.
+
+### Added
+
+- `OCTOPUS_GEMINI_INCLUDE_DIRS` — comma-separated directories appended to gemini dispatch as `--include-directories`, for prompts referencing files outside `PROJECT_ROOT` (e.g. `/tmp` staging dirs).
+- `tests/unit/test-orchestrate-cwd-routing.sh` — behavioral coverage for cwd resolution, role-routing model leaks, claude permission flags, gemini include dirs, and the docs cd-pattern regression.
+- `tests/unit/test-provider-auth-validity.sh` — coverage for the expiry validator, qwen `oauth-expired` detection, `check-providers.sh` degraded state, API-key precedence, and the `run_with_timeout` SIGKILL-escalation regression (oco-dar).
+
+### Changed
+
+- Setup/usage help now documents auth env vars for all providers (`PERPLEXITY_API_KEY`, `OPENROUTER_API_KEY`, `QWEN_API_KEY`), not just `OPENAI_API_KEY`/`GEMINI_API_KEY`. qwen entry notes the Coding-Plan path and the OAuth free-tier EOL.
+
+## [9.42.3] - 2026-06-03
+
+### Changed
+
+- Close Beads release sync issue
+
+## [9.42.2] - 2026-06-03
+
+### Changed
+
+- Sync Beads remote metadata
+
+## [9.42.1] - 2026-06-03
+
+
+### Fixed
+
+- Honor global `--dry-run` flags placed after the command name so dry-run `probe`/`council` invocations do not spawn live provider helpers.
+- Register packaged `/octo:doctor` and `/octo:preflight` command files and update release validation for the plugin namespace.
+- Clean up `CLAUDE_CODE_DISABLE_CRON` after parallel execution, matching the existing embrace workflow cleanup.
+
+### Changed
+
+- Refresh README, packaged README, marketplace, and adapter command-count strings from the current plugin manifest during release so command/skill/persona counts do not drift.
+- Update legacy root tests to resolve current directory-style skill entries and assert current probe synthesis behavior, marketplace parsing, and frontmatter stripping.
+
+## [9.42.0] - 2026-06-02
+
+
+### Added
+
+- Claude Code v2.1.154-2.1.157 feature flags: `SUPPORTS_OPUS_4_8`, `SUPPORTS_DYNAMIC_WORKFLOWS`, `SUPPORTS_LEAN_SYSTEM_PROMPT_DEFAULT`, `SUPPORTS_AGENT_SETTINGS_AGENT_FIELD`, `SUPPORTS_SKILLS_AUTO_PLUGIN_LOAD`, `SUPPORTS_ENTER_WORKTREE_SWITCH`, and `SUPPORTS_TOOL_DECISION_PARAMS_OTEL`.
+- Model catalog and pricing entries for `claude-opus-4.8` and `claude-opus-4.8-fast`.
+- `/octo:council` flags for explicit single-model simulation (`--simulate` / `--single-model`), research-first handling, and corpus retention mode.
+
+### Changed
+
+- Default `claude-opus` routing now prefers Opus 4.8 on Claude Code v2.1.154+, then falls back to Opus 4.7 and 4.6.
+- Opus effort policy now follows the 4.8 default: `high` for ordinary work, `xhigh` for complex implementation, deep review, and long-running asynchronous workflows. This phase-aware mapping applies to every supported Opus version (4.8, 4.7, and 4.6 on hosts that expose effort control), replacing the previous behavior of forcing `xhigh` on all phases; research and scoping phases now run at `high` instead of `xhigh`.
+- Behavioral test coverage for the routing change: `tests/unit/test-opus-48-routing.sh` asserts `opus_default_model` version preference and override, the `claude-opus-fast` wire flag, and the phase-to-effort mapping (the existing detection test only checked flag wiring).
+- Fast Opus guidance and pricing now distinguish Opus 4.8 fast mode (2x standard, $10/$50 MTok) from legacy Opus 4.6 fast mode (6x standard, $30/$150 MTok).
+- `/octo:council` now requires the real runner by default, records execution/research/corpus mode in artifacts, writes research-first context before fanout, appends durable corpus entries when requested, and reserves single-model simulation for explicit requests only.
+- `/octo:doctor` now surfaces Opus 4.8, dynamic workflows, `.claude/skills` plugin auto-load, and EnterWorktree switching when the installed Claude Code version supports them.
+- Documentation now routes huge single-Claude migrations toward native Claude Code dynamic workflows and keeps Octopus positioned for multi-provider disagreement, councils, adversarial review, and validation.
+
+## [9.41.2] - 2026-05-28
+
+### Fixed
+
+- Add `--trust --output-format text` to cursor-agent smoke test so provider health checks pass in untrusted workspaces, aligning the smoke path with the dispatch path in `cursor-agent.sh` (#427, closes #426).
+
+## [9.41.1] - 2026-05-27
+
+### Fixed
+
+- Add the Gemini model flag to debate skill calls so selected Gemini models are honored (#422).
+
+### Changed
+
+- Include provider CLI version-floor enforcement and onboarding preflight/setup helpers merged after v9.41.0 (#419, #420).
+
+## [9.41.0] - 2026-05-24
+
+### Added
+
+- Promote `/octo:council` to a first-class workflow in plugin metadata and README docs.
+
+### Fixed
+
+- Stop registering `doctor` as an Octopus slash command so Claude Code's native `/doctor` remains accessible.
+
+## [9.40.3] - 2026-05-24
+
+### Changed
+
+- Extract `/octo:council` benchmark routing helpers into `scripts/lib/benchmark-routing.sh` and load them through the orchestrator and direct council library usage.
+- Score council role fit from `agents/config.yaml` capability and expertise tags before falling back to persona-family heuristics.
+- Document the v1 MCP/OpenClaw decision as local adapter passthrough rather than a hosted council service.
+
+### Fixed
+
+- Surface provider-diversity and chair-fallback council warnings in CLI output, with regression coverage.
+- Keep fixture-mode critique dispatch consistent with `OCTOPUS_COUNCIL_FAIL_PERSONAS`, with regression coverage.
+
+## [9.40.2] - 2026-05-23
+
+### Fixed
+
+- Generate `/octo:council` synthesis through chair dispatch using response, critique, and revision artifacts instead of writing a static placeholder synthesis.
+- Re-check `/octo:council` budget caps before critique, revision, synthesis, and implementation planning so a run stops before the next phase would exceed `--max-cost`.
+- Normalize the current BullshitBench v2 upstream CSV schema in `scripts/refresh-benchmarks.sh` and refresh the checked-in snapshot to 158 model/reasoning rows.
+- Tighten council veto scanning so incidental `critical-veto` text does not trigger a critical veto.
+- Add regression coverage for directory-based skill entries in `/octo:doctor`.
+
+## [9.40.1] - 2026-05-23
+
+### Fixed
+
+- Fix `/octo:doctor` skill existence checks for directory-based skills so v9.39+ installs no longer report false missing-skill failures (#414, #415).
+
+## [9.40.0] - 2026-05-22
+
+### Added
+
+- Add `/octo:council` as a configurable multi-LLM council command with command/skill registration, dry-run preflight artifacts, provider status, benchmark metadata, persona-aware roster selection, provider diversity, budget validation, quorum tracking, critical veto handling, and gated implementation handoff metadata.
+- Add checked-in BullshitBench v2 snapshot data and a refresh script for benchmark-aware council routing.
+
+## [9.39.1] - 2026-05-22
+
+### Fixed
+
+- Honor `--timeout` for synthesis stages instead of hardcoding 180 seconds, so dense synthesis runs respect the caller's configured timeout (#408, #409).
+- Let `OCTOPUS_AGENT_TIMEOUT` override dispatch timeouts unconditionally and treat oversize provider rejections as skipped providers instead of aborting the whole dispatch (#410, #411).
+
+## [9.39.0] - 2026-05-21
+
+### Added
+
+- Add Codex marketplace icon metadata and package the SVG asset for marketplace browsers (#385).
+- Add session-scoped provider availability controls to `/octo:model-config` so users can disable exhausted providers such as Codex without uninstalling them (#386).
+
+### Fixed
+
+- Surface the first provider stderr line in orchestrator logs when a provider command fails, while still preserving the full transcript in the result file (#404).
+- Align OpenCode model catalog metadata with the current `opencode/...` namespace (#404).
+- Replace low-risk `ls`/`read` shellcheck findings in `orchestrate.sh` with safer equivalents (#404).
+
+## [9.38.1] - 2026-05-21
+
+Patch release covering the issue/PR triage queue after v9.38.0.
+
+### Added
+
+- Add Mistral Vibe as a first-class provider, including setup/doctor detection, dispatch support, circuit-breaker visibility, and prompt validation (#402).
+
+### Fixed
+
+- flow-develop: E2E verification agent now receives the original task description verbatim at prompt-construction time instead of a static generic reference (#398, closes #389)
+- probe: compact synthesis fallback — bounded context and sanitized failure markers in synthesis (#396)
+- ink: compact delivery context — bounded delivery bundle, sanitized upstream failure markers (#394)
+- tangle: fall back to direct execution when decomposition produces no parseable subtasks (#391)
+- tangle: preserve original task context in subtasks, require explicit disjoint write scopes, and accept root-level files such as `Makefile` (#390).
+- tangle: validate explicit file coverage with exact file-token matching and require worktree evidence for implementation tasks (#393).
+- embrace: stop on missing phase outputs, enforce requested debate gates, and reuse centralized cleanup for YAML runtime completion (#392).
+- codex: document current non-interactive `codex exec` usage and include recovered stderr transcripts in result files (#387).
+- skills: support directory-format Claude skills across marketplace sync, smoke tests, OpenClaw, Codex generation, release validation, and agent skill loading (#397, closes #395).
+- review publishing: respect explicit PR targets before branch fallback so review comments land on the intended PR (#406, closes #405).
+- provider defaults: cover OpenCode namespace defaults in regression tests (#403).
+
+---
+
+## [9.38.0] - 2026-05-15
+
+### Changed
+
+- Ship marketplace install repair, workflow dispatch fixes, tangle watchdog hardening, and command packaging cleanup
+
+---
+
+## [9.37.4] - 2026-05-13
+
+### Added
+
+- Add `OCTO_ALLOWED_PROVIDERS` so users can restrict Octopus provider checks and fleet fanout to an explicit provider set (#370).
+- Add a read-only GitHub work queue hook that periodically surfaces open Octopus issues and PRs while working in the repo.
+
+### Fixed
+
+- Prevent the stable `~/.claude-octopus/plugin` self-heal path from recreating the plugin symlink as a self-referential loop (#371).
+- Update release validation to understand directory-based plugin skill registrations.
+
+---
+
+## [9.37.3] - 2026-05-11
+
+### Fixed
+
+- Sync the README version badge with the released plugin version so release validation passes after the #367 skill-path fix.
+
+---
+
+## [9.37.2] - 2026-05-10
+
+### Fixed
+
+- Migrate all 53 skill paths in `plugin.json` from `.claude/skills/*.md` flat files to `./skills/*/` directory format, fixing skill loading failures (#366, #367).
+- Fix `claude-mem-bridge.sh` port discovery: read from `~/.claude-mem/settings.json`, fall back to UID-based formula (`37700 + uid%100`) on Linux/macOS, keep `37777` for Windows Git Bash (#363).
+- Update `test-docs-sync.sh` and `test-debate-skill.sh` to validate directory-based skill registration.
+
+---
+
+## [9.37.1] - 2026-05-08
+
+### Fixed
+
+- Resolve the installed Octopus plugin root in `/octo:doctor` before invoking scripts so Windows Git Bash installs do not depend on `~/.claude-octopus/plugin` symlink creation (#360).
+- Skip RTK hook remediation warnings on Windows Git Bash, where RTK uses CLAUDE.md injection mode instead of the macOS/Linux hook path (#361).
+
+---
+
+## [9.37.0] - 2026-05-08
+
+### Added
+
+- Add provider-aware prompt-size preflight with summarize, truncate, and fail strategies plus oversize run telemetry for multi-provider dispatch.
+- Add per-agent status ledgers and visible agent summary tables so multi-LLM workflows show ok, degraded, failed, and timeout providers before synthesis.
+- Add research breadth routing for light, standard, and exhaustive fanout with status-aware synthesis attribution.
+
+### Changed
+
+- Strengthen `/octo:research` and Discover guidance to build dynamic multi-provider fleets across Codex, Gemini, Copilot, Qwen, OpenCode, Ollama, Perplexity, OpenRouter, Cursor Agent, and Claude.
+- Promote named option and comparison prompts to debate so substantial "A or B" decisions route through multi-model scoring instead of plain chat.
+- Regenerate Claude, Codex, OpenClaw, and Factory surfaces, including the generated `octo-discipline` command.
+
+### Fixed
+
+- Route setup/configure aliases and mistyped `/octo:*` commands to canonical commands with fuzzy suggestions.
+- Skip failed or rejected provider outputs during aggregation while preserving visible failure reasons in summaries.
+- Surface oversize provider rejections instead of allowing empty outputs to look like successful provider contributions.
+
+---
+
+## [9.36.1] - 2026-05-07
+
+### Added
+
+- Sync Claude Code v2.1.132 Bash session ID support with `SUPPORTS_BASH_SESSION_ID_ENV`, `/octo:doctor` guidance, and a shared session resolver that prefers `CLAUDE_CODE_SESSION_ID` for Claude Code subprocess state.
+- Add a plugin assembly standard and dependency-free validator for skills, agents, commands, connector metadata, and manifest structure, informed by Anthropic's newer multi-plugin packaging patterns.
+- Add portable root Codex skills with per-skill OpenAI interface metadata and a Codex host adapter block.
+
+### Changed
+
+- Use Claude Code's official Bash `CLAUDE_CODE_SESSION_ID` for careful/freeze/guard state files, proof packets, cost tracking, statusline/HUD context, and compression analytics while preserving Codex/Gemini host-specific session fallbacks.
+- Point the Codex manifest at the portable root `skills/` tree and remove Claude-only hook references from the Codex package surface.
+- Preserve Claude command and skill registration while adapting generated Codex skill wording for runtime provider availability.
+
+### Fixed
+
+- Preserve the released `skill-verify` Codex skill name as a compatibility alias for the new verification gate source skill.
+
+---
+
+## [9.36.0] - 2026-05-06
+
+### Added
+
+- Sync Claude Code compatibility flags through v2.1.131, including plugin zip/URL loading, skillOverrides, gateway model discovery opt-in, MCP workspace diagnostics, init.plugin_errors, and package-manager auto-update guidance.
+- Add `/octo:doctor` checks for modern Claude Code features that Octopus can use or should warn about, including reserved MCP server names, experimental manifest key placement, gateway model discovery, and skillOverrides.
+- Add release validation for packaged plugin zip support and optional runtime smoke tests using `--plugin-dir` and `--plugin-url`.
+- Document the v2.1.14 minimum runtime, modern `/octo:doctor` compatibility checks, gateway model discovery opt-in, skillOverrides guidance, and the opt-in zip/plugin-url release smoke workflow.
+
+### Fixed
+
+- Treat Claude Code v2.1.131 as newer than the v2.1.14 minimum by using the explicit `>=` version comparison operator in the version preflight.
+
+---
+
+## [9.35.0] - 2026-05-05
+
+### Added
+
+- Add local proof packets for `/octo:review`, including JSONL evidence, findings artifacts, provider substitution records, and a markdown summary under `~/.claude-octopus/runs/`.
+- Add optional Graphify companion detection and passive `/octo:review` context injection from existing `graphify-out/GRAPH_REPORT.md` files.
+
+---
+
+## [9.34.0] - 2026-05-05
+
+### Added
+
+- Claude Code web/remote session ergonomics: remote sessions default to autonomous mode, skip provider probe calls, use a lightweight statusline, and document hosted-session setup.
+- `OCTO_TIER` project-tier hint docs for setup and doctor so Octopus can recommend verification depth and provider spend by project risk profile.
+
+---
+
+## [9.33.0] - 2026-05-05
+
+### Changed
+
+- Strengthen auto-router hooks for plain-language workflow routing.
+- Add explicit `off`, `suggest`, and `invoke` auto-router modes so users can choose whether natural-language prompts only suggest Octopus workflows or invoke them directly.
+- Add a compact SessionStart routing contract through `auto-router-inject.sh` so plain-language `debate`, `research`, and review prompts route more consistently through `/octo:*` workflows.
+- Harden hook trap tests with isolated `HOME` directories and per-hook deadlines to prevent flaky hook validation from leaking user state.
+
+---
+
+## [9.32.1] - 2026-05-05
+
+### Changed
+
+- Patch public plugin root packaging so Claude, Codex, Cursor, and Factory manifests stay version-aligned for public distribution.
+- Harden release tag safety and quiet-push handling in the release script so release automation does not fail on benign remote output.
+- Add macOS routing and root-metadata test hardening around the public plugin package.
+
+---
+
+## [9.32.0] - 2026-05-05
+
+### Added
+
+- Add round-aware PR review history for `/octo:review` and PR review flows (#322).
+- Persist per-PR review state in `scripts/lib/pr-review-state.sh` so follow-up rounds can distinguish newly introduced findings from already-reported ones.
+- Thread review history into `scripts/lib/review.sh` and command docs so repeat reviews can focus on deltas instead of restating the same findings.
+- Add unit coverage for PR review state storage and review-history integration.
+
+---
+
+## [9.31.0] - 2026-05-05
+
+### Fixed
+
+- Stream Gemini stderr in real time so failed subprocess output is visible immediately (#341).
+- Preserve provider env lookup and quota watcher cleanup under `set -e`, including shared quota watcher helpers and targeted PID cleanup (#337, #342).
+- Keep `/octo:develop` on the orchestrator path without recursive Skill calls or Claude-side parallel implementation, while preserving resolved `.md` plan prompts through fallback validation (#334, #339, #343).
+- Parse `probe-single --output-dir` correctly and replace placeholder `/path/to/orchestrate.sh` docs with real plugin path resolution (#345, closes #340, closes #344).
+
+### Changed
+
+- Wire `routing.features.review`, `routing.features.parallel`, and `routing.features.debate` into their runtime consumers with shared provider-to-agent routing and unique debate labels (#346).
+- Keep Claude and Codex install docs aligned with the shared `nyldn-plugins` marketplace flow (#335).
+
+---
+
+## [9.30.0] - 2026-04-29
+
+### Added
+
+- Add Cursor Agent CLI provider support from PR #281, including provider detection, auth checks, model resolution, fleet construction, dispatch integration, and smoke tests.
+- Add `scripts/lib/cursor-agent.sh` and focused unit coverage for cursor-agent provider behavior.
+
+### Fixed
+
+- Harden remaining async PID call sites and audit result handling so async workflows do not report stale or missing process state.
+- Ensure the plugin symlink exists before the first command runs, closing #318.
+- Tighten cursor-agent auth parsing around `cli-config.json` and `authInfo` detection.
+
+### Changed
+
+- Make version-advisory tests release-agnostic and address release-review feedback.
+
+---
+
+## [9.29.3] - 2026-04-28
+
+### Changed
+
+- Fix Windows provider env paths and async PID tracking
+
+---
+
+## [9.29.2] - 2026-04-23
+
+### Changed
+
+- Fix: add --skip-git-repo-check to all codex exec invocations (#319)
+
+---
+
+## [9.29.1] - 2026-04-22
+
+### Changed
+
+- Patch bundle: perplexity stdin + nested-JSON fix (#307/#310), v9.29 migration advisory + write-intent guardrail (#312), hook hardening eliminating silent failures (#313/#314), model-config banner fix (#301/#302), cache byte-format env compat.
+
+---
+
+## [9.29.0] - 2026-04-22
+
+### Changed
+
+- **Role default refresh based on April 2026 benchmarks**: `architect`, `strategist`, and new `security-reviewer` role now default to Claude Opus 4.7 (SWE-bench Pro 64.3 vs 57.7, MCP-Atlas tool use +9.2, LMArena #1). `code-reviewer` and `implementer` stay on GPT-5.4 (Terminal-Bench 75.1, edge-case review). `reviewer` is preserved as an alias for `code-reviewer`.
+- **New opt-in `implementer-heavy` role** for greenfield / large refactors / UI-heavy builds — routes to Claude Opus 4.7. Not auto-selected; callers must request it explicitly.
+- **New `plugin/docs/GPT-5.4-PROMPTING.md`** — condensed OpenAI prompt guidance (reasoning effort tiers, output contracts, tool persistence, `phase` field, `gpt-5.4-mini` patterns). Referenced from Codex dispatchers and code-reviewer persona.
+- **Migration prompt** in `/octo:setup` fires once for users upgrading from ≤9.28: explains the routing change, surfaces the Opus 4.7 cost impact (~2x GPT-5.4), offers `OCTOPUS_LEGACY_ROLES=1` opt-out to restore v9.28 mapping.
+
+### Opt-out
+
+Set `OCTOPUS_LEGACY_ROLES=1` to restore the v9.28 role mapping verbatim.
+
+---
+
+## [9.28.0] - 2026-04-22
+
+### Changed
+
+- QA hardening, perplexity stdin fix (#305), review timeout scaling (#303), macOS compat, dead code removal
+
+---
+
+## [9.27.0] - 2026-04-21
+
+### Fixed
+- **fix(probe):** port awk-header-guard from `spawn_agent` to `probe_single_agent` — codex output was silently empty in `/octo:discover` and all probe-based skills (#300)
+- **fix(perplexity):** remove `env -i` wrapper for shell-function providers (perplexity, openrouter) — `env` cannot exec bash functions, causing exit 127 (#300)
+
+## [9.26.0] - 2026-04-21
+
+### Fixed
+- **fix(dispatch):** `claude-opus` xhigh effort dispatch broke `read -ra` word splitting — bare `CLAUDE_CODE_EFFORT_LEVEL=xhigh` prefix treated as binary name by `timeout`; wrapped with `env` (#289 follow-up)
+- **fix(qwen):** remove invalid `--no-ask-user` flag from `qwen.sh` — Copilot CLI cross-contamination (#279)
+- **fix(agents):** add `tools: ["All tools"]` to all 10 droids and `python-pro` persona — subagents silently lost file/bash access (#298 BUG-001, BUG-002)
+- **fix(skill-extract):** description now notes beta status for unimplemented features (#298 BUG-003)
+- **fix(hooks):** `user-prompt-submit.sh` falls back to `jq` when `python3` is absent (#298 BUG-004)
+- **fix(security):** `telemetry-webhook.sh` rejects non-HTTPS webhook URLs, localhost exempted (#298 FINDING-03)
+
+## [9.25.0] - 2026-04-20
+
+### Fixed
+
+- **Progress counter drift for Agent Teams dispatch** (#276 item 7) — `subagent-result-capture.sh` (SubagentStop hook) now increments `completed_agents` in `progress.json` directly after writing the result file. Previously the Agent Teams path returned without calling `update_agent_status`, so the counter lagged behind the actual number of completed agents.
+- **Fork PRs silently 403 on review comment post** (#276 item 2) — `pr-review` job in `claude-octopus.yml` now guards with `github.event.pull_request.head.repo.full_name == github.repository`. Fork PRs have no access to secrets and a read-only `GITHUB_TOKEN`; they see CodeRabbit review instead.
+
+### Changed
+
+- **95 legacy test files migrated to `test-framework.sh`** (#276 item 3) — all test files now use the shared framework for consistent output formatting, unified pass/fail tracking, and a single summary block. No test logic was changed.
+
+---
+
+## [9.24.0] - 2026-04-19
+
+### Fixed
+
+- **`/octo:review` Round 1 silent timeout** (#289) — `review_run()` was missing the `OCTOPUS_FORCE_LEGACY_DISPATCH` guard that the probe phase already had. When `orchestrate.sh` runs as a Bash tool subprocess, Agent Teams `AGENT_TEAMS_DISPATCH:` signals are never consumed by the host, leaving all result files empty and causing a 300s "ALL Round 1 providers failed" timeout. All parallel fleet spawn sites (`review_run`, `tangle_execute`, `yaml_workflow_execute`) now use `fleet_dispatch_begin/end` helpers instead of raw `export`/`unset`.
+- **`--bare` flag breaks subprocess auth** (#288) — CC v2.1.114 regression where `claude --bare --print` exits 0 but emits "Not logged in", silently poisoning every Claude agent dispatch. `providers.sh` now probes `--bare` auth at detection time and disables it when broken. `doctor.sh` reports the failure with a clear remediation (`OCTOPUS_DISABLE_BARE=1`).
+- **`discipline-inject.sh` never fires** (#288) — the second `SessionStart` hook block in `.claude-plugin/hooks.json` was missing `"matcher": {}`. CC's hook dispatcher silently dropped it. Also fixed the same omission in `StopFailure`, `CwdChanged`, `TaskCreated`, and `PermissionDenied` hook blocks.
+- **`cursor-agent` fallback/config gaps** (#282–#287) — cursor-agent was missing from three dispatch locations added in the v9.23.0 provider expansion: `find_capable_fallback()` in `dispatch.sh` (models: composer-2-fast, composer-2, grok-4-20, grok-4-20-thinking), `set_provider_model`/`reset_provider_model` whitelists in `provider-routing.sh`, and `build_architecture_fleet()` in `build-fleet.sh`.
+- **Factory Droid install command** (#277) — README had `octo@claude-octopus` (wrong namespace) and a bare URL without `.git`. Corrected to `octo@nyldn-plugins` with `.git` suffix, matching the Claude Code install path.
+- **`((VAR++))` silent test abort under `set -e`** (#276) — postfix increment evaluates to `0` when `VAR=0`, causing bash `set -e` to abort 15 test files before any assertions run. Applied `|| true` guard across all affected files.
+- **BSD `sed` range with command grouping** (#276) — `build-factory-skills.sh` used GNU-only `sed -n '/pat/,/pat/{...}'` syntax that fails on macOS/BSD `sed`. Replaced with portable `awk` state machine.
+
+### Added
+
+- **Fleet dispatch guard helpers** — `fleet_dispatch_begin()` / `fleet_dispatch_end()` in `agent-sync.sh` wrap all parallel fleet spawn loops. Replaces the copy-paste `export OCTOPUS_FORCE_LEGACY_DISPATCH=true` pattern. A new smoke test (`tests/smoke/test-fleet-dispatch-guard.sh`) statically enforces that all fleet call sites use the helpers and that all `hooks.json` blocks have a `"matcher"` key — prevents regression of #288/#289.
+
+### Removed
+
+- **`scripts/lib/resilience.sh`** (176 LOC) and **`scripts/lib/run-store.sh`** (154 LOC) — never sourced by any production code path; only referenced by their own unit tests. Removed from shipped bundle.
+- **`scripts/test-claude-octopus.sh`** (1,889 LOC) — orphaned legacy test runner superseded by `tests/` structure; was shipping to users via `"scripts/"` in `package.json`.
+
+### Changed
+
+- `debate.sh`, `auto-route.sh`, and `audit.sh` are now lazy-loaded in `orchestrate.sh` — sourced only inside the dispatch branches that need them (`grapple`, `auto`/`optimize`, `review`/`audit`) rather than unconditionally on every hook invocation.
+
+---
+
+## [9.23.0] - 2026-04-17
+
+### Added
+
+- **Claude Opus 4.7 support** — the `claude-opus` agent type now resolves to `claude-opus-4.7` when Claude Code v2.1.111+ is detected, falling back to `claude-opus-4.6` otherwise. Opus 4.7 is same-priced as 4.6 ($5/$25 MTok), takes a step change on SWE-bench Pro/Verified, has 1M native context, and is adaptive-thinking only. `OCTOPUS_OPUS_MODEL` env var overrides the default (e.g. pin to `claude-opus-4.6` for legacy behavior).
+- **`xhigh` effort level** — Opus 4.7's new effort tier between `high` and `max`. Plugin defaults the tangle/develop and ink/deliver phases to `xhigh` on complex work (complexity=3). Automatically falls back to `high` on Opus 4.6. Override with `OCTOPUS_EFFORT_OVERRIDE=low|medium|high|xhigh|max`.
+- **17 new `SUPPORTS_*` feature flags** covering Claude Code v2.1.105–112 (now 154 total):
+  - `SUPPORTS_PRECOMPACT_BLOCKING` (2.1.105) — PreCompact hook can veto compaction
+  - `SUPPORTS_PLUGIN_MONITORS` (2.1.105) — `monitors` manifest key for background processes
+  - `SUPPORTS_ENTER_WORKTREE_PATH` (2.1.105) — `path` param on EnterWorktree
+  - `SUPPORTS_MCP_TRUNCATE_RECIPES` (2.1.105) — format-specific MCP truncation
+  - `SUPPORTS_PROMPT_CACHE_1H` (2.1.108) — `ENABLE_PROMPT_CACHING_1H` env var
+  - `SUPPORTS_SESSION_RECAP` (2.1.108) — `/recap` and auto-context on session return
+  - `SUPPORTS_BUILTIN_SLASH_VIA_SKILL` (2.1.108) — model invokes built-in `/review`, `/security-review`
+  - `SUPPORTS_TASKCREATED_HOOK` (2.1.110) — new `TaskCreated` hook event
+  - `SUPPORTS_PERMISSIONREQ_RECHECK` (2.1.110) — `updatedInput` re-validated vs `permissions.deny`
+  - `SUPPORTS_PRETOOL_CTX_ON_FAIL` (2.1.110) — `additionalContext` survives tool-call failure
+  - `SUPPORTS_TUI_FULLSCREEN` (2.1.110) — `/tui fullscreen` rendering
+  - `SUPPORTS_OTEL_RAW_BODIES` (2.1.110) — `OTEL_LOG_RAW_API_BODIES` env var
+  - `SUPPORTS_POWERSHELL_TOOL` (2.1.110) — Windows PowerShell tool (progressive rollout)
+  - `SUPPORTS_XHIGH_EFFORT` (2.1.111) — Opus 4.7 effort level
+  - `SUPPORTS_OPUS_4_7` (2.1.111) — gates Opus 4.7 resolution
+  - `SUPPORTS_AUTO_MODE_GA` (2.1.111) — `--enable-auto-mode` no longer required
+  - `SUPPORTS_ULTRAREVIEW` (2.1.111) — `/ultrareview` cloud parallel review (complements `/octo:review`)
+
+### Changed
+
+- **`hooks/pre-compact.sh` now blocks compaction during active workflow phases** — on Claude Code v2.1.105+, when 1+ agents are in flight during `tangle`/`develop`/`ink`/`deliver`/`discover-dispatch`, the hook emits `{"decision":"block"}` and the compaction is deferred. Opt out with `OCTOPUS_PRECOMPACT_BLOCK=off`. On older CC versions, hook continues to warn-only as before.
+- **`task-dependency-validator.sh` also fires on `TaskCreated`** — cleaner than the existing `PreToolUse(TaskCreate)` registration because it runs after creation with access to the task ID. The PreToolUse entry is retained as fallback for CC <2.1.110; the validator is idempotent so firing twice is safe.
+- **W3C trace headers propagate into external CLI subshells** — when `TRACEPARENT` and/or `TRACESTATE` are set, `build_provider_env` now forwards them into the `env -i` isolated shell for codex/gemini/perplexity invocations so those CLIs participate in the same distributed trace as the host Claude Code session.
+- **`/octo:review` positioning updated** — the command header now distinguishes it from Claude Code's native `/review` and the new `/ultrareview` (v2.1.111+ cloud parallel review). Plugin's multi-LLM review remains the right tool when provider diversity or adversarial cross-check matters.
+- **`/octo:setup` offers `ENABLE_PROMPT_CACHING_1H` opt-in** when Claude Code v2.1.108+ is detected (Step 4b). Documents that this affects Claude-Claude round-trips only, not external CLI subshells.
+- **`scripts/lib/agents.sh` effort mapping** — tangle/ink phases at complexity=3 now emit `xhigh` (not `high`) when `SUPPORTS_XHIGH_EFFORT=true`. Effort is threaded through the subshell as `CLAUDE_CODE_EFFORT_LEVEL=xhigh` so the user's persistent `/effort` setting is not mutated.
+- **`OCTOPUS_EFFORT_OVERRIDE` accepts `xhigh` and `max`** — previously restricted to `low|medium|high`.
+- **Model catalog refreshed** — `claude-opus-4.7` added (1M context, premium tier, active); `claude-opus-4.6` and `claude-opus-4.6-fast` marked legacy.
+
+### Notes
+
+- **No breaking changes.** Users on Claude Code <2.1.111 transparently continue on Opus 4.6 behavior. Pinning to a specific Opus version via `OCTOPUS_OPUS_MODEL` remains the escape hatch.
+- **Opus 4.7 has no "fast" variant.** `OCTOPUS_OPUS_MODE=fast` explicitly targets `claude-opus-4.6 --fast` — a deliberate choice over silent mapping to something like `--effort low`, because fast mode is a latency feature distinct from effort.
+- **Opus 4.7 API breakages** (no `temperature`/`top_p`/`top_k`, no `thinking_budget`, new tokenizer up to 1.35× token count) are handled by Claude Code itself — the plugin invokes `claude` subshells via `--model opus`, so all API-layer concerns stay inside CC.
+
+## [9.22.1] - 2026-04-16
+
+### Fixed
+
+- **SessionStart hook crashed for returning users** — `hooks/session-start-memory.sh:96` used `local` outside a function under `set -euo pipefail`, exiting 1 when `SUPPORTS_MANAGED_SETTINGS_D=true` and an existing prefs file was found. Dropped the `local` keyword; hook now completes steps 4-5 (managed-settings fragment + claude-mem context query) instead of aborting. Also removed the overly-permissive fallback glob at `:38` (`"$MEMORY_DIR"/*/memory`) that could apply another project's preferences to the current session.
+- **`bypassPermissions` string-match bypass** — four hooks (`codex-exec-guard.sh`, `scheduler-security-gate.sh`, `careful-check.sh`, `freeze-check.sh`) used `grep -q '"bypassPermissions"'` which matched `false` and commented lines, effectively making the gates always-bypassed. Removed the block entirely — these gates enforce correctness or opt-in policy the user explicitly configured (via `/octo:careful`, `/octo:freeze`, or scheduled job allowlists) and shouldn't be disabled by a global CC prompt-skip setting. Opt-out levers remain: `OCTO_CAREFUL_MODE=off`, `OCTO_FREEZE_MODE=off`.
+- **`scripts/test-claude-octopus.sh` greped orchestrate.sh only** — 4 assertions used `$SCRIPT` (orchestrate.sh) instead of `$SCRIPTS_ALL` (orchestrate + lib/*.sh) to locate extracted functions. Switched to `grep -rq ... $SCRIPTS_ALL` matching the sibling test pattern.
+
+### Changed
+
+- **Worktree credential hygiene** — `hooks/worktree-setup.sh` now writes `.octopus-env` under `umask 077` + explicit `chmod 600` (previously world-readable under default umask 022). Refuses worktree paths outside `$HOME`, `/tmp`, `/private/tmp`, `/var/folders` to harden against malformed CC payloads.
+- **All 35 hook entries now have explicit timeouts** in `.claude-plugin/hooks.json` (previously 15 lacked `"timeout":` and could hang the session indefinitely). Validators: 10s; mid hooks: 30s; session export and quality-gate: 60s.
+- **`orchestrate.sh` reduced by 724 lines** — extracted `detect_providers` (118 lines) → `lib/providers.sh`; `embrace_full_workflow` (387 lines) → `lib/workflows.sh`; `is_agent_available_v2` + `get_tiered_agent_v2` + `get_fallback_agent` (219 lines) → `lib/model-resolver.sh`. Strict-source (no `2>/dev/null || true`) on those 3 critical libs so syntax errors surface instead of silently degrading.
+- **Untrusted external CLI output now nonce-wrapped** — `scripts/lib/spawn.sh` wraps the `## Output` fence of codex/gemini/perplexity results in `<!-- BEGIN-UNTRUSTED:provider=X:nonce=Y -->` / `<!-- END-UNTRUSTED -->` boundaries so downstream synthesis prompts can distinguish provider-authored text from trusted context. Complements the existing `sanitize_external_content` wrapping.
+- **`sanitize_external_content` nonce fallback fixed for macOS** — `date +%s%N` returns a literal `N` on BSD date, collapsing the fallback nonce to ~10 predictable digits. Replaced with `${RANDOM}${RANDOM}${RANDOM}$(date +%s)` for non-predictable uniqueness when `/dev/urandom` is unreadable.
+- **Manifest cleanup** — canonical `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` now agree on description/keywords/author/homepage. Keywords trimmed 20→10, `author.url` added, duplicated `homepage` dropped (repository field already present). Description prefix handling unchanged — `release.sh` continues to strip-then-prepend on version bump.
+
+### Removed
+
+- **`.claude-plugin/settings.json`** (17 `OCTOPUS_*` defaults) — Claude Code's plugin schema doesn't read this path; env vars are delivered via `hooks.json` env blocks and frontmatter. Dead config, no callers.
+- **`.gitmodules`** (0-byte stray) — repo has no submodules; file produced noisy `git submodule` warnings.
+
+### Security
+
+- `SECURITY.md` refreshed: soften "no eval with user data" claim to reflect the reality that `eval` is used only on scrubbed synthesized variable names in `lib/model-resolver.sh` and `lib/quality.sh`. Added note that `sysadmin-safety-gate.sh` is defense-in-depth, not a security boundary. Supported-versions table updated to 9.22.x.
+
+## [9.22.1] - 2026-04-15
+
+### Fixed
+
+- Removed `set -euo pipefail` leak from sourced `lib/memory.sh` that cascaded failures across all orchestrator commands (#270, closes #269)
+- Added missing `PROGRESS_FILE` variable definition in `orchestrate.sh`, fixing crashes in `discover` and `embrace` for users with jq installed (#271)
+- Rewrote `score_result_file` counting in `lib/heuristics.sh` with `safe_count()` helper to handle `grep -c` exit-1-on-no-match correctly, fixing arithmetic syntax errors that caused silent hangs during probe synthesis (#275)
+
+
+## [9.22.0] - 2026-04-15
+
+### Added
+
+- **Memory provider contract** (`scripts/lib/memory.sh`) — unified façade over backends; callers use `memory_search`, `memory_observe`, `memory_context`, `memory_available` instead of touching bridges directly. Auto-detects `mcp-memory-service` via `mcpServers` config signature; falls back to `claude-mem`. Env overrides: `OCTOPUS_MEMORY_BACKEND`, `OCTOPUS_MEMORY_SCOPE`, `OCTOPUS_MEMORY_SEARCH_MERGE`. Detection never spawns `uvx` speculatively — avoids accidental Torch/CUDA pull. Closes discussion in #220.
+- **Gemini in-band model fallback** (`scripts/helpers/gemini-exec.sh`) — on `404 / ModelNotFoundError`, retries with next entry in `OCTOPUS_GEMINI_FALLBACK_MODELS` (default: `gemini-2.5-flash`). Transient errors (429, 5xx) are not retried — stays in the circuit-breaker's lane. Stdin cached to tempfile so replay works across attempts.
+- **Agent output cap** — `run_agent_sync` now truncates at `OCTOPUS_AGENT_MAX_OUTPUT_BYTES` (default 256 KiB, 0 disables). Tail-biased: preserves first 4 KiB + last ~252 KiB so Codex-style deliverable summaries (always at the end) survive. Banner reports original size.
+- **Partial-writes diagnostic on timeout** — when `run_agent_sync` exits 124/143, `find -newermt` surfaces files written before SIGTERM so users know completed deliverables exist. GNU-only check skips silently on macOS BSD find.
+
+### Fixed
+
+- **`doctor smoke` silently aborting** — five converging defects: (1) `((var++))` under `set -eo pipefail` exits 1 when var=0 — changed to `((++var))`; (2) double `shift` in `orchestrate.sh` discarded the `smoke` category arg before it reached `do_doctor`; (3) Codex smoke test passed prompt as positional arg — codex 0.120.0 rejects it, now piped via stdin; (4) Gemini cold-start (~12–18s) exceeded hardcoded 10s smoke timeout — now `OCTOPUS_GEMINI_SMOKE_TIMEOUT` (default 30s); (5) `/tmp/octo-model-cache-*.json` could hold two concatenated JSON documents from a concurrent-write race — validated with `jq -cse`, discarded and rebuilt on corrupt payload.
+- **Scheduler version hardcoded to `v8.16.0`** — 7 major versions stale. New `octopus_plugin_version()` in `lib/common.sh` reads from `.claude-plugin/plugin.json` at runtime (sed fallback if jq absent). `validate-release.sh` now warns when no git tag matches current version.
+
+### Changed
+
+- **session.sh** routes phase-completion observations through `memory_observe` instead of calling `claude-mem-bridge.sh` directly — existing claude-mem deployments unaffected; mcp-memory-service users get observations routed to their backend.
+- **README** — update and clean-reinstall steps now include `marketplace update` / `marketplace remove` commands to prevent stale cached plugin versions.
+- **CI**: bump `actions/github-script` v8 → v9.
+
+---
+
 ## [9.21.0] - 2026-04-10
 
 ### Changed

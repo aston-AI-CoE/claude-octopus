@@ -1,6 +1,6 @@
 # Command and Usage Reference
 
-Complete reference for all 48 Claude Octopus slash commands, 10 CLI tools (`octopus` + `octo-compress`), plus activation rules, provider indicators, and the project-lifecycle features that are triggered by natural language rather than slash commands.
+Complete reference for all 49 Claude Octopus slash commands, CLI tools (`octopus` + `octo-compress`), plus activation rules, provider indicators, and the project-lifecycle features that are triggered by natural language rather than slash commands.
 
 ---
 
@@ -18,7 +18,7 @@ All slash commands use the `/octo:` namespace. The smart router command is `/oct
 
 | Command | Description |
 |---------|-------------|
-| `/octo:setup` | Check setup status and configure providers (alias: `/octo:sys-setup`) |
+| `/octo:setup` | Check setup status and configure providers (aliases: `/octo:configure`, `/octo:config`, `/octo:init`, `/octo:wizard`, `/octo:sys-setup`) |
 | `/octo:doctor` | Environment diagnostics across 9 check categories (includes RTK install + token optimization) |
 | `/octo:model-config` | Configure provider model selection per workflow phase |
 | `/octo:km` | Toggle Knowledge Work mode |
@@ -41,7 +41,8 @@ All slash commands use the `/octo:` namespace. The smart router command is `/oct
 |---------|-------------|
 | `/octo:research` | Deep research with multi-source synthesis |
 | `/octo:brainstorm` | Creative thought partner brainstorming session |
-| `/octo:debate` | AI Debate Hub — four-way debates (Claude + Gemini + Codex) |
+| `/octo:council` | Persona-based multi-LLM council with budget, quorum, veto, and implementation gates |
+| `/octo:debate` | AI Debate Hub — structured debates across Claude and available external providers |
 | `/octo:prd` | Write an AI-optimized PRD with 100-point scoring |
 | `/octo:prd-score` | Score an existing PRD against the framework |
 | `/octo:spec` | NLSpec authoring from multi-AI research |
@@ -50,9 +51,9 @@ All slash commands use the `/octo:` namespace. The smart router command is `/oct
 
 | Command | Description |
 |---------|-------------|
-| `/octo:review` | Expert code review with quality assessment and PR comment posting |
+| `/octo:review` | Enhanced multi-LLM review for escalated code review and PR comment posting |
 | `/octo:staged-review` | Two-stage review: spec compliance then code quality |
-| `/octo:security` | Security audit with OWASP compliance |
+| `/octo:security` | Enhanced multi-LLM or adversarial security audit with OWASP coverage |
 | `/octo:debug` | Systematic debugging with root cause investigation |
 | `/octo:tdd` | Test-driven development with red-green-refactor |
 
@@ -103,6 +104,7 @@ All slash commands use the `/octo:` namespace. The smart router command is `/oct
 | `/octo:history` | Query past workflow results — filter by workflow type, date, or provider |
 | `/octo:resume` | Resume a previous agent by ID — continue an interrupted task |
 | `/octo:discipline` | Toggle discipline mode — auto-invoke verification and review checks |
+| `octopus agent-summary` | Show the current multi-provider run status table |
 
 ### Admin
 
@@ -121,6 +123,7 @@ Plugin executables available as bare commands (CC v2.1.91+). Also usable via ful
 | `octopus version` | Show plugin version |
 | `octopus session` | Show current session info |
 | `octopus fleet` | Show provider fleet status |
+| `octopus agent-summary` | Show which providers ran, degraded, failed, timed out, or contributed usable output |
 | `octo-compress` | Pipe verbose output for token savings: `npm install 2>&1 \| octo-compress` |
 | `octo-compress json` | Force JSON array/object compression |
 | `octo-compress logs` | Force log compression (head+tail) |
@@ -169,6 +172,7 @@ Single entry point with natural language intent detection. Analyzes your request
 | Build (specific) | build X, create Y, implement Z | `/octo:develop` |
 | Build (vague) | build, create, make (no clear target) | `/octo:plan` |
 | Validate | validate, review, check, audit, verify | `/octo:review` |
+| Council | council, panel, advise, priority, implementation plan | `/octo:council` |
 | Debate | should, vs, or, compare, versus, which | `/octo:debate` |
 | Specify | spec, specify, requirements, nlspec | `/octo:spec` |
 | Parallel | parallel, decompose, work packages, multi-instance | `/octo:parallel` |
@@ -179,6 +183,13 @@ Single entry point with natural language intent detection. Analyzes your request
 - `70–80%` — Shows suggestion, asks for confirmation
 - `<70%` — Lists options, asks to clarify
 
+**Alias and fuzzy matching:**
+- Setup aliases such as `/octo:configure`, `/octo:config`, `/octo:init`, `/octo:install`, `/octo:settings`, and `/octo:wizard` resolve to `/octo:setup`.
+- Common shortcut aliases resolve before routing: `/octo:cost` -> `/octo:costs`, `/octo:usage` -> `/octo:costs`, `/octo:optimize` -> `/octo:auto`, `/octo:sys-update` -> `/octo:doctor`.
+- Mistyped explicit `/octo:*` commands return close matches and write the event to `~/.claude-octopus/alias-log.tsv`.
+
+**Router promotion:** Prompts that name multiple concrete options, such as "Redis or DynamoDB" or "Option A vs Option B", are promoted to `/octo:debate` so the answer gets structured multi-model scoring instead of a single-model response.
+
 ---
 
 ## System Commands
@@ -187,7 +198,7 @@ Single entry point with natural language intent detection. Analyzes your request
 
 Check setup status and configure AI providers.
 
-**Aliases:** `/octo:sys-setup`
+**Aliases:** `/octo:configure`, `/octo:config`, `/octo:init`, `/octo:install`, `/octo:settings`, `/octo:wizard`, `/octo:sys-setup`
 
 **Usage:**
 ```
@@ -195,7 +206,7 @@ Check setup status and configure AI providers.
 ```
 
 **What it does:**
-- Auto-detects installed providers (Codex CLI, Gemini CLI)
+- Auto-detects installed providers (Codex CLI, Gemini CLI, Antigravity CLI, and other configured providers)
 - Shows which providers are available and their auth status
 - Provides installation instructions for missing providers
 - Verifies API keys and authentication
@@ -224,6 +235,8 @@ Run environment diagnostics across 9 check categories.
 /octo:doctor                    # Run all checks
 /octo:doctor providers          # Check provider installation only
 /octo:doctor auth --verbose     # Detailed auth status
+/octo:doctor config             # Plugin install/version plus Claude Code feature flags
+/octo:doctor skills             # Skill loading plus modern plugin capability notes
 /octo:doctor --json             # Machine-readable output
 ```
 
@@ -231,7 +244,7 @@ Run environment diagnostics across 9 check categories.
 
 | Category | What it checks |
 |----------|---------------|
-| `providers` | Claude Code version, Codex CLI, Gemini CLI |
+| `providers` | Claude Code version, Codex CLI, Gemini CLI, Antigravity CLI, and other configured providers |
 | `auth` | Authentication status for each provider |
 | `config` | Plugin version, install scope, feature flags |
 | `state` | Project state.json, stale results, workspace writable |
@@ -240,6 +253,27 @@ Run environment diagnostics across 9 check categories.
 | `scheduler` | Scheduler daemon, jobs, budget gates, kill switches |
 | `skills` | Skill files loaded and valid |
 | `conflicts` | Conflicting plugin detection |
+
+**Modern Claude Code checks:** On Claude Code v2.1.126+, `/octo:doctor` reports which newer runtime capabilities Octopus can safely use. Current checks cover gateway model discovery opt-in, reserved MCP server names, experimental manifest key placement, `skillOverrides`, plugin zip archives, `--plugin-url`, stream-json plugin load errors, force-synchronized output, and package-manager auto-update prompts.
+
+These are advisory unless they identify a concrete misconfiguration. For example, `gateway-model-discovery` warns only when `ANTHROPIC_BASE_URL` is set without `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`, and `mcp-workspace-reserved` warns only when a settings file defines `mcpServers.workspace`.
+
+**Provider contract audit:**
+
+```bash
+bash scripts/helpers/audit-provider-contracts.sh
+```
+
+Use this release gate when provider auth, setup guidance, version floors, or provider docs change. It checks that provider states remain `available|missing|degraded`, qwen OAuth validation fails closed, stale free-tier guidance does not reappear, and provider checks can emit opt-in lifecycle events.
+
+**Opt-in event stream:**
+
+```bash
+OCTO_EVENT_LOG=auto bash scripts/helpers/check-providers.sh
+OCTO_EVENT_LOG=/tmp/octo-events.jsonl bash scripts/helpers/check-providers.sh
+```
+
+When enabled, provider checks append JSONL `provider.status` records without changing stdout. Leave `OCTO_EVENT_LOG` unset for normal behavior.
 
 **Flags:**
 
@@ -261,6 +295,10 @@ Configure which AI models are used across Claude Octopus workflows.
 /octo:model-config codex gpt-5.4            # Set Codex model
 /octo:model-config codex gpt-5.4  # Fast Spark model
 /octo:model-config gemini gemini-3.1-pro-preview  # Set Gemini model
+/octo:model-config providers                 # Show provider allowlist
+/octo:model-config disable codex --session   # Stop using Codex in this session
+/octo:model-config allow claude gemini --session  # Use only Claude + Gemini in this session
+/octo:model-config clear-allowlist --session # Restore default provider availability
 /octo:model-config cost-mode budget         # Use cheaper models
 /octo:model-config cost-mode premium        # Use best models
 /octo:model-config trace                    # Debug model resolution
@@ -276,6 +314,8 @@ Configure which AI models are used across Claude Octopus workflows.
 | `premium` | gpt-5.4-pro | gemini-3.1-pro-preview | Critical decisions, maximum quality |
 
 **Per-phase routing:** Different models can be configured for Discover, Define, Develop, and Deliver phases. Use `show phases` to view the current routing table.
+
+**Role-based defaults (v9.29+):** `architect`, `strategist`, and `security-reviewer` use the current Claude Opus default (Opus 4.8 on Claude Code v2.1.154+, then 4.7/4.6 fallback); `code-reviewer` and `implementer` use GPT-5.4; `synthesizer` uses Claude Sonnet 4.6. See [ARCHITECTURE.md — Role → Model Mapping](../docs/ARCHITECTURE.md#role--model-mapping-v929) for rationale. Opt out with `OCTOPUS_LEGACY_ROLES=1`.
 
 ---
 
@@ -330,7 +370,7 @@ Full Double Diamond workflow — all 4 phases in sequence.
 3. **Develop** 🛠️ — Multi-AI implementation with quality gates (75% threshold)
 4. **Deliver** ✅ — Validation, go/no-go recommendation, PR comment posting
 
-**Multi-LLM debate gates** at each phase transition — optional Claude + Codex + Gemini deliberation before moving forward.
+**Multi-LLM debate gates** at each phase transition — optional Claude plus available-provider deliberation before moving forward.
 
 Shows visual indicator: 🐙 (all phases)
 
@@ -460,18 +500,32 @@ Intelligent plan builder — creates strategic execution plans without executing
 
 ### `/octo:research`
 
-Deep research with multi-source synthesis and comprehensive analysis.
+Deep research with multi-provider fanout, visible provider status, and attributed synthesis.
 
 **Usage:**
 ```
 /octo:research microservices patterns
 /octo:research OAuth 2.0 vs API key authentication
+/octo:research --breadth=light Redis vs Memcached
+/octo:research --breadth=exhaustive OAuth 2.0 in microservices
 ```
 
 **What it does:**
-- Multi-AI research using Codex, Gemini, and Claude
-- Documentation lookup and ecosystem analysis
-- Synthesizes findings into actionable, structured insights
+- Parses `--breadth=light|standard|exhaustive` and maps it to a dynamic research fleet
+- Runs multi-AI research across available providers such as Claude, Codex, Gemini, Antigravity, Copilot, Qwen, OpenCode, Ollama, Perplexity, OpenRouter, and WebFetch/WebSearch where configured
+- Applies provider-aware prompt-size preflight before dispatch, using `OCTOPUS_OVERSIZE_STRATEGY=summarize|truncate|fail`
+- Renders an agent summary table before synthesis so failed, degraded, or timed-out providers are visible
+- Synthesizes findings into actionable, structured insights with provider attribution and disagreement notes
+
+**Breadth modes:**
+
+| Breadth | Typical Fleet | Time Budget | Best For |
+|---------|---------------|-------------|----------|
+| `light` | Claude + Codex | ~60s | Quick technical checks |
+| `standard` | Claude + available providers such as Codex, Gemini, and Antigravity | ~180s | Default research and trade-offs |
+| `exhaustive` | Claude + available providers + Perplexity/OpenRouter/Web where configured | ~360s | High-stakes or broad ecosystem research |
+
+If no breadth is provided, Octopus uses `OCTOPUS_RESEARCH_BREADTH` when set, otherwise it defaults to standard or asks when the query is underspecified.
 
 ---
 
@@ -490,7 +544,7 @@ Creative thought partner brainstorming session — Solo or Multi-AI Team mode.
 | Mode | What happens | Cost |
 |------|-------------|------|
 | **Solo** | Claude-only thought partner — fast, focused, interactive | Claude Code subscription only |
-| **Team** | Multi-AI brainstorm — Codex + Gemini + Claude provide diverse perspectives | Uses external API credits |
+| **Team** | Multi-AI brainstorm — Claude plus available external providers provide diverse perspectives | Uses external provider credits/subscriptions where applicable |
 
 **How to toggle multi:** When you run `/octo:brainstorm`, a mode selector appears before the session starts. Select **Team** to activate multi-LLM brainstorming.
 
@@ -506,7 +560,7 @@ Creative thought partner brainstorming session — Solo or Multi-AI Team mode.
   - 🔴 Codex CLI — Technical feasibility and implementation angles
   - 🟡 Gemini CLI — Lateral thinking and ecosystem connections
   - 🔵 Claude — Synthesis, pattern naming, and moderation
-- Provider-attributed results (🔴 🟡 🔵)
+- Provider-attributed results (for example 🔴 🟡 🧭 🔵)
 - Cross-perspective synthesis: convergence, divergence, and strongest ideas
 - Interactive challenge and building on the best ideas
 - Multi-perspective breakthroughs export
@@ -523,7 +577,7 @@ Creative thought partner brainstorming session — Solo or Multi-AI Team mode.
 
 ### `/octo:debate`
 
-AI Debate Hub — structured four-way debates between Claude, Gemini, and Codex.
+AI Debate Hub — structured debates between Claude and available external providers such as Codex, Gemini, Antigravity, OpenCode, and OpenRouter.
 
 **Usage:**
 ```
@@ -549,6 +603,61 @@ AI Debate Hub — structured four-way debates between Claude, Gemini, and Codex.
 - `octo debate X vs Y`
 - `run a debate about Z`
 - `I want gemini and codex to review X`
+
+---
+
+### `/octo:council`
+
+Persona-based multi-LLM council for advice, decision support, planning, and gated implementation.
+
+**Usage:**
+```
+/octo:council --depth quick --goal advice "Should we use Redis here?"
+/octo:council --goal decision --domain architecture "Should this service stay monolithic?"
+/octo:council --goal implement --implement plan-only "Refactor the auth flow"
+/octo:council --dry-run --members 7 --persona finance-analyst "Review this pricing strategy"
+```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--goal advice\|decision\|plan\|implement\|review` | Council outcome |
+| `--domain auto\|architecture\|product\|security\|business\|research\|docs` | Persona recommendation domain |
+| `--style balanced\|adversarial\|implementation\|executive\|red-team` | Council discussion style |
+| `--depth quick\|standard\|deep` | Member count, rounds, and default budget |
+| `--members auto\|3\|5\|7` | Explicit council size; overrides depth member preset |
+| `--persona <name>[,<name>]` | Pin specific personas into the roster |
+| `--implement never\|after-approval\|plan-only` | Implementation gate behavior |
+| `--worktree auto\|on\|off` | Worktree preference for later implementation handoff |
+| `--benchmark auto\|on\|off` | BullshitBench snapshot routing signal |
+| `--providers auto\|claude,codex,gemini,opencode,openrouter` | Provider allowlist |
+| `--max-cost <usd>` | Hard USD cost cap |
+| `--simulate` | Explicit single-model simulation mode; never used implicitly |
+| `--single-model` | Alias for `--simulate` |
+| `--research-first` | Gather local/current research evidence before provider fanout |
+| `--corpus-mode off\|append\|require` | Whether findings, synthesis, and plans must be retained in a project corpus |
+| `--dry-run` | Preview roster, providers, quorum, and cost without provider fanout |
+| `--json` | Print `summary.json` to stdout |
+| `--output-dir <path>` | Relocate council artifacts |
+
+**What it does:**
+- Runs through the real Octopus runner by default; single-model simulation must be explicit and is recorded in `summary.json`
+- Selects a persona roster from the existing Octopus persona library
+- Scores seats with role fit, availability, provider diversity, cost, preference, and BullshitBench signal
+- Enforces provider diversity for standard/deep runs when another provider organization is available
+- Writes `research.md` before fanout when `--research-first` is set, injects it into council prompts, and records the artifact in `summary.json`
+- Writes a durable corpus entry when `--corpus-mode append|require` has a detected corpus workspace
+- Estimates cost before dispatch and before each additional phase, aborting before the next phase would exceed `--max-cost`
+- Runs independent advice, cross-critique, and deep-mode revision artifacts
+- Writes `config.json`, `responses/`, `critiques/`, `revisions/`, `synthesis.md`, and `summary.json`
+- Detects role-gated `VETO: critical` and structured critical-risk artifact declarations before implementation
+- Requires explicit Gate A/B approval before any implementation handoff
+
+**Natural language triggers:**
+- `octo council this architecture decision`
+- `ask a council whether we should build or buy`
+- `get a panel recommendation and implementation plan`
 
 ---
 
@@ -618,7 +727,9 @@ NLSpec authoring — structured specification from multi-AI research.
 
 ### `/octo:review`
 
-Expert code review with comprehensive quality assessment and PR comment posting.
+Enhanced multi-LLM review with comprehensive quality assessment and PR comment posting.
+
+**Use Claude-native `/review` for ordinary review requests.** Use `/octo:review` when you want multiple model opinions, provider diversity, or stricter escalation.
 
 **Usage:**
 ```
@@ -659,7 +770,9 @@ Two-stage review pipeline: spec compliance then code quality.
 
 ### `/octo:security`
 
-Security audit with OWASP compliance and vulnerability detection.
+Enhanced multi-LLM or adversarial security audit with OWASP compliance and vulnerability detection.
+
+**Use Claude-native `/security-review` for ordinary security review requests.** Use `/octo:security` when you want escalated OWASP analysis, provider diversity, or adversarial validation.
 
 **Usage:**
 ```
@@ -753,7 +866,7 @@ Dark Factory Mode — spec-in, software-out autonomous pipeline.
 2. Parses the NLSpec file
 3. Generates test scenarios (Codex)
 4. Runs the full embrace workflow
-5. Evaluates against holdout test suite (Codex + Gemini blind review)
+5. Evaluates against holdout test suite with available-provider blind review
 6. Scores against satisfaction target
 7. Repeats if target not met (up to configured limit)
 8. Produces final delivery report
@@ -776,10 +889,10 @@ Force multi-provider parallel execution for any task — manual override mode.
 
 **What it does:**
 - Asks for intent and cost confirmation before proceeding
-- Runs the task in parallel across Codex, Gemini, and Claude
+- Runs the task in parallel across Claude plus available external providers
 - Synthesizes perspectives into a unified response
 
-**Cost:** Uses external API credits (Codex + Gemini). Confirms before running.
+**Cost:** May use external API credits or provider subscriptions. Confirms before running.
 
 **When to use:** High-stakes decisions, cross-checking important work, comparing model perspectives. For most tasks, the router (`/octo:auto` or `octo ...`) or specific workflow commands are better.
 
@@ -960,7 +1073,7 @@ Full UI/UX design workflow with BM25 design intelligence and optional Figma inte
 - 🎨 Figma MCP — Design context when a Figma URL is provided
 - 🧩 shadcn MCP — Component suggestions when available
 
-**Multi-LLM adversarial design critique** (v8.43.0+): Between Define and Develop phases, Codex, Gemini, and Claude each review the proposed design direction independently, issues are triaged, and fixes are applied before tokens/components are generated.
+**Multi-LLM adversarial design critique** (v8.43.0+): Between Define and Develop phases, Claude plus available external providers review the proposed design direction independently, issues are triaged, and fixes are applied before tokens/components are generated.
 
 ---
 
@@ -1214,6 +1327,27 @@ Show a cost breakdown by provider and workflow for the current session.
 
 ---
 
+### `octopus agent-summary`
+
+Show the current run's provider status table from `~/.claude-octopus/runs/<run-id>/agents.jsonl`.
+
+**Usage:**
+```
+octopus agent-summary
+octopus summary
+```
+
+**What it shows:**
+- Provider/agent name
+- Status: `ok`, `degraded`, `failed`, or `timeout`
+- Output token count and duration
+- Failure or degradation reason, including oversize prompt handling
+- Whether synthesis will continue or abort when `OCTOPUS_REQUIRE_ALL=true`
+
+Multi-provider commands call this automatically before synthesis when a run ledger is available.
+
+---
+
 ### `/octo:retro`
 
 Generate data-driven engineering retrospectives from git history.
@@ -1273,7 +1407,7 @@ Resume a previously-running Claude agent by ID.
 **Requirements:**
 - Claude Code v2.1.34+ (`SUPPORTS_CONTINUATION=true`)
 - Agent Teams enabled
-- Agent must be a Claude agent (Codex/Gemini agents don't support transcripts)
+- Agent must be a Claude agent (external CLI agents don't support transcripts)
 
 **Find agent IDs:** Check `/octo:sentinel` output or `~/.claude-octopus/results/` for recent result files.
 
@@ -1347,7 +1481,7 @@ Package and finalize completed work for delivery.
 
 **Behavior:**
 1. Verifies project is ready (all phases complete)
-2. Runs Multi-AI security audit (Codex + Gemini + Claude)
+2. Runs Multi-AI security audit with Claude plus available external providers
 3. Captures lessons learned
 4. Archives project state
 5. Creates shipped checkpoint
@@ -1397,6 +1531,9 @@ When Claude Octopus activates external CLIs, you'll see visual indicators:
 | 🔴 | Codex CLI executing | OpenAI (your OPENAI_API_KEY) |
 | 🟡 | Gemini CLI executing | Google (your GEMINI_API_KEY) |
 | 🟣 | Perplexity Sonar search | Your PERPLEXITY_API_KEY |
+| 🟢 | Qwen or Copilot executing | Qwen API-key/Coding-Plan auth or GitHub Copilot subscription |
+| 🟠 | OpenCode/OpenRouter provider executing | Local/OpenRouter configuration |
+| 🌐 | Web research source | WebFetch/WebSearch or configured web provider |
 | 🔵 | Claude subagent | Included with Claude Code |
 
 **Rule of thumb:**
@@ -1413,6 +1550,11 @@ Providers:
 🔴 Codex CLI - Technical implementation analysis
 🟡 Gemini CLI - Ecosystem and community research
 🔵 Claude - Strategic synthesis
+
+Agent run summary
+Provider               | Status      | Tokens | Time | Reason
+codex                  | ok          |   4200 |  18s | -
+gemini                 | degraded    |   1800 |  61s | prompt summarized before dispatch
 ```
 
 ---
@@ -1437,6 +1579,8 @@ Instead of slash commands, you can use natural language with the `octo` prefix:
 - `octo build ...`, `octo implement ...`, `/octo:develop ...`
 - `octo review ...`, `octo validate ...`, `/octo:review ...`
 - `/octo:multi ...` or "run this with all providers ..." for forced parallel mode
+- `/octo:configure`, `/octo:config`, `/octo:init`, and `/octo:wizard` for setup
+- Mistyped explicit `/octo:*` commands show close matches instead of failing silently
 
 **Usually Claude-only:**
 - "read `file.ts`", "show git status", "find all routes", "fix this typo"

@@ -1,16 +1,42 @@
 ---
 command: model-config
 description: Configure AI provider models for Claude Octopus workflows
-version: 4.0.0
+version: 4.0.1
 category: configuration
 tags: [config, models, providers, codex, gemini, spark, routing, trace, interactive]
 created: 2025-01-21
-updated: 2026-04-06
+updated: 2026-04-21
 ---
 
 # Model Configuration
 
 **Your first output line MUST be:** `🐙 Octopus Model Config`
+
+## STEP 0: Emit Banner (MANDATORY — run before AskUserQuestion or any other step)
+
+```bash
+echo "🐙 Octopus Model Config"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "provider | model | config | routing | cost"
+```
+
+**Preflight — Ensure plugin root is resolvable (run via Bash tool):**
+
+```bash
+OCTO_ROOT="${HOME}/.claude-octopus/plugin"
+if [[ ! -x "$OCTO_ROOT/scripts/orchestrate.sh" ]]; then
+  helper="$OCTO_ROOT/scripts/helpers/ensure-plugin-root.sh"
+  if [[ ! -x "$helper" ]]; then
+    helper="$(find "${HOME}/.claude/plugins/cache" "${HOME}/Library/Application Support/Claude" "${LOCALAPPDATA:-/dev/null}/Claude" "${XDG_DATA_HOME:-${HOME}/.local/share}/Claude" -maxdepth 8 -path "*/nyldn-plugins/octo/*/scripts/helpers/ensure-plugin-root.sh" -print -quit 2>/dev/null)"
+  fi
+  [[ -x "$helper" ]] && bash "$helper" >/dev/null 2>&1 || true
+fi
+test -x "$OCTO_ROOT/scripts/orchestrate.sh" && echo "plugin-root:ok" || echo "plugin-root:missing"
+```
+
+If the output is `plugin-root:missing`, stop and ask the user to run `/octo:setup`.
+
+Run this unconditionally — even when arguments are provided or when going to interactive wizard. The explicit bash block ensures the banner emits even when the command routes straight to `AskUserQuestion` (which historically skipped the inline-prose instruction and broke E2E pattern matching — see #301).
 
 Interactive model configuration wizard. Detects installed providers, shows current settings, and guides users through configuration with AskUserQuestion.
 
@@ -48,6 +74,7 @@ Providers                          Status
   🔵 Claude (Sonnet/Opus)          Built-in ✓
   🔴 Codex (GPT-5.4)              [Installed ✓ / Missing ✗]  → current: <model>
   🟡 Gemini                        [Installed ✓ / Missing ✗]  → current: <model>
+  🧭 Antigravity (`agy`)           [Installed ✓ / Missing ✗]  → current: <model>
   🟣 Perplexity                    [Configured ✓ / Not set]
   🟠 OpenRouter                    [Configured ✓ / Not set]
   ...other installed providers...
@@ -78,9 +105,11 @@ AskUserQuestion({
     header: "Model Config",
     multiSelect: false,
     options: [
-      {label: "Provider defaults", description: "Set default models for Codex, Gemini, OpenRouter, etc."},
+      {label: "Provider defaults", description: "Set default models for Codex, Gemini, Antigravity, OpenRouter, etc."},
       {label: "Phase routing", description: "Choose which model handles each workflow phase (discover, develop, review, etc.)"},
+      {label: "Role routing overrides", description: "Route specific roles/personas such as researcher, logic-reviewer, or qa-reviewer"},
       {label: "Debate & multi-LLM", description: "Configure which providers participate in debates, parallel execution, and reviews"},
+      {label: "Session provider availability", description: "Temporarily enable or disable providers for this Claude Code session"},
       {label: "Cost mode", description: "Switch between budget, standard, and premium model tiers"},
       {label: "Reset to defaults", description: "Reset all or specific provider configuration"}
     ]
@@ -100,11 +129,13 @@ AskUserQuestion({
     multiSelect: false,
     options: [
       // Always show:
-      {label: "🔵 Claude", description: "Current: claude-sonnet-4.6 / claude-opus-4.6 — built-in, no config needed"},
+      {label: "🔵 Claude", description: "Current: claude-sonnet-4.6 / claude-opus-4.7 (legacy 4.6 available) — built-in, no config needed"},
       // Only if codex installed:
       {label: "🔴 Codex (OpenAI)", description: "Current: <current_model> — handles implementation, reasoning"},
       // Only if gemini installed:
       {label: "🟡 Gemini (Google)", description: "Current: <current_model> — handles research, creative tasks"},
+      // Only if agy installed:
+      {label: "🧭 Antigravity (agy)", description: "Current: <current_model> — additional external-model perspective"},
       // Only if perplexity configured:
       {label: "🟣 Perplexity", description: "Current: <current_model> — handles web search, real-time data"},
       // Only if openrouter configured:
@@ -170,8 +201,9 @@ AskUserQuestion({
 ```
 
 After selection, apply the change:
+
 ```bash
-/path/to/orchestrate.sh set-model <provider> <model>
+${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh set-model <provider> <model>
 ```
 
 Then confirm: `✓ Set <provider> default → <model>`
@@ -264,9 +296,10 @@ AskUserQuestion({
     multiSelect: true,
     options: [
       // Only show installed/configured providers
-      {label: "🔵 Claude (Sonnet 4.6)", description: "Moderator — instruction-following, synthesis"},
+      {label: "🔵 Claude (Sonnet 4.6 / Opus 4.7)", description: "Moderator — instruction-following, synthesis"},
       {label: "🔴 Codex (GPT-5.4)", description: "Technical depth — architecture, implementation"},
       {label: "🟡 Gemini", description: "Ecosystem perspective — alternatives, trends"},
+      {label: "🧭 Antigravity (agy)", description: "Alternate model perspective via Antigravity CLI"},
       {label: "🟠 OpenRouter: GLM-5", description: "Code review specialist — quality focus"},
       {label: "🟠 OpenRouter: Kimi K2.5", description: "Research perspective — broad knowledge"},
       {label: "🟤 OpenCode", description: "Multi-model router — varied perspectives"}
@@ -327,6 +360,74 @@ To make permanent: add to ~/.zshrc or ~/.bashrc
 
 Or offer to set it in the config file.
 
+
+### Route: Role Routing Overrides
+
+Use role routing when a specific persona or workflow role should use a different provider/model than the phase or provider default. Examples: route `researcher` to `agy:default`, route `logic-reviewer` to `codex:logic_review`, or route QA roles to a review model while implementation remains on the provider default.
+
+Show current role overrides:
+
+```bash
+${HOME}/.claude-octopus/plugin/scripts/helpers/octo-model-config.sh show roles
+```
+
+Set or remove an override:
+
+```bash
+${HOME}/.claude-octopus/plugin/scripts/helpers/octo-model-config.sh route-role <role> <provider:capability-or-model>
+${HOME}/.claude-octopus/plugin/scripts/helpers/octo-model-config.sh unroute-role <role>
+```
+
+Role overrides are intentionally sparse. Do not restate defaults; add a role only when it needs deterministic routing different from the provider/persona default.
+
+### Route: Session Provider Availability
+
+Use this when the user wants to turn a provider off for the current session, for example when Codex quota is exhausted and they want Claude + Gemini only.
+
+First show the current allowlist:
+
+```bash
+${HOME}/.claude-octopus/plugin/scripts/helpers/octo-model-config.sh providers
+```
+
+Then ask which providers should be available:
+
+```
+AskUserQuestion({
+  questions: [{
+    question: "Which providers should Octopus use for this session?",
+    header: "Providers",
+    multiSelect: true,
+    options: [
+      {label: "Claude", description: "Built-in Claude providers"},
+      {label: "Codex", description: "OpenAI Codex CLI"},
+      {label: "Gemini", description: "Google Gemini CLI"},
+      {label: "Copilot", description: "GitHub Copilot CLI"},
+      {label: "Qwen", description: "Qwen Code CLI"},
+      {label: "OpenCode", description: "OpenCode multi-provider router"},
+      {label: "Perplexity", description: "Live web research via API key"},
+      {label: "OpenRouter", description: "OpenRouter API models"}
+    ]
+  }]
+})
+```
+
+Apply the selection as a session allowlist:
+
+```bash
+${HOME}/.claude-octopus/plugin/scripts/helpers/octo-model-config.sh allow <providers...> --session
+```
+
+Useful direct commands:
+
+```bash
+${HOME}/.claude-octopus/plugin/scripts/helpers/octo-model-config.sh disable codex --session
+${HOME}/.claude-octopus/plugin/scripts/helpers/octo-model-config.sh allow claude gemini --session
+${HOME}/.claude-octopus/plugin/scripts/helpers/octo-model-config.sh clear-allowlist --session
+```
+
+Explain that `OCTO_ALLOWED_PROVIDERS` still wins when it is set in the shell environment.
+
 ### Route: Reset
 
 ```
@@ -373,10 +474,18 @@ When invoked WITH arguments (e.g., `/octo:model-config codex gpt-5.4`), skip the
 
 1. **Parse arguments** to determine action:
    - `show phases` → Display formatted phase routing table
+   - `show roles` → Display explicit role routing overrides
    - `<provider> <model>` → Set model (persistent)
    - `<provider>.<capability> <model>` → Set capability-specific model
    - `<provider> <model> --session` → Set model (session only)
    - `phase <phase> <model>` → Set phase-specific model routing
+   - `route-role <role> <target>` → Set role/persona routing override
+   - `unroute-role <role>` → Remove role/persona routing override
+   - `providers` → Show current provider allowlist source and value
+   - `allow <providers...> --session` → Use only these providers for the current session
+   - `disable <providers...> --session` → Remove providers from the current session
+   - `enable <providers...> --session` → Add providers to the current session allowlist
+   - `clear-allowlist --session` → Restore default provider availability for the current session
    - `reset <provider|all>` → Reset to defaults
 
 2. **Set Model** (`<provider> <model>` or with `--session`):
@@ -401,11 +510,13 @@ When invoked WITH arguments (e.g., `/octo:model-config codex gpt-5.4`), skip the
 
 4. **Reset**: Use default values from the ensure_config block in `scripts/helpers/octo-model-config.sh`.
 
+5. **Provider Availability**: Use `scripts/helpers/octo-model-config.sh providers|allow|enable|disable|clear-allowlist`. These commands write to `~/.claude-octopus/config/provider-allowlist.<session>` by default. Global files are supported with `--global`, but prefer session scope unless the user explicitly asks for a persistent change.
+
 5. Always show confirmation and the updated value after any change.
 
 ### Validation Gates
 
-- Provider names validated against whitelist: `codex gemini claude perplexity openrouter opencode copilot ollama qwen`
+- Provider names validated against whitelist: `codex gemini agy antigravity claude perplexity openrouter openai-compatible openai-tools openai-compatible-agent opencode copilot ollama qwen`
 - Phase names validated against known list
 - Model names checked for injection safety (alphanumeric, hyphens, dots, slashes only)
 - Config file operations use atomic write (tmp + mv)

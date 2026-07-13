@@ -4,6 +4,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+source "$SCRIPT_DIR/../helpers/test-framework.sh"
+test_suite "probe-single command: single-agent probe for multi-agentic skill dispatch (v8.54.0)"
+
 ORCHESTRATE="$PROJECT_ROOT/scripts/orchestrate.sh"
 
 # Combined search target (functions decomposed to lib/ in v9.7.7+)
@@ -11,12 +15,11 @@ ALL_SRC=$(mktemp)
 trap 'rm -f "$ALL_SRC"' EXIT
 cat "$ORCHESTRATE" "$PROJECT_ROOT/scripts/lib/"*.sh > "$ALL_SRC" 2>/dev/null
 
-TEST_COUNT=0; PASS_COUNT=0; FAIL_COUNT=0
-pass() { TEST_COUNT=$((TEST_COUNT+1)); PASS_COUNT=$((PASS_COUNT+1)); echo "PASS: $1"; }
-fail() { TEST_COUNT=$((TEST_COUNT+1)); FAIL_COUNT=$((FAIL_COUNT+1)); echo "FAIL: $1 — $2"; }
+pass() { test_case "$1"; test_pass; }
+fail() { test_case "$1"; test_fail "${2:-$1}"; }
 assert_contains() {
   local output="$1" pattern="$2" label="$3"
-  echo "$output" | grep -qE "$pattern" && pass "$label" || fail "$label" "missing: $pattern"
+  grep -qE "$pattern" <<< "$output" && pass "$label" || fail "$label" "missing: $pattern"
 }
 
 # ── probe_single_agent function exists ────────────────────────────────────────
@@ -31,7 +34,7 @@ assert_contains "$(grep -c 'probe-single)' "$ALL_SRC" 2>/dev/null || echo 0)" \
 
 # ── probe-single calls probe_single_agent ────────────────────────────────────
 
-assert_contains "$(grep -A10 'probe-single)' "$ALL_SRC" | head -15)" \
+assert_contains "$(grep -A40 'probe-single)' "$ALL_SRC" | head -45)" \
   "probe_single_agent" "probe-single: dispatch calls probe_single_agent()"
 
 # ── probe_single_agent writes result files ───────────────────────────────────
@@ -61,22 +64,30 @@ assert_contains "$(grep -A200 'probe_single_agent()' "$ALL_SRC" | head -220)" \
 
 # ── probe_single_agent outputs result file path ──────────────────────────────
 
-assert_contains "$(grep -A250 'probe_single_agent()' "$ALL_SRC" | head -270)" \
+assert_contains "$(grep -A300 'probe_single_agent()' "$ALL_SRC" | head -310)" \
   'echo.*result_file' "probe_single_agent: outputs result file path on stdout"
 
 # ── probe_single_agent handles timeout status ────────────────────────────────
 
-assert_contains "$(grep -A250 'probe_single_agent()' "$ALL_SRC" | head -270)" \
+assert_contains "$(grep -A300 'probe_single_agent()' "$ALL_SRC" | head -310)" \
   "Status: TIMEOUT" "probe_single_agent: handles TIMEOUT status"
 
 # ── probe_single_agent handles failure status ────────────────────────────────
 
-assert_contains "$(grep -A250 'probe_single_agent()' "$ALL_SRC" | head -270)" \
+assert_contains "$(grep -A300 'probe_single_agent()' "$ALL_SRC" | head -310)" \
   "Status: FAILED" "probe_single_agent: handles FAILED status"
+
+# ── probe_single_agent preserves recovered Codex stderr transcript ───────────
+
+assert_contains "$(grep -A300 'probe_single_agent()' "$ALL_SRC" | head -310)" \
+  "Errors transcript below" "probe_single_agent: announces recovered Codex stderr transcript"
+
+assert_contains "$(grep -A300 'probe_single_agent()' "$ALL_SRC" | head -310)" \
+  'cat "\$temp_errors" >> "\$result_file"' "probe_single_agent: appends recovered Codex stderr transcript"
 
 # ── flow-discover.md references probe-single ─────────────────────────────────
 
-FLOW_DISCOVER="$PROJECT_ROOT/.claude/skills/flow-discover.md"
+FLOW_DISCOVER="$(resolve_claude_skill_path "flow-discover")"
 assert_contains "$(grep -c 'probe-single' "$FLOW_DISCOVER" 2>/dev/null || echo 0)" \
   "[1-9]" "flow-discover.md: references probe-single command"
 
@@ -162,14 +173,4 @@ assert_contains "$(grep -c 'probe_discover()' "$ALL_SRC" 2>/dev/null || echo 0)"
 
 assert_contains "$(grep -c 'discover|research|probe)' "$ALL_SRC" 2>/dev/null || echo 0)" \
   "[1-9]" "discover|research|probe: original dispatch still exists (backward compat)"
-
-# ── Summary ──────────────────────────────────────────────────────────────────
-
-echo ""
-echo "═══════════════════════════════════════════"
-echo "probe-single tests: $PASS_COUNT/$TEST_COUNT passed"
-if [[ $FAIL_COUNT -gt 0 ]]; then
-  echo "$FAIL_COUNT FAILED"
-  exit 1
-fi
-echo "All tests passed."
+test_summary

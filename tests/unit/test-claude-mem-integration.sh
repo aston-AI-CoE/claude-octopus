@@ -5,6 +5,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+source "$SCRIPT_DIR/../helpers/test-framework.sh"
+test_suite "claude-mem companion integration (v9.0.0)"
+
 ORCH_MAIN="$PROJECT_ROOT/scripts/orchestrate.sh"
 # Combined search target (functions decomposed to lib/ in v9.7.7+)
 ORCH=$(mktemp)
@@ -12,9 +16,8 @@ trap 'rm -f "$ORCH"' EXIT
 cat "$ORCH_MAIN" "$PROJECT_ROOT/scripts/lib/"*.sh > "$ORCH" 2>/dev/null
 BRIDGE="$PROJECT_ROOT/scripts/claude-mem-bridge.sh"
 
-TEST_COUNT=0; PASS_COUNT=0; FAIL_COUNT=0
-pass() { TEST_COUNT=$((TEST_COUNT+1)); PASS_COUNT=$((PASS_COUNT+1)); echo "PASS: $1"; }
-fail() { TEST_COUNT=$((TEST_COUNT+1)); FAIL_COUNT=$((FAIL_COUNT+1)); echo "FAIL: $1 — $2"; }
+pass() { test_case "$1"; test_pass; }
+fail() { test_case "$1"; test_fail "${2:-$1}"; }
 
 # ── 1. Bridge script exists and is executable ────────────────────────
 
@@ -65,7 +68,7 @@ fi
 # ── 5. Skill hints for claude-mem MCP tools ──────────────────────────
 
 for skill in flow-discover flow-define flow-develop flow-deliver; do
-    if grep -c 'claude-mem' "$PROJECT_ROOT/.claude/skills/${skill}.md" >/dev/null 2>&1; then
+    if grep -c 'claude-mem' "$(resolve_claude_skill_path "$skill")" >/dev/null 2>&1; then
         pass "Skill hint: ${skill}.md mentions claude-mem"
     else
         fail "Skill hint: ${skill}.md mentions claude-mem" "no claude-mem reference"
@@ -73,7 +76,7 @@ for skill in flow-discover flow-define flow-develop flow-deliver; do
 done
 
 for skill in skill-debate skill-deep-research; do
-    if grep -c 'claude-mem' "$PROJECT_ROOT/.claude/skills/${skill}.md" >/dev/null 2>&1; then
+    if grep -c 'claude-mem' "$(resolve_claude_skill_path "$skill")" >/dev/null 2>&1; then
         pass "Skill hint: ${skill}.md mentions claude-mem"
     else
         fail "Skill hint: ${skill}.md mentions claude-mem" "no claude-mem reference"
@@ -90,18 +93,21 @@ fi
 
 # ── 7. Observation wiring in save_session_checkpoint ─────────────────
 
-if grep -c 'bridge_script.*observe\|claude-mem-bridge.*observe' "$ORCH" >/dev/null 2>&1; then
-    pass "Wired: save_session_checkpoint calls bridge observe"
+# v9.22.0 memory refactor: save_session_checkpoint now routes through memory_observe
+# (lib/memory.sh), which delegates to the claude-mem or mcp-memory-service bridge.
+# Accept either the legacy direct-bridge call or the new façade.
+if grep -qE 'bridge_script.*observe|claude-mem-bridge.*observe|memory_observe[[:space:]]|"\$bridge"[[:space:]]+observe' "$ORCH"; then
+    pass "Wired: save_session_checkpoint calls bridge observe (or memory_observe façade)"
 else
-    fail "Wired: save_session_checkpoint calls bridge observe" "no bridge observe call"
+    fail "Wired: save_session_checkpoint calls bridge observe" "no bridge observe or memory_observe call found"
 fi
 
-# ── 8. SessionStart memory hook queries claude-mem ───────────────────
+# ── 8. SessionStart memory hook queries the memory contract ──────────
 
-if grep -c 'BRIDGE_SCRIPT\|claude-mem-bridge' "$PROJECT_ROOT/hooks/session-start-memory.sh" >/dev/null 2>&1; then
-    pass "Wired: session-start-memory.sh queries claude-mem context"
+if grep -c 'memory_context\|scripts/lib/memory.sh' "$PROJECT_ROOT/hooks/session-start-memory.sh" >/dev/null 2>&1; then
+    pass "Wired: session-start-memory.sh queries memory contract context"
 else
-    fail "Wired: session-start-memory.sh queries claude-mem context" "no bridge reference in hook"
+    fail "Wired: session-start-memory.sh queries memory contract context" "no memory contract reference in hook"
 fi
 
 # ── 9. Provider report card function exists ──────────────────────────
@@ -180,14 +186,4 @@ if grep -c 'provider_status_file' "$ORCH" >/dev/null 2>&1; then
 else
     fail "Review: provider status tracking file used" "no provider_status_file in review_run"
 fi
-
-# ── Summary ──────────────────────────────────────────────────────────
-
-echo ""
-echo "==============================================="
-echo "claude-mem integration tests: $PASS_COUNT/$TEST_COUNT passed"
-if [[ $FAIL_COUNT -gt 0 ]]; then
-    echo "$FAIL_COUNT FAILED"
-    exit 1
-fi
-echo "All tests passed."
+test_summary

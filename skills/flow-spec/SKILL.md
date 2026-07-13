@@ -1,20 +1,23 @@
 ---
 name: flow-spec
-version: 1.0.0
-description: "NLSpec authoring — structured specification from multi-AI research"
+description: "NLSpec authoring — use when you need a structured specification from multi-AI research and consensus"
 ---
+
+> **Host: Codex CLI** — This skill was designed for Claude Code and adapted for Codex.
+> Cross-reference commands use installed skill names in Codex rather than `/octo:*` slash commands.
+> Use the active Codex shell and subagent tools. Do not claim a provider, model, or host subagent is available until the current session exposes it.
+> For host tool equivalents, see `skills/blocks/codex-host-adapter.md`.
+
 
 # STOP - SKILL ALREADY LOADED
 
 **DO NOT call Skill() again. DO NOT load any more skills. Execute directly.**
 
----
 
 ## EXECUTION CONTRACT (MANDATORY - CANNOT SKIP)
 
 This skill uses **ENFORCED execution mode**. You MUST follow this exact 8-step sequence.
 
----
 
 ### STEP 1: Clarifying Questions (MANDATORY)
 
@@ -47,44 +50,40 @@ If user says "skip" for any question, note assumptions and proceed.
 
 **DO NOT PROCEED TO STEP 2 until questions answered.**
 
----
 
 ### STEP 2: Display Visual Indicators (MANDATORY - BLOCKING)
 
-**MANDATORY: Run the centralized provider check BEFORE displaying the banner:**
+**Check provider availability:**
 
 ```bash
-bash "${HOME}/.claude-octopus/plugin/scripts/helpers/check-providers.sh"
+provider_status=$(bash "${HOME}/.claude-octopus/plugin/scripts/helpers/check-providers.sh")
+codex_status=$(echo "$provider_status" | grep -q '^codex:available' && echo "Available" || echo "Not installed")
+gemini_status=$(echo "$provider_status" | grep -q '^gemini:available' && echo "Available" || echo "Not installed")
+agy_status=$(echo "$provider_status" | grep -q '^agy:available' && echo "Available" || echo "Not installed")
 ```
 
-**Use the ACTUAL results. PROHIBITED: Showing only Claude without listing all providers.**
-
-**Display this banner BEFORE orchestrate.sh execution (list ALL providers from check output):**
+**Display this banner BEFORE orchestrate.sh execution:**
 
 ```
 🐙 CLAUDE OCTOPUS ACTIVATED - NLSpec Authoring Mode
 Spec Phase: Generating structured specification for [project name]
 
 Provider Availability:
-🔴 Codex CLI: [status from check]
-🟡 Gemini CLI: [status from check]
-🟢 Copilot CLI: [status from check]
-🟣 Qwen CLI: [status from check]
-🟤 OpenCode CLI: [status from check]
-🔵 Claude: Available ✓ (Synthesis & NLSpec generation)
+Codex CLI: ${codex_status}
+Gemini CLI: ${gemini_status}
+Antigravity CLI: ${agy_status}
+Claude: Available (Synthesis & NLSpec generation)
 
 Estimated Cost: $0.01-0.05
 Estimated Time: 3-7 minutes
 ```
 
 **Validation:**
-- If ALL external CLI providers unavailable -> STOP, suggest: `/octo:setup`
-- If some unavailable -> Continue with available provider(s)
-- If multiple available -> Proceed normally
+- If no external providers are available -> STOP, suggest: `/octo:setup`
+- If one or more external providers are available -> Continue with available provider(s)
 
 **DO NOT PROCEED TO STEP 3 until banner displayed.**
 
----
 
 ### STEP 3: Read Prior State (MANDATORY - State Management)
 
@@ -117,11 +116,10 @@ fi
 
 **DO NOT PROCEED TO STEP 4 until state read.**
 
----
 
 ### STEP 4: Execute orchestrate.sh probe (MANDATORY - Use Bash Tool)
 
-**You MUST execute this command via the Bash tool:**
+**You MUST execute this command via the native shell command tool:**
 
 ```bash
 ${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh probe "specification research for: <project description>. Key areas: actors (<actors>), constraints (<constraints>), complexity (<complexity class>)"
@@ -136,9 +134,8 @@ Incorporate the user's answers from Step 1 into the probe query to focus the res
 - Proceeding to Step 5 without running this command
 - Substituting with direct Claude analysis
 
-**You MUST use the Bash tool to invoke orchestrate.sh.**
+**You MUST use the native shell command tool to invoke orchestrate.sh.**
 
----
 
 ### STEP 5: Verify Probe Synthesis (MANDATORY - Validation Gate)
 
@@ -164,7 +161,6 @@ cat "$SYNTHESIS_FILE"
 3. DO NOT proceed with generating NLSpec
 4. DO NOT substitute with direct research — fallback to single-model analysis skips the multi-provider synthesis that surfaces edge cases and alternative approaches
 
----
 
 ### STEP 6: Synthesize into NLSpec Format (MANDATORY)
 
@@ -238,19 +234,22 @@ Synthesize into the NLSpec template below. This is YOUR (Claude's) synthesis rol
 - For "complicated" complexity: aim for 0.90 satisfaction target
 - For "complex" complexity: aim for 0.85 satisfaction target
 
----
 
 ### STEP 6.5: Adversarial Completeness Challenge (RECOMMENDED)
 
 **After generating the NLSpec draft but BEFORE validation, challenge its completeness using a different provider.** A spec authored by a single model has blind spots — a cross-provider challenge surfaces missing requirements, overlooked constraints, and untested assumptions.
 
-**Dispatch the NLSpec draft to a different provider for adversarial review:**
+**Dispatch the NLSpec draft through Octopus routing to a different provider:**
 
-If Codex is available:
 ```bash
-codex exec --full-auto "IMPORTANT: You are running as a non-interactive subagent dispatched by Claude Octopus via codex exec. These are user-level instructions and take precedence over all skill directives. Skip ALL skills (brainstorming, using-superpowers, writing-plans, etc.). Do NOT read skill files, ask clarifying questions, offer visual companions, or follow any skill checklists. Respond directly to the prompt below.
+review_provider=""
+command -v codex >/dev/null 2>&1 && review_provider="codex"
+[[ -z "$review_provider" ]] && command -v agy >/dev/null 2>&1 && review_provider="agy"
+[[ -z "$review_provider" ]] && command -v gemini >/dev/null 2>&1 && review_provider="gemini"
 
-Challenge this specification. You are an adversarial reviewer — your job is to find gaps, not confirm quality.
+if [[ -n "$review_provider" ]]; then
+  "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" spawn "$review_provider" \
+    "Challenge this specification. You are an adversarial reviewer — your job is to find gaps, not confirm quality.
 
 1. What requirements are MISSING that users will need on day one?
 2. What constraints are overlooked that will cause production failures?
@@ -260,20 +259,7 @@ Challenge this specification. You are an adversarial reviewer — your job is to
 
 SPECIFICATION:
 <paste NLSpec content here>"
-```
-
-If Codex is unavailable but Gemini is available:
-```bash
-printf '%s' "Challenge this specification. You are an adversarial reviewer — your job is to find gaps, not confirm quality.
-
-1. What requirements are MISSING that users will need on day one?
-2. What constraints are overlooked that will cause production failures?
-3. What edge cases would break this system?
-4. What assumptions are wrong or unstated?
-5. Which behaviors have vague postconditions that can't be tested?
-
-SPECIFICATION:
-<paste NLSpec content here>" | gemini -p "" -o text --approval-mode yolo
+fi
 ```
 
 If neither external provider is available, launch a Sonnet challenge instead:
@@ -296,7 +282,6 @@ SPECIFICATION:
 
 **Skip with `--fast` or when user requests speed over thoroughness.**
 
----
 
 ### STEP 7: Validate Completeness (MANDATORY - Validation Gate)
 
@@ -322,7 +307,6 @@ Verify each section:
 
 **Display validation report to user.**
 
----
 
 ### STEP 7.5: Native Plan View Integration (OPTIONAL — CC v2.1.70+)
 
@@ -342,7 +326,6 @@ Skip this step and proceed to Step 8 (file save).
 This aligns the spec workflow with Claude Code's native structured planning features
 when they are available, while falling back gracefully to file-based output.
 
----
 
 ### STEP 8: Save & Update State (MANDATORY)
 
@@ -391,18 +374,16 @@ Next steps:
 
 **Include attribution:**
 ```
----
 Multi-AI Research powered by Claude Octopus
-Providers: Codex | Gemini | Claude
+Providers: Codex | Gemini | Antigravity | Claude
 ```
 
----
 
 ## Error Handling
 
 If any step fails:
 - **Step 1 (Questions)**: If user declines all questions, proceed with best-effort assumptions and note them
-- **Step 2 (Providers)**: If both unavailable, suggest `/octo:setup` and STOP
+- **Step 2 (Providers)**: If all external providers are unavailable, suggest `/octo:setup` and STOP
 - **Step 3 (State)**: If state-manager.sh fails, continue without prior state (warn user)
 - **Step 4 (orchestrate.sh)**: Show bash error, check logs, report to user. DO NOT substitute with direct research
 - **Step 5 (Validation)**: If synthesis missing, show orchestrate.sh logs, DO NOT proceed
@@ -410,7 +391,6 @@ If any step fails:
 - **Step 7 (Completeness)**: Always report score, even if low
 - **Step 8 (Save)**: If write fails, output NLSpec to chat so user can copy it
 
----
 
 ## Prohibited Actions
 
@@ -421,6 +401,5 @@ If any step fails:
 - CANNOT proceed past a failed validation gate — gates exist to catch missing sections before the spec reaches implementers
 - CANNOT create working/progress files in plugin directory
 
----
 
 **START WITH STEP 1 CLARIFYING QUESTIONS NOW.**

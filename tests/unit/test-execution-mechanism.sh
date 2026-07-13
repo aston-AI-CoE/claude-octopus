@@ -9,9 +9,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-TEST_COUNT=0; PASS_COUNT=0; FAIL_COUNT=0
-pass() { TEST_COUNT=$((TEST_COUNT+1)); PASS_COUNT=$((PASS_COUNT+1)); echo "PASS: $1"; }
-fail() { TEST_COUNT=$((TEST_COUNT+1)); FAIL_COUNT=$((FAIL_COUNT+1)); echo "FAIL: $1 — $2"; }
+source "$SCRIPT_DIR/../helpers/test-framework.sh"
+test_suite "that all multi-LLM workflow commands have the EXECUTION MECHANISM enforcement block."
+
+
+pass() { test_case "$1"; test_pass; }
+fail() { test_case "$1"; test_fail "${2:-$1}"; }
 
 # ── Commands that MUST have EXECUTION MECHANISM ────────────────────────────
 # These are multi-LLM commands where the agent must use orchestrate.sh or skill dispatch.
@@ -90,22 +93,75 @@ else
 fi
 
 echo ""
-echo "=== Embrace Chains Skills (Not One Big Bash Call) ==="
+echo "=== Embrace Chains Direct Workflow Dispatches ==="
 
 EMBRACE="$PROJECT_ROOT/.claude/commands/embrace.md"
 if [[ -f "$EMBRACE" ]]; then
-    skill_invocations=$(grep -c 'Skill(skill: "octo:' "$EMBRACE" 2>/dev/null || echo 0)
-    if [[ $skill_invocations -ge 4 ]]; then
-        pass "embrace.md chains $skill_invocations skill invocations"
+    missing_dispatches=()
+    for workflow in probe grasp tangle ink; do
+        # Accept both the legacy bare form (`orchestrate.sh probe`) and the
+        # quoted absolute-path form (`orchestrate.sh" probe`) introduced when
+        # the docs stopped cd-ing into the plugin (bug 260609).
+        if ! grep -qE "orchestrate\.sh\"? ${workflow}" "$EMBRACE" 2>/dev/null; then
+            missing_dispatches+=("$workflow")
+        fi
+    done
+
+    if [[ ${#missing_dispatches[@]} -eq 0 ]]; then
+        pass "embrace.md chains direct orchestrate.sh workflow dispatches"
     else
-        fail "embrace.md only has $skill_invocations skill invocations" "Must chain at least 4 (discover+define+develop+deliver)"
+        fail "embrace.md missing direct workflow dispatches" "Missing: ${missing_dispatches[*]}"
     fi
+
+    if grep -qE 'Skill\(skill: "octo:(discover|define|develop|deliver)"' "$EMBRACE" 2>/dev/null; then
+        fail "embrace.md contains recursive workflow Skill invocation" "Must call orchestrate.sh directly for discover/define/develop/deliver phases"
+    else
+        pass "embrace.md avoids recursive workflow Skill invocations"
+    fi
+else
+    fail "embrace.md not found" "$EMBRACE missing"
 fi
 
-# ── Summary ──────────────────────────────────────────────────────────────────
-
 echo ""
-echo "═══════════════════════════════════════════════════"
-echo "execution-mechanism: $PASS_COUNT/$TEST_COUNT passed"
-[[ $FAIL_COUNT -gt 0 ]] && echo "FAILURES: $FAIL_COUNT" && exit 1
-echo "All tests passed."
+echo "=== Develop Direct Dispatch Preserves Preflight ==="
+
+for develop_file in "$PROJECT_ROOT/.claude/commands/develop.md" "$PROJECT_ROOT/.cursor-plugin/commands/octo-develop.md"; do
+    develop_name=$(basename "$develop_file")
+    if [[ -f "$develop_file" ]]; then
+        preflight_line=$(grep -n 'helpers/check-providers.sh' "$develop_file" | head -1 | cut -d: -f1 || true)
+        banner_line=$(grep -n 'CLAUDE OCTOPUS ACTIVATED' "$develop_file" | head -1 | cut -d: -f1 || true)
+        dispatch_line=$(grep -n 'orchestrate.sh" develop' "$develop_file" | head -1 | cut -d: -f1 || true)
+
+        if [[ -n "$dispatch_line" ]]; then
+            pass "$develop_name dispatches via orchestrate.sh develop"
+        else
+            fail "$develop_name missing direct dispatch" "Develop docs must call orchestrate.sh develop"
+        fi
+
+        if [[ -n "$dispatch_line" ]]; then
+            if [[ -n "$preflight_line" && "$preflight_line" -lt "$dispatch_line" ]]; then
+                pass "$develop_name checks provider availability before dispatch"
+            else
+                fail "$develop_name missing provider preflight" "Direct develop dispatch must run helpers/check-providers.sh before orchestrate.sh"
+            fi
+
+            if [[ -n "$banner_line" && "$banner_line" -lt "$dispatch_line" ]]; then
+                pass "$develop_name displays workflow indicator before dispatch"
+            else
+                fail "$develop_name missing workflow indicator" "Direct develop dispatch must show the Octopus activation banner before orchestrate.sh"
+            fi
+        fi
+
+        if grep -q 'OCTOPUS_EFFORT_OVERRIDE' "$develop_file" \
+           && grep -q 'OCTOPUS_OPUS_MODE' "$develop_file" \
+           && grep -q 'Fast Opus 4.8 mode is 2x standard cost' "$develop_file" \
+           && grep -q 'project memory' "$develop_file"; then
+            pass "$develop_name documents model effort and memory policy"
+        else
+            fail "$develop_name missing model effort policy" "Develop command must document effort overrides, current Fast Opus cost, and memory recording policy"
+        fi
+    else
+        fail "$develop_name not found" "$develop_file missing"
+    fi
+done
+test_summary

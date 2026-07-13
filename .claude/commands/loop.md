@@ -1,6 +1,6 @@
 ---
 command: loop
-description: Execute tasks in loops with conditions, iterative improvements until goals are met
+description: "[advanced] Execute tasks in loops with conditions, iterative improvements until goals are met"
 ---
 
 # Loop - Iterative Execution Skill
@@ -10,7 +10,7 @@ description: Execute tasks in loops with conditions, iterative improvements unti
 ## Instructions
 
 Read and follow the full skill instructions from:
-`${HOME}/.claude-octopus/plugin/.claude/skills/skill-iterative-loop.md`
+`${HOME}/.claude-octopus/plugin/.claude/skills/skill-iterative-loop/SKILL.md`
 
 ## Quick Usage
 

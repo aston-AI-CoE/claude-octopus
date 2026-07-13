@@ -15,6 +15,7 @@
  *   octopus_deliver  → ink
  *   octopus_embrace  → embrace
  *   octopus_debate   → grapple
+ *   octopus_council  → council
  *   octopus_review   → codex-review
  *   octopus_security → squeeze
  *
@@ -165,30 +166,32 @@ const server = new McpServer({
   name: "octo-claw",
   version: "1.0.0",
 });
+const registerTool = server.tool.bind(server) as (...args: unknown[]) => void;
+type ToolParams = Record<string, any>;
 
 // --- Double Diamond Phase Tools ---
 
-server.tool(
+registerTool(
   "octopus_discover",
   "Run the Discover (Probe) phase — multi-provider research using Codex and Gemini CLIs for broad exploration of a topic.",
   { prompt: z.string().describe("The topic or question to research") },
-  async ({ prompt }) => {
+  async ({ prompt }: ToolParams) => {
     const { text, isError } = await runOrchestrate("probe", prompt);
     return { content: [{ type: "text" as const, text }], isError };
   }
 );
 
-server.tool(
+registerTool(
   "octopus_define",
   "Run the Define (Grasp) phase — consensus building on requirements, scope, and approach.",
   { prompt: z.string().describe("The requirements or scope to define") },
-  async ({ prompt }) => {
+  async ({ prompt }: ToolParams) => {
     const { text, isError } = await runOrchestrate("grasp", prompt);
     return { content: [{ type: "text" as const, text }], isError };
   }
 );
 
-server.tool(
+registerTool(
   "octopus_develop",
   "Run the Develop (Tangle) phase — implementation with quality gates and multi-provider validation.",
   {
@@ -200,7 +203,7 @@ server.tool(
       .default(75)
       .describe("Minimum quality score to pass (0-100)"),
   },
-  async ({ prompt, quality_threshold }) => {
+  async ({ prompt, quality_threshold }: ToolParams) => {
     const flags = quality_threshold !== undefined && quality_threshold !== 75
       ? ["-q", `${quality_threshold}`]
       : [];
@@ -209,17 +212,17 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "octopus_deliver",
   "Run the Deliver (Ink) phase — final validation, adversarial review, and delivery.",
   { prompt: z.string().describe("What to validate and deliver") },
-  async ({ prompt }) => {
+  async ({ prompt }: ToolParams) => {
     const { text, isError } = await runOrchestrate("ink", prompt);
     return { content: [{ type: "text" as const, text }], isError };
   }
 );
 
-server.tool(
+registerTool(
   "octopus_embrace",
   "Run the full Double Diamond workflow (Discover → Define → Develop → Deliver) end-to-end.",
   {
@@ -229,7 +232,7 @@ server.tool(
       .default("supervised")
       .describe("How much human oversight to apply"),
   },
-  async ({ prompt, autonomy }) => {
+  async ({ prompt, autonomy }: ToolParams) => {
     const flags = [`--autonomy`, autonomy];
     const { text, isError } = await runOrchestrate("embrace", prompt, flags);
     return { content: [{ type: "text" as const, text }], isError };
@@ -238,7 +241,7 @@ server.tool(
 
 // --- Utility Tools ---
 
-server.tool(
+registerTool(
   "octopus_debate",
   "Run a structured four-way AI debate between Claude, Sonnet, Gemini, and Codex on a topic.",
   {
@@ -254,7 +257,7 @@ server.tool(
       .default("cross-critique")
       .describe("Evaluation mode: cross-critique (ACH falsification) or blinded (independent evaluation, prevents anchoring bias)"),
   },
-  async ({ question, rounds, mode }) => {
+  async ({ question, rounds, mode }: ToolParams) => {
     // orchestrate.sh grapple parses -r/--mode AFTER the subcommand, not as global flags
     const postFlags = [`-r`, `${rounds}`, `--mode`, mode];
     const { text, isError } = await runOrchestrate("grapple", question, [], postFlags);
@@ -262,7 +265,111 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
+  "octopus_council",
+  "Run a configurable multi-LLM council with personas, budget caps, synthesis, veto gates, and optional implementation handoff.",
+  {
+    prompt: z.string().describe("The task, question, or decision for the council"),
+    goal: z
+      .enum(["advice", "decision", "plan", "implement", "review"])
+      .optional()
+      .describe("Council goal"),
+    domain: z
+      .enum(["auto", "architecture", "product", "security", "business", "research", "docs"])
+      .optional()
+      .describe("Domain used for persona recommendation"),
+    style: z
+      .enum(["balanced", "adversarial", "implementation", "executive", "red-team"])
+      .optional()
+      .describe("Council discussion style"),
+    depth: z
+      .enum(["quick", "standard", "deep"])
+      .optional()
+      .describe("Depth preset"),
+    members: z
+      .enum(["auto", "3", "5", "7"])
+      .optional()
+      .describe("Council size; explicit values override depth defaults"),
+    persona: z
+      .string()
+      .optional()
+      .describe("Comma-separated pinned persona names"),
+    implement: z
+      .enum(["never", "after-approval", "plan-only"])
+      .optional()
+      .describe("Implementation permission gate"),
+    worktree: z
+      .enum(["auto", "on", "off"])
+      .optional()
+      .describe("Implementation worktree preference"),
+    benchmark: z
+      .enum(["auto", "on", "off"])
+      .optional()
+      .describe("BullshitBench snapshot usage"),
+    providers: z
+      .string()
+      .optional()
+      .describe("auto or comma-separated provider list: claude,codex,gemini,opencode,openrouter"),
+    max_cost: z
+      .string()
+      .optional()
+      .describe("USD decimal budget cap, for example 2.00"),
+    dry_run: z
+      .boolean()
+      .optional()
+      .describe("Preview council selection and cost without dispatching providers"),
+    json: z
+      .boolean()
+      .optional()
+      .describe("Print summary.json to stdout"),
+    output_dir: z
+      .string()
+      .optional()
+      .describe("Parent directory for council run artifacts"),
+  },
+  async ({
+    prompt,
+    goal,
+    domain,
+    style,
+    depth,
+    members,
+    persona,
+    implement,
+    worktree,
+    benchmark,
+    providers,
+    max_cost,
+    dry_run,
+    json,
+    output_dir,
+  }: ToolParams) => {
+    const postFlags: string[] = [];
+    const add = (flag: string, value: string | undefined) => {
+      if (value !== undefined && value !== "") postFlags.push(flag, value);
+    };
+
+    add("--goal", goal);
+    add("--domain", domain);
+    add("--style", style);
+    add("--depth", depth);
+    add("--members", members);
+    add("--persona", persona);
+    add("--implement", implement);
+    add("--worktree", worktree);
+    add("--benchmark", benchmark);
+    add("--providers", providers);
+    add("--max-cost", max_cost);
+    add("--output-dir", output_dir);
+    if (dry_run) postFlags.push("--dry-run");
+    if (json) postFlags.push("--json");
+
+    const { text, isError } = await runOrchestrate("council", prompt, [], postFlags);
+    return { content: [{ type: "text" as const, text }], isError };
+  }
+);
+
+registerTool(
   "octopus_review",
   "Run multi-LLM code review pipeline (Codex + Gemini + Claude + Perplexity fleet). Loads REVIEW.md customization if present. Supports inline PR comment publishing.",
   {
@@ -291,7 +398,7 @@ server.tool(
       .optional()
       .describe("Whether to debate contested findings via multi-LLM gate (default: auto)"),
   },
-  async ({ target, focus, provenance, autonomy, publish, debate }) => {
+  async ({ target, focus, provenance, autonomy, publish, debate }: ToolParams) => {
     // Build JSON profile and dispatch to review_run() via code-review command
     const profile = JSON.stringify({
       target: target ?? "staged",
@@ -306,7 +413,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "octopus_security",
   "Run comprehensive security audit with OWASP compliance and vulnerability detection.",
   {
@@ -314,7 +421,7 @@ server.tool(
       .string()
       .describe("File path, directory, or description of what to audit"),
   },
-  async ({ target }) => {
+  async ({ target }: ToolParams) => {
     // orchestrate.sh uses "squeeze" for security audits
     const { text, isError } = await runOrchestrate("squeeze", target);
     return { content: [{ type: "text" as const, text }], isError };
@@ -323,7 +430,7 @@ server.tool(
 
 // --- IDE Integration Tools ---
 
-server.tool(
+registerTool(
   "octopus_set_editor_context",
   "Inject IDE editor state (active file, selection, cursor position) into Octopus workflows. Call this before running any workflow tool to give Octopus awareness of what the user is working on in their IDE.",
   {
@@ -348,7 +455,7 @@ server.tool(
       .optional()
       .describe("Root directory of the current IDE workspace"),
   },
-  async ({ filename, selection, cursor_line, language_id, workspace_root }) => {
+  async ({ filename, selection, cursor_line, language_id, workspace_root }: ToolParams) => {
     // Validate paths — reject path traversal attempts
     for (const [label, value] of [["filename", filename], ["workspace_root", workspace_root]] as const) {
       if (value && /\.\.[\\/]/.test(value)) {
@@ -393,7 +500,7 @@ server.tool(
 
 // --- Introspection Tools ---
 
-server.tool(
+registerTool(
   "octopus_list_skills",
   "List all available Claude Octopus skills with their descriptions.",
   {},
@@ -413,7 +520,7 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
   "octopus_status",
   "Check Claude Octopus provider availability and configuration status.",
   {},

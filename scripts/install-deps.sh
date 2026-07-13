@@ -10,8 +10,10 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+source "${PLUGIN_ROOT}/scripts/lib/cursor-agent.sh" 2>/dev/null || true
+source "${PLUGIN_ROOT}/scripts/lib/plugin-root.sh" 2>/dev/null || true
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -84,11 +86,18 @@ check_deps() {
         warnings+=("copilot:Copilot CLI not installed (optional) — brew install copilot-cli for zero-cost research")
     fi
 
-    # Qwen CLI (optional — free tier)
+    # Qwen CLI (optional — API-key / Coding-Plan auth)
     if has_cmd qwen; then
         ok+=("qwen:Qwen CLI installed")
     else
-        warnings+=("qwen:Qwen CLI not installed (optional) — npm install -g @qwen-code/qwen-code for free-tier research")
+        warnings+=("qwen:Qwen CLI not installed (optional) — npm install -g @qwen-code/qwen-code; auth via QWEN_API_KEY or Coding-Plan")
+    fi
+
+    # Cursor Agent CLI (optional — Grok 4.20 via Cursor subscription)
+    if declare -f _is_cursor_agent_binary >/dev/null 2>&1 && _is_cursor_agent_binary; then
+        ok+=("cursor-agent:Cursor Agent CLI installed")
+    else
+        warnings+=("cursor-agent:Cursor Agent CLI not installed (optional) — curl -fsSL https://cursor.com/install | bash")
     fi
 
     # RTK (optional — bash output compression)
@@ -100,13 +109,19 @@ check_deps() {
         if [[ -f "$settings_file" ]] && grep -q 'rtk' "$settings_file" 2>/dev/null; then
             rtk_hook="yes"
         fi
-        if [[ "$rtk_hook" == "yes" ]]; then
+        if declare -f octo_is_windows_git_bash >/dev/null 2>&1 && octo_is_windows_git_bash; then
+            ok+=("rtk:RTK ${rtk_ver} installed; hook check skipped on Windows Git Bash (RTK uses CLAUDE.md injection mode)")
+        elif [[ "$rtk_hook" == "yes" ]]; then
             ok+=("rtk:RTK ${rtk_ver} installed, hook active (bash output compression enabled)")
         else
             warnings+=("rtk:RTK ${rtk_ver} installed but Claude Code hook not configured. Run: rtk init -g")
         fi
     else
-        warnings+=("rtk:RTK not installed (optional) — saves 60-90% tokens on bash output. Install: brew install rtk && rtk init -g. Run /octo:doctor for guided setup.")
+        if declare -f octo_is_windows_git_bash >/dev/null 2>&1 && octo_is_windows_git_bash; then
+            warnings+=("rtk:RTK not installed (optional) — saves tokens on bash output. On Windows Git Bash, install RTK and use its CLAUDE.md injection mode instead of rtk init -g.")
+        else
+            warnings+=("rtk:RTK not installed (optional) — saves 60-90% tokens on bash output. Install: brew install rtk && rtk init -g. Run /octo:doctor for guided setup.")
+        fi
     fi
 
     # Statusline resolver
@@ -136,6 +151,11 @@ check_deps() {
             ok+=("claude-mem:claude-mem plugin installed")
         else
             missing+=("claude-mem:claude-mem plugin — persistent cross-session memory")
+        fi
+        if grep -q 'agentmemory' "$plugins_json" 2>/dev/null || command -v agentmemory >/dev/null 2>&1; then
+            ok+=("agentmemory:agentmemory companion detected")
+        else
+            warnings+=("agentmemory:agentmemory companion — optional persistent cross-agent memory")
         fi
         if grep -q '"document-skills@anthropic-agent-skills": true' "$plugins_json" 2>/dev/null; then
             ok+=("document-skills:document-skills plugin installed")
@@ -222,6 +242,14 @@ install_plugins() {
         echo "📦 claude-mem — Persistent cross-session memory"
         echo "   Enables /mem-search, /make-plan, /do workflows"
         echo "   Install: /plugin install claude-mem@thedotmack"
+        echo ""
+        any_missing=true
+    fi
+
+    if [[ -f "$settings" ]] && ! grep -q 'agentmemory' "$settings" 2>/dev/null && ! command -v agentmemory >/dev/null 2>&1; then
+        echo "📦 agentmemory — Persistent cross-agent memory (optional)"
+        echo "   Enables shared memory through MCP/REST across Claude Code, Codex, Cursor, and other agents"
+        echo "   Install: npm install -g @agentmemory/agentmemory && agentmemory connect claude-code"
         echo ""
         any_missing=true
     fi

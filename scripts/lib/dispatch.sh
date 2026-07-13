@@ -11,25 +11,82 @@
 #                    gpt-5.2-codex, gpt-5.4-mini (budget), gpt-5 (standard), gpt-5.2, gpt-5.1
 # - OpenAI Reasoning: o3, o3-pro (API-key only), o3 (API-key only), o3-mini (API-key only)
 # - OpenAI Large Context: gpt-4.1 (1M ctx, API-key only), gpt-5.4 (1M ctx, API-key only)
-# - Google Gemini 3.0: gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-3-pro-image-preview
+# - Google Gemini 3.0: gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-3-pro-image (GA; gemini-3-pro-image-preview deprecated 2026-06-25)
+# - Google Antigravity CLI: agy --print stdin dispatch, optional OCTOPUS_AGY_MODEL
 # Note: "API-key only" models require OPENAI_API_KEY; they are NOT available via ChatGPT subscription/OAuth.
+
+_octopus_is_safe_openai_compatible_dispatch_value() {
+    local value="$1"
+    [[ -z "$value" ]] && return 1
+    [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]] && return 1
+    [[ "$value" == *"\\"* ]] && return 1
+    case "$value" in
+        *[[:space:]]*|*\*|*";"*|*"|"*|*"&"*|*'$'*|*'`'*|*"'"*|*'"'*|*"("*|*")"*|*"<"*|*">"*|*"!"*|*"*"*|*"?"*|*"["*|*"]"*|*"{"*|*"}"*)
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+# ── Does a resolved codex model name indicate an OSS/local model that codex
+#    serves through ollama (and would silently auto-pull)? codex's built-in OSS
+#    family is gpt-oss*; ollama-served models also carry a size tag like ':120b'.
+#    Cloud codex models (gpt-5.x, o3, gpt-4.1, gpt-5.2-codex) never use that tag
+#    form, so this stays conservative and leaves normal codex dispatch untouched.
+#    NOTE: keep in sync with _codex_model_is_oss() in helpers/codex-run.sh. ──
+_codex_dispatch_is_oss_model() {
+    local m="$1"
+    [[ -z "$m" ]] && return 1
+    # Preserve the caller's nocasematch setting instead of forcing it off.
+    local _restore_nocasematch
+    _restore_nocasematch=$(shopt -p nocasematch || true)
+    shopt -s nocasematch
+    local rc=1
+    if [[ "$m" == gpt-oss* ]] || [[ "$m" =~ :[0-9]+(\.[0-9]+)?b$ ]]; then
+        rc=0
+    elif [[ -n "${OCTOPUS_CODEX_OSS_PATTERNS:-}" && "$m" =~ ${OCTOPUS_CODEX_OSS_PATTERNS} ]]; then
+        rc=0
+    fi
+    eval "${_restore_nocasematch:-shopt -u nocasematch}"
+    return $rc
+}
+
+# ── Build the `codex exec` dispatch string. For OSS/local models, wrap it in the
+#    pull-guard shim (helpers/codex-run.sh) so codex cannot fire an unbounded
+#    `ollama pull` for an absent multi-GB model unless OCTOPUS_OLLAMA_ALLOW_PULL
+#    is set — closing the codex-side vector that ollama-run.sh does not cover.
+#    Cloud models are emitted unchanged (zero behavior change for the common path). ──
+_build_codex_exec_command() {
+    local model="$1" sandbox_flag="$2"
+    local base="codex exec --skip-git-repo-check --model ${model} ${sandbox_flag} -"
+    if _codex_dispatch_is_oss_model "$model"; then
+        echo "${PLUGIN_DIR}/scripts/helpers/codex-run.sh ${base}"
+    else
+        echo "$base"
+    fi
+}
+
 get_agent_command() {
     local agent_type="$1"
     local phase="${2:-}"
     local role="${3:-}"
     local model=""
+    # Allow swapping the claude binary (e.g. clarp = subscription-billed drop-in
+    # for `claude -p`, instead of metered API). Default unchanged. May include
+    # args (word-split downstream by read -ra), e.g. "clarp --strict-mcp-config".
+    local _claude_bin="${OCTOPUS_CLAUDE_BIN:-claude}"
 
     # Configurable sandbox mode (v7.13.1 - Issue #9)
     # Priority: OCTOPUS_CODEX_SANDBOX env var > default (workspace-write)
-    # Valid values: workspace-write (default), write, read-only
+    # Valid values: workspace-write (default), danger-full-access, read-only
     local codex_sandbox="${OCTOPUS_CODEX_SANDBOX:-workspace-write}"
 
     # Security: reject values not in allowlist
     case "$codex_sandbox" in
-        workspace-write|write|read-only)
+        workspace-write|danger-full-access|read-only)
             ;;
         *)
-            log "ERROR" "Invalid OCTOPUS_CODEX_SANDBOX value: '${codex_sandbox}'. Allowed: workspace-write, write, read-only"
+            log "ERROR" "Invalid OCTOPUS_CODEX_SANDBOX value: '${codex_sandbox}'. Allowed: workspace-write, danger-full-access, read-only"
             log "ERROR" "Falling back to workspace-write for safety."
             codex_sandbox="workspace-write"
             ;;
@@ -37,25 +94,32 @@ get_agent_command() {
 
     local sandbox_flag="--sandbox ${codex_sandbox}"
 
+    # Spawned `claude --print` subprocesses have no interactive approver, so any
+    # tool that would prompt is silently denied ("Read is blocked in the current
+    # permission mode"). Pre-approve read tools for every role; write-capable
+    # roles additionally accept edits (bug 260609). Comma-joined, no spaces —
+    # downstream `read -ra` word-splits the command string.
+    local claude_perm="--allowed-tools Read,Glob,Grep"
+    case "$role" in
+        implementer|developer)
+            claude_perm="--permission-mode acceptEdits --allowed-tools Read,Glob,Grep,Edit,Write"
+            ;;
+    esac
+
     case "$agent_type" in
-        codex|codex-standard|codex-max|codex-mini|codex-general)
-            model=$(get_agent_model "$agent_type" "$phase" "$role")
-            echo "codex exec --skip-git-repo-check --full-auto --model ${model} ${sandbox_flag} -"
-            ;;
-        codex-spark)  # v8.9.0: Ultra-fast Spark model (1000+ tok/s)
-            model=$(get_agent_model "$agent_type" "$phase" "$role")
-            echo "codex exec --skip-git-repo-check --full-auto --model ${model} ${sandbox_flag} -"
-            ;;
-        codex-reasoning)  # v8.9.0: Reasoning models (o3, o3)
-            model=$(get_agent_model "$agent_type" "$phase" "$role")
-            echo "codex exec --skip-git-repo-check --full-auto --model ${model} ${sandbox_flag} -"
-            ;;
-        codex-large-context)  # v8.9.0: 1M context models (gpt-4.1)
-            model=$(get_agent_model "$agent_type" "$phase" "$role")
-            echo "codex exec --skip-git-repo-check --full-auto --model ${model} ${sandbox_flag} -"
+        # v8.9.0: Spark, reasoning, and large-context variants share the
+        # same command shape; only model resolution differs by agent type.
+        codex|codex-standard|codex-max|codex-mini|codex-general|codex-spark|codex-reasoning|codex-large-context)
+            if ! model=$(get_agent_model "$agent_type" "$phase" "$role"); then
+                return 1
+            fi
+            _build_codex_exec_command "$model" "$sandbox_flag"
             ;;
         gemini|gemini-fast|gemini-image)
-            model=$(get_agent_model "$agent_type" "$phase" "$role")
+            local gemini_flags="-o text --approval-mode yolo"
+            if ! model=$(get_agent_model "$agent_type" "$phase" "$role"); then
+                return 1
+            fi
             # v8.10.0: Fixed headless mode (Issue #25)
             # Prompt delivered via stdin by callers (avoids OS arg limits)
             # Callers add -p "" for headless mode trigger
@@ -64,51 +128,218 @@ get_agent_command() {
             # when calling Gemini CLI from bash subprocesses (OAuth still works)
             # NOTE: .toml custom commands exist in .gemini/commands/octo/ for human use,
             # but stdin+slash-command don't compose in headless mode (Codex source analysis)
+            # Routed through helpers/gemini-exec.sh for 404/ModelNotFound fallback.
             local gemini_env="env NODE_NO_WARNINGS=1"
             if [[ "$OCTOPUS_PLATFORM" == "Darwin" && -z "${GEMINI_API_KEY:-}" ]]; then
                 gemini_env="env NODE_NO_WARNINGS=1 GEMINI_FORCE_FILE_STORAGE=true"
             fi
+            local gemini_exec="${PLUGIN_DIR}/scripts/helpers/gemini-exec.sh"
             case "${OCTOPUS_GEMINI_SANDBOX:-headless}" in
-                headless|auto-accept)
-                    echo "${gemini_env} gemini -o text --approval-mode yolo -m ${model}" ;;
-                interactive|prompt-mode)
-                    echo "${gemini_env} gemini -m ${model}" ;;
-                *)
-                    echo "${gemini_env} gemini -o text --approval-mode yolo -m ${model}" ;;
+                interactive|prompt-mode) gemini_flags="" ;;
             esac
+            # Gemini confines reads to its cwd workspace; prompts that reference
+            # files outside PROJECT_ROOT (e.g. /tmp staging dirs) need those dirs
+            # whitelisted. Comma-separated, no spaces (read -ra word-splitting).
+            if [[ -n "${OCTOPUS_GEMINI_INCLUDE_DIRS:-}" ]]; then
+                gemini_flags="${gemini_flags} --include-directories ${OCTOPUS_GEMINI_INCLUDE_DIRS}"
+            fi
+            echo "${gemini_env} ${gemini_exec} ${model} ${gemini_flags}"
             ;;
-        codex-review) echo "codex exec review" ;; # Code review mode (no sandbox support)
-        claude) echo "claude${_BARE_OPT} --print" ;;                         # Claude Sonnet 4.6
-        claude-sonnet) echo "claude${_BARE_OPT} --print --model sonnet" ;;        # Claude Sonnet explicit
-        claude-opus) echo "claude${_BARE_OPT} --print --model opus" ;;            # Claude Opus 4.6 (v8.0)
-        claude-opus-fast) echo "claude${_BARE_OPT} --print --model opus --fast" ;; # Claude Opus 4.6 Fast (v8.4: v2.1.36+)
+        agy|agy-research|antigravity)
+            echo "${PLUGIN_DIR}/scripts/helpers/agy-exec.sh"
+            ;;
+        codex-review) echo "codex exec --skip-git-repo-check review" ;; # Code review mode (no sandbox support)
+        claude) echo "${_claude_bin}${_BARE_OPT} --print ${claude_perm}" ;;                         # Claude Sonnet 4.6
+        claude-sonnet) echo "${_claude_bin}${_BARE_OPT} --print --model sonnet ${claude_perm}" ;;        # Claude Sonnet explicit
+        claude-opus)
+            # v9.42: Opus alias — resolves to 4.8 on Claude Code v2.1.154+,
+            # then 4.7/4.6 on older hosts or enterprise backends.
+            # Use `env VAR=val` prefix so the assignment survives read -ra word-splitting
+            # in spawn.sh — a bare VAR=val prefix only works in shell eval context.
+            local opus_effort="high"
+            if declare -f get_effort_level >/dev/null 2>&1; then
+                local opus_complexity="2"
+                case "${phase:-}" in
+                    tangle|develop|ink|deliver) opus_complexity="3" ;;
+                esac
+                opus_effort="$(get_effort_level "${phase:-unknown}" "$opus_complexity")"
+                opus_effort="${opus_effort:-high}"
+            elif [[ -n "${OCTOPUS_EFFORT_OVERRIDE:-}" ]]; then
+                opus_effort="$OCTOPUS_EFFORT_OVERRIDE"
+            fi
+            # v9.51: Honor a Fable 5 pin in the dispatched model flag. The bare
+            # `opus` alias always resolves to the host's default Opus, so
+            # without this the pin changed cost labels but never the model.
+            # Security dispatches reroute to Opus 4.8 (lib/fable5.sh).
+            local opus_model_flag="opus"
+            if [[ "${OCTOPUS_OPUS_MODEL:-}" == "claude-fable-5" ]]; then
+                opus_model_flag="claude-fable-5"
+                if declare -f fable5_maybe_reroute >/dev/null 2>&1; then
+                    if [[ "$(fable5_maybe_reroute "claude-fable-5" "$role" "$agent_type" "$phase")" != "claude-fable-5" ]]; then
+                        opus_model_flag="claude-opus-4-8"
+                    fi
+                fi
+            fi
+            if [[ "${SUPPORTS_EFFORT_COMMAND:-false}" == "true" || "${SUPPORTS_XHIGH_EFFORT:-false}" == "true" ]]; then
+                echo "env CLAUDE_CODE_EFFORT_LEVEL=${opus_effort} ${_claude_bin}${_BARE_OPT} --print --model ${opus_model_flag} ${claude_perm}"
+            else
+                echo "${_claude_bin}${_BARE_OPT} --print --model ${opus_model_flag} ${claude_perm}"
+            fi
+            ;;
+        claude-opus-fast)
+            if [[ "${SUPPORTS_OPUS_4_8:-false}" == "true" && "${OCTOPUS_OPUS_MODEL:-}" != "claude-opus-4.6" ]]; then
+                echo "${_claude_bin}${_BARE_OPT} --print --model claude-opus-4-8 --fast ${claude_perm}"
+            else
+                echo "${_claude_bin}${_BARE_OPT} --print --model claude-opus-4-6 --fast ${claude_perm}"
+            fi
+            ;;
+        claude-opus-legacy) echo "${_claude_bin}${_BARE_OPT} --print --model claude-opus-4-6 ${claude_perm}" ;; # v9.23: explicit 4.6 opt-in
         openrouter) echo "openrouter_execute" ;;                 # OpenRouter API (v4.8)
         openrouter-glm5) echo "openrouter_execute_model z-ai/glm-5" ;;           # v8.11.0: GLM-5 via OpenRouter
         openrouter-kimi) echo "openrouter_execute_model moonshotai/kimi-k2.5" ;; # v8.11.0: Kimi K2.5 via OpenRouter
         openrouter-deepseek) echo "openrouter_execute_model deepseek/deepseek-r1-0528" ;; # v8.11.0: DeepSeek R1 via OpenRouter
+        openai-compatible|openai-tools|openai-compatible-agent)  # Generic OpenAI-compatible tool-loop agent
+            if ! model=$(get_agent_model "$agent_type" "$phase" "$role"); then
+                return 1
+            fi
+            if ! validate_model_name "$model"; then
+                log ERROR "Invalid OpenAI-compatible model name: ${model}"
+                return 1
+            fi
+            if ! _octopus_is_safe_openai_compatible_dispatch_value "${PWD}"; then
+                log ERROR "Invalid OpenAI-compatible cwd: ${PWD}"
+                return 1
+            fi
+            echo "${PLUGIN_DIR}/scripts/helpers/openai-compatible-agent.py --provider generic --model ${model} --cwd ${PWD}"
+            ;;
+        atlascloud-agent)  # Atlas Cloud via the OpenAI-compatible tool-loop agent
+            model="${ATLASCLOUD_MODEL:-${OCTOPUS_ATLASCLOUD_MODEL:-${OPENAI_COMPAT_MODEL:-}}}"
+            if [[ -z "$model" && -f "${HOME}/.claude-octopus/config/providers.json" ]] && command -v jq &>/dev/null; then
+                model="$(jq -r '.providers.atlascloud.default // empty' "${HOME}/.claude-octopus/config/providers.json" 2>/dev/null || true)"
+            fi
+            if [[ -z "$model" ]]; then
+                log ERROR "ATLASCLOUD_MODEL, OCTOPUS_ATLASCLOUD_MODEL, OPENAI_COMPAT_MODEL, or providers.json atlascloud.default is required"
+                return 1
+            fi
+            if ! validate_model_name "$model"; then
+                log ERROR "Invalid Atlas Cloud model name: ${model}"
+                return 1
+            fi
+            local fallback
+            fallback=$(validate_model_allowed "atlascloud" "$model")
+            if [[ $? -ne 0 ]]; then
+                if [[ -n "$fallback" ]]; then
+                    if ! validate_model_name "$fallback"; then
+                        log ERROR "Invalid Atlas Cloud fallback model name"
+                        return 1
+                    fi
+                    model="$fallback"
+                else
+                    return 1
+                fi
+            fi
+            if ! _octopus_is_safe_openai_compatible_dispatch_value "${PWD}"; then
+                log ERROR "Invalid Atlas Cloud cwd: ${PWD}"
+                return 1
+            fi
+            echo "${PLUGIN_DIR}/scripts/helpers/openai-compatible-agent.py --provider atlascloud --model ${model} --cwd ${PWD}"
+            ;;
         perplexity|perplexity-fast)  # v8.24.0: Perplexity Sonar — web-grounded research (Issue #22)
-            model=$(get_agent_model "$agent_type" "$phase" "$role")
+            if ! model=$(get_agent_model "$agent_type" "$phase" "$role"); then
+                return 1
+            fi
             echo "perplexity_execute $model"
             ;;
-        copilot|copilot-research)  # v9.9.0: GitHub Copilot CLI — copilot -p (Issue #198)
-            echo "copilot --no-ask-user"
+        copilot|copilot-research)  # v9.9.0: GitHub Copilot CLI via helpers/copilot-exec.sh (Issue #198)
+            # copilot's only non-interactive mode is `-p <text>` (argv), but the spawn
+            # contract feeds the prompt via stdin. The shim bridges stdin -> -p so the
+            # advisor does not open an interactive session and hang (silent drop).
+            # -s: silent (no footer noise); --disable-builtin-mcps: skip MCP startup latency.
+            echo "${PLUGIN_DIR}/scripts/helpers/copilot-exec.sh"
             ;;
         ollama|ollama-*)  # v9.9.0: Ollama local LLM — ollama run
-            model=$(get_agent_model "$agent_type" "$phase" "$role")
-            echo "ollama run $model"
+            if ! model=$(get_agent_model "$agent_type" "$phase" "$role"); then
+                return 1
+            fi
+            # Route through the guard shim instead of a bare `ollama run`: that
+            # auto-pulls a missing model, so a provider-failure cascade could
+            # silently kick off an unbounded multi-GB download. The shim refuses
+            # to pull an absent model unless OCTOPUS_OLLAMA_ALLOW_PULL=true.
+            echo "${PLUGIN_DIR}/scripts/helpers/ollama-run.sh $model"
             ;;
-        qwen|qwen-research)  # v9.10.0: Qwen CLI — fork of Gemini CLI (free tier)
-            echo "env NODE_NO_WARNINGS=1 qwen -o text --approval-mode yolo"
+        qwen|qwen-research)  # v9.10.0: Qwen CLI — fork of Gemini CLI
+            # oco-dar: NO_BROWSER=1 stops a stale token from hijacking the user's
+            # browser into the OAuth device-flow. Pre-flight (qwen_is_usable) should
+            # already gate this out; this is defense-in-depth if dispatch is reached.
+            if ! model=$(get_agent_model "$agent_type" "$phase" "$role"); then
+                return 1
+            fi
+            # OPENAI_COMPAT auth (OPENAI_API_KEY + OPENAI_BASE_URL) needs an explicit
+            # --auth-type: the qwen CLI does not auto-detect it from env vars alone
+            # in non-interactive mode (Issue #566).
+            local qwen_auth_flag=""
+            if declare -f qwen_auth_method >/dev/null 2>&1 && [[ "$(qwen_auth_method)" == "env:OPENAI_COMPAT" ]]; then
+                qwen_auth_flag="--auth-type openai"
+            fi
+            echo "env NODE_NO_WARNINGS=1 NO_BROWSER=1 qwen -o text --approval-mode yolo -m ${model} ${qwen_auth_flag}"
+            ;;
+        grok|grok-research)  # xAI Grok CLI — headless single-turn via helpers/grok-exec.sh
+            # Wire config/env model selection through to the shim (parity with codex/
+            # gemini/qwen). get_agent_model reads providers.json + OCTOPUS_GROK_MODEL;
+            # pass it via an env prefix so grok-exec.sh emits --model. Grok model ids are
+            # single tokens (grok-4-fast, ...) so the prefix survives argv word-splitting.
+            # Without this, providers.json model picks were silently ignored (the shim
+            # only saw a shell-exported OCTOPUS_GROK_MODEL).
+            if ! model=$(get_agent_model "$agent_type" "$phase" "$role"); then return 1; fi
+            if [[ -n "$model" && "$model" != "default" ]]; then
+                echo "env OCTOPUS_GROK_MODEL=${model} ${PLUGIN_DIR}/scripts/helpers/grok-exec.sh"
+            else
+                echo "${PLUGIN_DIR}/scripts/helpers/grok-exec.sh"
+            fi
+            ;;
+        claude-sdk|claude-sdk-agent|claude-sdk-research)  # v9.50.0: Claude Agent SDK seat
+            # Routes to helpers/claude-sdk-exec.sh when CLAUDE_SDK_API_KEY is set —
+            # unlocks Opus 4.8 + 1M context independent of the host session. Model
+            # wiring mirrors grok: env prefix so providers.json picks reach the shim.
+            if ! model=$(get_agent_model "$agent_type" "$phase" "$role"); then return 1; fi
+            if [[ -n "$model" && "$model" != "default" ]]; then
+                echo "env OCTOPUS_CLAUDE_SDK_MODEL=${model} ${PLUGIN_DIR}/scripts/helpers/claude-sdk-exec.sh"
+            else
+                echo "${PLUGIN_DIR}/scripts/helpers/claude-sdk-exec.sh"
+            fi
+            ;;
+        cursor-agent)  # v9.23.0: Cursor Agent CLI — Grok 4.20 via Cursor subscription
+            if ! model=$(get_agent_model "$agent_type" "$phase" "$role"); then
+                return 1
+            fi
+            # NOTE: bare ${model} (no quotes) — downstream uses `read -ra` which
+            # does NOT interpret quotes; literal " would be passed to --model.
+            echo "agent --trust --output-format text --model ${model}"
+            ;;
+        vibe|vibe-research)  # Mistral Vibe — interactive CLI (model in ~/.vibe/config.toml)
+            # Routed through helpers/vibe-exec.sh: vibe's -p only accepts the
+            # prompt as argv (stdin yields "No prompt provided"), so the shim
+            # reads stdin and re-passes it as `-p "<prompt>"`. Keeps spawn.sh's
+            # uniform stdin contract intact (Issue #173).
+            echo "${PLUGIN_DIR}/scripts/helpers/vibe-exec.sh --output text"
             ;;
         opencode|opencode-fast|opencode-research)  # v9.11.0: OpenCode CLI — multi-provider router
-            model=$(get_agent_model "$agent_type" "$phase" "$role")
+            if ! model=$(get_agent_model "$agent_type" "$phase" "$role"); then
+                return 1
+            fi
             # Uses default text output (ANSI stripped by caller) — consistent with other providers
             # --model flag uses provider/model format; we store bare name and map here
             local oc_model_flag=""
             if [[ -n "$model" && "$model" != "default" ]]; then
                 oc_model_flag="-m ${model}"
             fi
-            echo "opencode run ${oc_model_flag}"
+            # --pure skips opencode's external-plugin auto-title path, which
+            # otherwise resolves an SDK handle for a hardcoded small model
+            # before the prompt is even sent — an unresolvable catalog/model
+            # there hangs `opencode run` indefinitely with no timeout or error
+            # (Issue #566). It's a global flag, so it must precede the `run`
+            # subcommand or risk being ignored/rejected.
+            echo "opencode --pure run ${oc_model_flag}"
             ;;
         *) return 1 ;;
     esac
@@ -126,10 +357,132 @@ get_role_budget_proportion() {
     esac
 }
 
+# Provider-aware context ceiling. OCTOPUS_CONTEXT_BUDGET remains the global
+# fallback for compatibility; provider-specific env vars let higher-context CLIs
+# opt in without inflating smaller providers.
+get_provider_context_limit() {
+    local agent_type="${1:-}"
+    local provider="${agent_type%%-*}"
+    local default_budget="${OCTOPUS_CONTEXT_BUDGET:-12000}"
+
+    case "$agent_type" in
+        codex-large-context) echo "${OCTOPUS_CODEX_LARGE_CONTEXT_BUDGET:-${default_budget}}" ; return 0 ;;
+        claude-sdk*) echo "${OCTOPUS_CLAUDE_SDK_CONTEXT_BUDGET:-1000000}" ; return 0 ;;  # v9.50.0: Agent SDK 1M window
+        claude-opus*|claude-sonnet|claude) echo "${OCTOPUS_CLAUDE_CONTEXT_BUDGET:-${default_budget}}" ; return 0 ;;
+    esac
+
+    case "$provider" in
+        codex)      echo "${OCTOPUS_CODEX_CONTEXT_BUDGET:-${default_budget}}" ;;
+        gemini)     echo "${OCTOPUS_GEMINI_CONTEXT_BUDGET:-${default_budget}}" ;;
+        agy|antigravity) echo "${OCTOPUS_AGY_CONTEXT_BUDGET:-${default_budget}}" ;;
+        claude)     echo "${OCTOPUS_CLAUDE_CONTEXT_BUDGET:-${default_budget}}" ;;
+        perplexity) echo "${OCTOPUS_PERPLEXITY_CONTEXT_BUDGET:-${default_budget}}" ;;
+        openrouter) echo "${OCTOPUS_OPENROUTER_CONTEXT_BUDGET:-${default_budget}}" ;;
+        atlascloud) echo "${OCTOPUS_ATLASCLOUD_CONTEXT_BUDGET:-${default_budget}}" ;;
+        copilot)    echo "${OCTOPUS_COPILOT_CONTEXT_BUDGET:-${default_budget}}" ;;
+        qwen)       echo "${OCTOPUS_QWEN_CONTEXT_BUDGET:-${default_budget}}" ;;
+        opencode)   echo "${OCTOPUS_OPENCODE_CONTEXT_BUDGET:-${default_budget}}" ;;
+        ollama)     echo "${OCTOPUS_OLLAMA_CONTEXT_BUDGET:-${default_budget}}" ;;
+        *)          echo "$default_budget" ;;
+    esac
+}
+
+summarize_then_dispatch() {
+    local prompt="$1"
+    local role="${2:-}"
+    local target_agent="${3:-unknown}"
+    local budget="${4:-12000}"
+    local char_budget=$((budget * 4))
+
+    # Keep the summarizer request itself bounded; preserve both task framing and
+    # tail-loaded instructions/diffs because provider CLIs often fail near ARG_MAX.
+    local summary_input="$prompt"
+    local max_summary_input="${OCTOPUS_OVERSIZE_SUMMARY_INPUT_CHARS:-120000}"
+    if [[ ${#summary_input} -gt $max_summary_input ]]; then
+        local head_chars=$((max_summary_input / 2))
+        local tail_chars=$((max_summary_input - head_chars))
+        local tail_start=$((${#summary_input} - tail_chars))
+        summary_input="${summary_input:0:$head_chars}
+
+[... middle omitted before preflight summarization; original prompt was ${#prompt} chars ...]
+
+${summary_input:$tail_start:$tail_chars}"
+    fi
+
+    local summary_prompt="Condense this oversized agent prompt before provider dispatch.
+
+Target provider: ${target_agent}
+Role: ${role:-none}
+Target budget: about ${budget} tokens (${char_budget} chars)
+
+Preserve:
+- the user's exact objective and constraints
+- file paths, commands, URLs, IDs, and quoted requirements
+- acceptance criteria and verification instructions
+- any explicit safety or permission limits
+
+Remove repetition, logs, duplicate context, and low-value boilerplate. Return only the condensed prompt.
+
+Oversized prompt:
+${summary_input}"
+
+    local candidates=()
+    if [[ -n "${OCTOPUS_OVERSIZE_SUMMARIZER:-}" ]]; then
+        candidates+=("$OCTOPUS_OVERSIZE_SUMMARIZER")
+    fi
+    candidates+=("gemini-fast" "codex-mini" "claude-sonnet" "codex")
+
+    local candidate summary previous_strategy previous_debug
+    previous_strategy="${OCTOPUS_OVERSIZE_STRATEGY-}"
+    previous_debug="${OCTOPUS_DEBUG-}"
+    export OCTOPUS_OVERSIZE_STRATEGY=truncate
+    export OCTOPUS_DEBUG="${OCTOPUS_DEBUG:-false}"
+
+    for candidate in "${candidates[@]}"; do
+        [[ "$candidate" == "$target_agent" ]] && continue
+        if type validate_agent_type >/dev/null 2>&1 && ! validate_agent_type "$candidate" >/dev/null 2>&1; then
+            continue
+        fi
+        if ! type run_agent_sync >/dev/null 2>&1; then
+            break
+        fi
+        summary=$(run_agent_sync "$candidate" "$summary_prompt" 120 "synthesizer" "preflight" 2>/dev/null) || summary=""
+        if [[ -n "$summary" && "$summary" != "Provider available" ]]; then
+            if [[ -n "$previous_strategy" ]]; then
+                export OCTOPUS_OVERSIZE_STRATEGY="$previous_strategy"
+            else
+                unset OCTOPUS_OVERSIZE_STRATEGY
+            fi
+            if [[ -n "$previous_debug" ]]; then
+                export OCTOPUS_DEBUG="$previous_debug"
+            else
+                unset OCTOPUS_DEBUG
+            fi
+            printf '%s\n' "$summary"
+            return 0
+        fi
+    done
+
+    if [[ -n "$previous_strategy" ]]; then
+        export OCTOPUS_OVERSIZE_STRATEGY="$previous_strategy"
+    else
+        unset OCTOPUS_OVERSIZE_STRATEGY
+    fi
+    if [[ -n "$previous_debug" ]]; then
+        export OCTOPUS_DEBUG="$previous_debug"
+    else
+        unset OCTOPUS_DEBUG
+    fi
+    return 1
+}
+
 enforce_context_budget() {
     local prompt="$1"
     local role="${2:-}"
-    local budget="${OCTOPUS_CONTEXT_BUDGET:-12000}"
+    local agent_type="${3:-}"
+    local budget
+    budget=$(get_provider_context_limit "$agent_type")
+    [[ "$budget" =~ ^[0-9]+$ ]] || budget="${OCTOPUS_CONTEXT_BUDGET:-12000}"
 
     # v9.3.0: Scale budget by role proportion
     if [[ -n "$role" ]]; then
@@ -142,10 +495,45 @@ enforce_context_budget() {
     local char_budget=$((budget * 4))
 
     if [[ ${#prompt} -gt $char_budget ]]; then
-        log "DEBUG" "Context budget: truncating prompt from ${#prompt} to $char_budget chars (~$budget tokens)"
-        echo "${prompt:0:$char_budget}
+        local strategy="${OCTOPUS_OVERSIZE_STRATEGY:-summarize}"
+        local original_chars=${#prompt}
+        local target="${agent_type:-unknown}"
+
+        case "$strategy" in
+            fail)
+                log "ERROR" "Context budget: prompt for $target is ${original_chars} chars; limit is $char_budget chars (~$budget tokens)"
+                type record_oversize_event >/dev/null 2>&1 && record_oversize_event "$target" "$original_chars" "$original_chars" "failed" || true
+                type write_agent_status >/dev/null 2>&1 && write_agent_status "$target" "failed" "$((original_chars / 4))" 0 "Prompt exceeded context budget" 0 "" "$role" || true
+                return 78
+                ;;
+            summarize)
+                log "WARN" "Context budget: summarizing prompt for $target from ${original_chars} to <=$char_budget chars (~$budget tokens)"
+                local summarized
+                if summarized=$(summarize_then_dispatch "$prompt" "$role" "$target" "$budget") && [[ -n "$summarized" ]]; then
+                    if [[ ${#summarized} -gt $char_budget ]]; then
+                        summarized="${summarized:0:$char_budget}
+
+[... summarized preflight output truncated to fit context budget of ~$budget tokens ...]"
+                    fi
+                    type record_oversize_event >/dev/null 2>&1 && record_oversize_event "$target" "$original_chars" "${#summarized}" "summarized" || true
+                    printf '%s\n' "$summarized"
+                    return 0
+                fi
+                log "WARN" "Context budget: summarizer unavailable; falling back to truncation for $target"
+                log "DEBUG" "Context budget: truncating prompt for $target from ${#prompt} to $char_budget chars (~$budget tokens)"
+                type record_oversize_event >/dev/null 2>&1 && record_oversize_event "$target" "$original_chars" "$char_budget" "truncated" || true
+                echo "${prompt:0:$char_budget}
 
 [... truncated to fit context budget of ~$budget tokens ...]"
+                ;;
+            truncate|*)
+                log "DEBUG" "Context budget: truncating prompt for $target from ${#prompt} to $char_budget chars (~$budget tokens)"
+                type record_oversize_event >/dev/null 2>&1 && record_oversize_event "$target" "$original_chars" "$char_budget" "truncated" || true
+                echo "${prompt:0:$char_budget}
+
+[... truncated to fit context budget of ~$budget tokens ...]"
+                ;;
+        esac
     else
         echo "$prompt"
     fi
@@ -165,21 +553,33 @@ get_agent_model() {
     case "$agent_type" in
         codex*)      provider="codex" ;;
         gemini*)     provider="gemini" ;;
+        agy*|antigravity) provider="agy" ;;
+        claude-sdk*) provider="claude-sdk" ;;  # v9.50.0: must precede claude* glob
         claude*)     provider="claude" ;;
         openrouter*) provider="openrouter" ;;
+        atlascloud*) provider="atlascloud" ;;
+        openai-compatible|openai-tools|openai-compatible-agent*) provider="openai-compatible-agent" ;;
         perplexity*) provider="perplexity" ;;
         qwen*)       provider="qwen" ;;
+        cursor-agent*) provider="cursor-agent" ;;
+        grok*)       provider="grok" ;;
         opencode*)   provider="opencode" ;;
     esac
 
     local resolved_model
-    resolved_model=$(resolve_octopus_model "$provider" "$agent_type" "$phase" "$role")
+    if ! resolved_model=$(resolve_octopus_model "$provider" "$agent_type" "$phase" "$role"); then
+        return 1
+    fi
 
     # v8.31.0: Apply model restriction service if configured
     if [[ -n "$provider" ]]; then
         local fallback
         fallback=$(validate_model_allowed "$provider" "$resolved_model")
         if [[ $? -ne 0 && -n "$fallback" ]]; then
+            if ! validate_model_name "$fallback"; then
+                log ERROR "Invalid fallback model name for $provider"
+                return 1
+            fi
             echo "$fallback"
             return 0
         fi
@@ -198,10 +598,15 @@ validate_model_allowed() {
     case "$provider" in
         codex)      allowlist_var="OCTOPUS_CODEX_ALLOWED_MODELS" ;;
         gemini)     allowlist_var="OCTOPUS_GEMINI_ALLOWED_MODELS" ;;
+        agy)        allowlist_var="OCTOPUS_AGY_ALLOWED_MODELS" ;;
+        claude-sdk) allowlist_var="OCTOPUS_CLAUDE_SDK_ALLOWED_MODELS" ;;
         claude)     allowlist_var="OCTOPUS_CLAUDE_ALLOWED_MODELS" ;;
         openrouter) allowlist_var="OCTOPUS_OPENROUTER_ALLOWED_MODELS" ;;
+        atlascloud) allowlist_var="ATLASCLOUD_ALLOWED_MODELS" ;;
+        openai-compatible|openai-tools|openai-compatible-agent) allowlist_var="OPENAI_COMPAT_ALLOWED_MODELS" ;;
         perplexity) allowlist_var="OCTOPUS_PERPLEXITY_ALLOWED_MODELS" ;;
         qwen)       allowlist_var="OCTOPUS_QWEN_ALLOWED_MODELS" ;;
+        cursor-agent) allowlist_var="OCTOPUS_CURSOR_AGENT_ALLOWED_MODELS" ;;
         opencode)   allowlist_var="OCTOPUS_OPENCODE_ALLOWED_MODELS" ;;
         *)          return 0 ;;  # Unknown provider — allow
     esac
@@ -373,12 +778,16 @@ find_capable_fallback() {
             candidates=(gpt-5.4-mini gpt-5.2-codex gpt-5.3-codex gpt-5.4 gpt-5.4-pro o3) ;;
         gemini)
             candidates=(gemini-3-flash-preview gemini-3.1-pro-preview) ;;
+        agy)
+            candidates=(default) ;;
         claude)
             candidates=(claude-sonnet-4.6 claude-opus-4.6) ;;
         openrouter)
             candidates=(z-ai/glm-5 moonshotai/kimi-k2.5 deepseek/deepseek-r1-0528) ;;
         perplexity)
             candidates=(sonar sonar-pro) ;;
+        cursor-agent)
+            candidates=(composer-2-fast composer-2 grok-4-20 grok-4-20-thinking) ;;
     esac
 
     for candidate in "${candidates[@]}"; do

@@ -14,7 +14,7 @@
 
 set -eo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 REGISTRY="${SCRIPT_DIR}/agent-registry.sh"
 REACTIONS_DIR="${HOME}/.claude-octopus/agents/reactions"
 CONFIG_OVERRIDE=".octo/reactions.conf"

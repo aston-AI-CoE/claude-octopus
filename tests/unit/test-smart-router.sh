@@ -5,14 +5,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+source "$SCRIPT_DIR/../helpers/test-framework.sh"
+test_suite "(renamed from /octo:octo in v9.5.0; legacy octo.md is a redirect)"
+
 OCTO_MD="$PROJECT_ROOT/.claude/commands/auto.md"
 LEGACY_MD="$PROJECT_ROOT/.claude/commands/octo.md"
 COMMANDS_DIR="$PROJECT_ROOT/.claude/commands"
 SKILLS_DIR="$PROJECT_ROOT/.claude/skills"
 
-TEST_COUNT=0; PASS_COUNT=0; FAIL_COUNT=0
-pass() { TEST_COUNT=$((TEST_COUNT+1)); PASS_COUNT=$((PASS_COUNT+1)); echo "PASS: $1"; }
-fail() { TEST_COUNT=$((TEST_COUNT+1)); FAIL_COUNT=$((FAIL_COUNT+1)); echo "FAIL: $1 — $2"; }
+pass() { test_case "$1"; test_pass; }
+fail() { test_case "$1"; test_fail "${2:-$1}"; }
 assert_contains() {
   local file="$1" pattern="$2" label="$3"
   [[ $(grep -cE "$pattern" "$file") -gt 0 ]] && pass "$label" || fail "$label" "missing: $pattern"
@@ -166,20 +169,12 @@ fi
 
 # ── File size reduction ───────────────────────────────────────────────────────
 
+# Budget raised from 250 to 280 to fit the Antigravity (agy) provider banner
+# lines added with the agy provider (still well below the original 382).
 LINE_COUNT=$(wc -l < "$OCTO_MD" | tr -d ' ')
-if [[ $LINE_COUNT -le 250 ]]; then
+if [[ $LINE_COUNT -le 280 ]]; then
   pass "file is $LINE_COUNT lines (reduced from 382)"
 else
-  fail "file size reduction" "file is $LINE_COUNT lines, expected <= 250 (was 382)"
+  fail "file size reduction" "file is $LINE_COUNT lines, expected <= 280 (was 382)"
 fi
-
-# ── Summary ───────────────────────────────────────────────────────────────────
-
-echo ""
-echo "==============================================="
-echo "smart-router tests: $PASS_COUNT/$TEST_COUNT passed"
-if [[ $FAIL_COUNT -gt 0 ]]; then
-  echo "$FAIL_COUNT FAILED"
-  exit 1
-fi
-echo "All tests passed."
+test_summary

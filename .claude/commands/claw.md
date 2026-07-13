@@ -1,6 +1,6 @@
 ---
 command: claw
-description: OpenClaw instance administration — manage hosts across macOS, Ubuntu/Debian, Docker, OCI, and Proxmox
+description: "[advanced] OpenClaw instance administration — manage hosts across macOS, Ubuntu/Debian, Docker, OCI, and Proxmox"
 ---
 
 # Claw - OpenClaw System Administration
@@ -10,7 +10,7 @@ description: OpenClaw instance administration — manage hosts across macOS, Ubu
 ## Instructions
 
 Read and follow the full skill instructions from:
-`${HOME}/.claude-octopus/plugin/.claude/skills/skill-claw.md`
+`${HOME}/.claude-octopus/plugin/.claude/skills/skill-claw/SKILL.md`
 
 ## Quick Usage
 

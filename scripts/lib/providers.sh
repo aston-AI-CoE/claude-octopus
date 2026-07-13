@@ -7,6 +7,18 @@
 # Source-safe: no main execution block.
 # ═══════════════════════════════════════════════════════════════════════════════
 
+_providers_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! declare -f _is_cursor_agent_binary >/dev/null 2>&1; then
+    source "${_providers_lib_dir}/cursor-agent.sh" 2>/dev/null || true
+fi
+source "${_providers_lib_dir}/provider-allowlist.sh" 2>/dev/null || true
+source "${_providers_lib_dir}/auth.sh" 2>/dev/null || true
+source "${_providers_lib_dir}/qwen.sh" 2>/dev/null || true
+source "${_providers_lib_dir}/openai-compatible.sh" 2>/dev/null || true
+if ! declare -f grok_is_available >/dev/null 2>&1 || ! declare -f grok_auth_method >/dev/null 2>&1; then
+    source "${_providers_lib_dir}/grok.sh" 2>/dev/null || true
+fi
+
 # Version comparison utility
 version_compare() {
     local version1="$1"
@@ -190,6 +202,13 @@ detect_claude_code_version() {
         SUPPORTS_WORKTREE_HOOKS=true
         SUPPORTS_AGENTS_CLI=true
         SUPPORTS_FAST_OPUS_1M=true
+    fi
+
+    # v9.50.0: worktree.bgIsolation opt-out — OCTOPUS_WORKTREE_BG_ISOLATION=false
+    # disables worktree cloning for background agents (fast direct-edit runs).
+    # Mirrors Claude Code's worktree.bgIsolation session flag.
+    if [[ "${OCTOPUS_WORKTREE_BG_ISOLATION:-true}" == "false" ]]; then
+        SUPPORTS_WORKTREE_ISOLATION=false
     fi
 
     # Check for v2.1.51+ features (remote control, npm registries, fast bash, disk persist, account env vars, managed settings)
@@ -395,6 +414,89 @@ detect_claude_code_version() {
         SUPPORTS_AUTO_CLOUD_ENV=true
     fi
 
+    # v9.23: Claude Code v2.1.105+ (blockable PreCompact, plugin monitors, worktree path reuse, MCP truncate recipes)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.105" ">="; then
+        SUPPORTS_PRECOMPACT_BLOCKING=true
+        SUPPORTS_PLUGIN_MONITORS=true
+        SUPPORTS_ENTER_WORKTREE_PATH=true
+        SUPPORTS_MCP_TRUNCATE_RECIPES=true
+    fi
+
+    # v9.23: Claude Code v2.1.108+ (1-hour prompt cache, session recap, built-in slash via Skill)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.108" ">="; then
+        SUPPORTS_PROMPT_CACHE_1H=true
+        SUPPORTS_SESSION_RECAP=true
+        SUPPORTS_BUILTIN_SLASH_VIA_SKILL=true
+    fi
+
+    # v9.23: Claude Code v2.1.110+ (TaskCreated hook, PermissionRequest re-check, PreToolUse ctx on fail, TUI, OTel raw bodies, PowerShell)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.110" ">="; then
+        SUPPORTS_TASKCREATED_HOOK=true
+        SUPPORTS_PERMISSIONREQ_RECHECK=true
+        SUPPORTS_PRETOOL_CTX_ON_FAIL=true
+        SUPPORTS_TUI_FULLSCREEN=true
+        SUPPORTS_OTEL_RAW_BODIES=true
+        SUPPORTS_POWERSHELL_TOOL=true
+    fi
+
+    # v9.23: Claude Code v2.1.111+ (Opus 4.7 + xhigh effort, auto mode GA, /ultrareview)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.111" ">="; then
+        SUPPORTS_XHIGH_EFFORT=true
+        SUPPORTS_OPUS_4_7=true
+        SUPPORTS_AUTO_MODE_GA=true
+        SUPPORTS_ULTRAREVIEW=true
+    fi
+
+    # v9.36: Claude Code v2.1.126+ (gateway models, project purge, skill activation trigger telemetry)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.126" ">="; then
+        SUPPORTS_GATEWAY_MODEL_DISCOVERY=true
+        SUPPORTS_PROJECT_PURGE=true
+        SUPPORTS_SKILL_ACTIVATED_OTEL_TRIGGER=true
+    fi
+
+    # v9.36: Claude Code v2.1.128+ (plugin zip loading, MCP diagnostics, init.plugin_errors)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.128" ">="; then
+        SUPPORTS_PLUGIN_ZIP_DIR=true
+        SUPPORTS_MCP_TOOL_COUNTS=true
+        SUPPORTS_MCP_WORKSPACE_RESERVED=true
+        SUPPORTS_LOCAL_SETTINGS_SUGGESTIONS=true
+        SUPPORTS_SUBPROCESS_OTEL_SCRUB=true
+        SUPPORTS_INIT_PLUGIN_ERRORS=true
+        SUPPORTS_PARALLEL_SHELL_READONLY_RESILIENCE=true
+        SUPPORTS_PLUGIN_UPDATE_NPM=true
+    fi
+
+    # v9.36: Claude Code v2.1.129+ (plugin URL loading, skillOverrides, gateway discovery opt-in)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.129" ">="; then
+        SUPPORTS_PLUGIN_URL=true
+        SUPPORTS_FORCE_SYNC_OUTPUT=true
+        SUPPORTS_PACKAGE_MANAGER_AUTO_UPDATE=true
+        SUPPORTS_EXPERIMENTAL_MANIFEST_KEYS=true
+        SUPPORTS_GATEWAY_MODEL_DISCOVERY_OPT_IN=true
+        SUPPORTS_SKILL_OVERRIDES=true
+        SUPPORTS_PR_COUNT_MCP_OTEL=true
+    fi
+
+    # v9.37: Claude Code v2.1.132+ (session ID exposed to Bash tool subprocess env)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.132" ">="; then
+        SUPPORTS_BASH_SESSION_ID_ENV=true
+    fi
+
+    # v9.42: Claude Code v2.1.154+ (Opus 4.8, dynamic workflows, lean prompt default)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.154" ">="; then
+        SUPPORTS_OPUS_4_8=true
+        SUPPORTS_DYNAMIC_WORKFLOWS=true
+        SUPPORTS_LEAN_SYSTEM_PROMPT_DEFAULT=true
+    fi
+
+    # v9.42: Claude Code v2.1.157+ (skills autoload, agent settings, worktree switching, richer OTel)
+    if version_compare "$CLAUDE_CODE_VERSION" "2.1.157" ">="; then
+        SUPPORTS_AGENT_SETTINGS_AGENT_FIELD=true
+        SUPPORTS_SKILLS_AUTO_PLUGIN_LOAD=true
+        SUPPORTS_ENTER_WORKTREE_SWITCH=true
+        SUPPORTS_TOOL_DECISION_PARAMS_OTEL=true
+    fi
+
     log "INFO" "Claude Code v$CLAUDE_CODE_VERSION detected"
     log "INFO" "Task Management: $SUPPORTS_TASK_MANAGEMENT | Fork Context: $SUPPORTS_FORK_CONTEXT | Agent Teams: $SUPPORTS_AGENT_TEAMS"
     log "INFO" "Persistent Memory: $SUPPORTS_PERSISTENT_MEMORY | Hook Events: $SUPPORTS_HOOK_EVENTS | Agent Type Routing: $SUPPORTS_AGENT_TYPE_ROUTING"
@@ -434,6 +536,14 @@ detect_claude_code_version() {
     log "INFO" "Default Effort High: $SUPPORTS_DEFAULT_EFFORT_HIGH | Statusline Refresh Interval: $SUPPORTS_STATUSLINE_REFRESH_INTERVAL"
     log "INFO" "Exclude Dynamic Prompt: $SUPPORTS_EXCLUDE_DYNAMIC_PROMPT | Perforce Mode: $SUPPORTS_PERFORCE_MODE | Monitor Tool: $SUPPORTS_MONITOR_TOOL | Traceparent: $SUPPORTS_TRACEPARENT"
     log "INFO" "Settings Resilience: $SUPPORTS_SETTINGS_RESILIENCE | OS CA Certs: $SUPPORTS_OS_CA_CERTS | Auto Cloud Env: $SUPPORTS_AUTO_CLOUD_ENV"
+    log "INFO" "Gateway Models: $SUPPORTS_GATEWAY_MODEL_DISCOVERY | Project Purge: $SUPPORTS_PROJECT_PURGE | Skill OTel Trigger: $SUPPORTS_SKILL_ACTIVATED_OTEL_TRIGGER"
+    log "INFO" "Plugin Zip Dir: $SUPPORTS_PLUGIN_ZIP_DIR | MCP Tool Counts: $SUPPORTS_MCP_TOOL_COUNTS | MCP Workspace Reserved: $SUPPORTS_MCP_WORKSPACE_RESERVED"
+    log "INFO" "Local Settings Suggestions: $SUPPORTS_LOCAL_SETTINGS_SUGGESTIONS | Subprocess OTEL Scrub: $SUPPORTS_SUBPROCESS_OTEL_SCRUB | Init Plugin Errors: $SUPPORTS_INIT_PLUGIN_ERRORS"
+    log "INFO" "Plugin URL: $SUPPORTS_PLUGIN_URL | Force Sync Output: $SUPPORTS_FORCE_SYNC_OUTPUT | Package Manager Auto Update: $SUPPORTS_PACKAGE_MANAGER_AUTO_UPDATE"
+    log "INFO" "Experimental Manifest Keys: $SUPPORTS_EXPERIMENTAL_MANIFEST_KEYS | Gateway Discovery Opt-in: $SUPPORTS_GATEWAY_MODEL_DISCOVERY_OPT_IN | Skill Overrides: $SUPPORTS_SKILL_OVERRIDES"
+    log "INFO" "Bash Session ID Env: $SUPPORTS_BASH_SESSION_ID_ENV"
+    log "INFO" "Opus 4.8: $SUPPORTS_OPUS_4_8 | Dynamic Workflows: $SUPPORTS_DYNAMIC_WORKFLOWS | Lean Prompt Default: $SUPPORTS_LEAN_SYSTEM_PROMPT_DEFAULT"
+    log "INFO" "Agent Settings Agent Field: $SUPPORTS_AGENT_SETTINGS_AGENT_FIELD | Skills Auto Plugin Load: $SUPPORTS_SKILLS_AUTO_PLUGIN_LOAD | EnterWorktree Switch: $SUPPORTS_ENTER_WORKTREE_SWITCH | Tool Decision Params OTel: $SUPPORTS_TOOL_DECISION_PARAMS_OTEL"
 
     # v8.29.0: Context window control
     OCTOPUS_CONTEXT_WINDOW="${OCTOPUS_CONTEXT_WINDOW:-auto}"
@@ -452,11 +562,21 @@ detect_claude_code_version() {
     fi
 
     # v9.19.0: --bare flag for subprocess synthesis (CC v2.1.87+)
-    # Skips hooks/LSP/plugin sync when running claude -p subprocesses, reducing latency
+    # Skips hooks/LSP/plugin sync when running claude -p subprocesses, reducing latency.
+    # CC v2.1.114 regression (#288): --bare breaks subprocess auth on some installs,
+    # causing "Not logged in" exits with exit code 0. Runtime-probe before enabling,
+    # and honour OCTOPUS_DISABLE_BARE=1 opt-out.
     _BARE_OPT=""
-    if [[ "$SUPPORTS_BARE_FLAG" == "true" ]]; then
-        _BARE_OPT=" --bare"
-        log "INFO" "Subprocess synthesis uses --bare flag for faster claude -p calls"
+    if [[ "$SUPPORTS_BARE_FLAG" == "true" && "${OCTOPUS_DISABLE_BARE:-0}" != "1" ]]; then
+        # Quick auth probe: pipe a trivial prompt and check for login nag
+        local _bare_probe
+        _bare_probe=$(echo "x" | claude --bare --print --model claude-haiku-4-5-20251001 2>/dev/null | head -1 || true)
+        if [[ "$_bare_probe" == *"Not logged in"* || "$_bare_probe" == *"Please run /login"* ]]; then
+            log "WARN" "--bare flag breaks subprocess auth on this install (issue #288) — disabled. Set OCTOPUS_DISABLE_BARE=1 to suppress this probe."
+        else
+            _BARE_OPT=" --bare"
+            log "INFO" "Subprocess synthesis uses --bare flag for faster claude -p calls"
+        fi
     fi
     export _BARE_OPT
 
@@ -578,6 +698,11 @@ check_provider_health() {
     local provider="$1"
     local errors=0
 
+    if declare -f octo_provider_allowed >/dev/null 2>&1 && ! octo_provider_allowed "$provider"; then
+        echo "$provider: disabled by provider allowlist" >&2
+        return 1
+    fi
+
     case "$provider" in
         codex)
             if ! command -v codex &>/dev/null; then
@@ -621,6 +746,12 @@ check_provider_health() {
                 fi
             fi
             ;;
+        agy|antigravity)
+            if ! command -v agy &>/dev/null; then
+                echo "agy CLI not found in PATH" >&2
+                return 1
+            fi
+            ;;
         claude)
             if ! command -v claude &>/dev/null; then
                 echo "claude CLI not found in PATH" >&2
@@ -636,6 +767,19 @@ check_provider_health() {
         openrouter)
             if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
                 echo "openrouter: OPENROUTER_API_KEY not set" >&2
+                return 1
+            fi
+            ;;
+        atlascloud)
+            if [[ -z "${ATLASCLOUD_API_KEY:-}" ]]; then
+                resolve_provider_env "ATLASCLOUD_API_KEY" 2>/dev/null
+            fi
+            if [[ -z "${ATLASCLOUD_API_KEY:-}" ]]; then
+                echo "atlascloud: ATLASCLOUD_API_KEY not set" >&2
+                return 1
+            fi
+            if [[ -z "${ATLASCLOUD_MODEL:-}" && -z "${OCTOPUS_ATLASCLOUD_MODEL:-}" && -z "${OPENAI_COMPAT_MODEL:-}" ]]; then
+                echo "atlascloud: set ATLASCLOUD_MODEL or OCTOPUS_ATLASCLOUD_MODEL before dispatch" >&2
                 return 1
             fi
             ;;
@@ -671,11 +815,86 @@ check_provider_health() {
                 echo "qwen CLI not found in PATH" >&2
                 return 1
             fi
-            # Check auth: OAuth creds or config in ~/.qwen/, or API key env var
-            if [[ ! -f "${HOME}/.qwen/oauth_creds.json" ]] && \
-               [[ ! -f "${HOME}/.qwen/config.json" ]] && \
-               [[ -z "${QWEN_API_KEY:-}" ]]; then
-                echo "qwen: not authenticated (run: qwen to trigger OAuth, or set QWEN_API_KEY)" >&2
+            # Check auth — must be a VALID source, not just a present file.
+            # oco-dar: an expired oauth_creds.json (free OAuth tier EOL 2026-04-15,
+            # refresh broken) must fail here, otherwise dispatch hangs on the
+            # interactive browser device-auth flow.
+            if declare -f qwen_auth_method >/dev/null 2>&1; then
+                case "$(qwen_auth_method)" in
+                    env:QWEN_API_KEY|env:OPENAI_COMPAT|oauth|config) : ;;  # usable
+                    oauth-expired)
+                        echo "qwen: OAuth token expired and not refreshable (free tier discontinued 2026-04-15). Set QWEN_API_KEY or configure Coding-Plan (OPENAI_API_KEY + OPENAI_BASE_URL)." >&2
+                        return 1
+                        ;;
+                    *)
+                        echo "qwen: not authenticated. Set QWEN_API_KEY or configure Coding-Plan (OPENAI_API_KEY + OPENAI_BASE_URL)." >&2
+                        return 1
+                        ;;
+                esac
+            elif [[ -n "${QWEN_API_KEY:-}" ]] || \
+                 [[ -n "${OPENAI_API_KEY:-}" && -n "${OPENAI_BASE_URL:-}" ]] || \
+                 [[ -f "${HOME}/.qwen/config.json" ]]; then
+                :
+            else
+                echo "qwen: not authenticated (set QWEN_API_KEY or configure Coding-Plan)" >&2
+                return 1
+            fi
+            ;;
+        claude-sdk)
+            # v9.50.0: Agent SDK seat — key is the only hard requirement; the
+            # shim falls back from claude-agent to headless claude at exec time.
+            if [[ -z "${CLAUDE_SDK_API_KEY:-}" ]]; then
+                echo "claude-sdk: CLAUDE_SDK_API_KEY not set" >&2
+                return 1
+            fi
+            if ! command -v claude-agent &>/dev/null && ! command -v claude &>/dev/null; then
+                echo "claude-sdk: neither claude-agent (Agent SDK) nor claude CLI found in PATH" >&2
+                return 1
+            fi
+            ;;
+        grok)
+            if ! command -v grok &>/dev/null; then
+                echo "grok: CLI not found in PATH" >&2
+                return 1
+            fi
+            # Auth: env XAI_API_KEY or ~/.grok/auth.json (grok login session)
+            if [[ -z "${XAI_API_KEY:-}" && ! -f "${HOME}/.grok/auth.json" ]]; then
+                echo "grok: not authenticated (run: grok login or set XAI_API_KEY)" >&2
+                return 1
+            fi
+            ;;
+        cursor-agent)
+            if ! command -v agent &>/dev/null; then
+                echo "cursor-agent: CLI not found in PATH" >&2
+                return 1
+            fi
+            # Verify binary identity — `agent` is a generic name
+            if ! declare -f _is_cursor_agent_binary >/dev/null 2>&1 || ! _is_cursor_agent_binary; then
+                echo "cursor-agent: 'agent' binary is not Cursor Agent CLI" >&2
+                return 1
+            fi
+            # Check auth: env var or Cursor session (authInfo in cli-config.json)
+            if [[ -z "${CURSOR_API_KEY:-}" ]] && \
+               ! grep -Eq '"authInfo"[[:space:]]*:[[:space:]]*\{' "${HOME}/.cursor/cli-config.json" 2>/dev/null; then
+                echo "cursor-agent: not authenticated (run: agent login or set CURSOR_API_KEY)" >&2
+                return 1
+            fi
+            ;;
+        vibe)
+            if ! command -v vibe &>/dev/null; then
+                echo "vibe CLI not found in PATH" >&2
+                return 1
+            fi
+            # Try resolving env var from profile/.env for non-interactive shells
+            # (mirrors codex/gemini — keeps shell-profile-only keys from being misreported)
+            if [[ -z "${MISTRAL_API_KEY:-}" ]]; then
+                resolve_provider_env "MISTRAL_API_KEY" 2>/dev/null
+            fi
+            # Check auth: env-file with MISTRAL_API_KEY, env var, or config.toml api_key
+            if [[ -z "${MISTRAL_API_KEY:-}" ]] && \
+               ! { [[ -f "${HOME}/.vibe/.env" ]] && grep -Eq '^[[:space:]]*MISTRAL_API_KEY=' "${HOME}/.vibe/.env" 2>/dev/null; } && \
+               ! { [[ -f "${HOME}/.vibe/config.toml" ]] && grep -Eq '^[[:space:]]*api_key[[:space:]]*=' "${HOME}/.vibe/config.toml" 2>/dev/null; }; then
+                echo "vibe: not authenticated (run: vibe --setup or set MISTRAL_API_KEY)" >&2
                 return 1
             fi
             ;;
@@ -689,7 +908,7 @@ check_all_providers() {
     local healthy=0 unhealthy=0
     local -a results=()
 
-    for provider in codex gemini claude perplexity openrouter ollama copilot qwen; do
+    for provider in codex gemini agy claude claude-sdk perplexity openrouter atlascloud ollama copilot qwen cursor-agent grok vibe; do
         local diag
         if diag=$(check_provider_health "$provider" 2>&1); then
             results+=("  ✓ $provider")
@@ -803,4 +1022,223 @@ EOF
         # Unescape the content
         echo "$content" | sed 's/\\n/\n/g; s/\\t/\t/g; s/\\"/"/g'
     fi
+}
+
+# ── agy_current_model: resolve the model the Antigravity CLI will actually use ──
+# agy-exec.sh runs `agy --print` with `--model default` (no --model flag) unless
+# OCTOPUS_AGY_MODEL is set, so agy uses whatever is selected in its own /model UI —
+# persisted to ~/.gemini/antigravity-cli/settings.json. Resolve that here so the
+# council roster artifact and the activation banner record the REAL model
+# (e.g. "Gemini 3.1 Pro (Low)") instead of the opaque "default", which is what makes
+# a Codex+agy panel's cross-lab-vs-same-lineage status verifiable from the artifact.
+# Fail-safe: purely diagnostic, never gate logic — echo "default (unresolved)" if the
+# selection can't be read, and never abort a run.
+agy_current_model() {
+    local override="${OCTOPUS_AGY_MODEL:-}"
+    if [[ -n "$override" && "$override" != "default" ]]; then
+        printf '%s\n' "$override"
+        return 0
+    fi
+    local settings="${HOME}/.gemini/antigravity-cli/settings.json"
+    if [[ -f "$settings" ]] && command -v jq >/dev/null 2>&1; then
+        local m
+        m="$(jq -r '.model // empty' "$settings" 2>/dev/null)"
+        if [[ -n "$m" ]]; then
+            printf '%s\n' "$m"
+            return 0
+        fi
+    fi
+    printf '%s\n' "default (unresolved)"
+}
+
+# ── detect_providers: multi-CLI + auth detection (moved from orchestrate.sh v9.22.1) ──
+detect_providers() {
+    local result=""
+
+    # Detect Codex CLI
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed codex; } && command -v codex &>/dev/null; then
+        local codex_auth="none"
+        if [[ -f "$HOME/.codex/auth.json" ]]; then
+            codex_auth="oauth"
+        elif [[ -n "${OPENAI_API_KEY:-}" ]]; then
+            codex_auth="api-key"
+        fi
+        result="${result}codex:${codex_auth} "
+    fi
+
+    # Detect Gemini CLI
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed gemini; } && command -v gemini &>/dev/null; then
+        local gemini_auth="none"
+        if [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
+            gemini_auth="oauth"
+        elif [[ -n "${GEMINI_API_KEY:-}" ]]; then
+            gemini_auth="api-key"
+        fi
+        result="${result}gemini:${gemini_auth} "
+    fi
+
+    # Detect Antigravity CLI (agy)
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed agy; } && command -v agy &>/dev/null; then
+        result="${result}agy:cli "
+    fi
+
+    # Detect Claude CLI (always available in Claude Code context)
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed claude; } && command -v claude &>/dev/null; then
+        local claude_auth="oauth"
+        # v8.8: Use claude auth status for reliable auth verification
+        if [[ "$SUPPORTS_AUTH_CLI" == "true" ]]; then
+            if claude auth status &>/dev/null; then
+                claude_auth="verified"
+            else
+                claude_auth="oauth"  # Fallback: assume oauth in Claude Code context
+                log "DEBUG" "claude auth status returned non-zero, assuming oauth context"
+            fi
+        fi
+        result="${result}claude:${claude_auth} "
+    fi
+
+    # Detect OpenRouter (API key only)
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed openrouter; } && [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
+        result="${result}openrouter:api-key "
+    fi
+
+    # Detect generic OpenAI-compatible tool-loop provider (API key only)
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed openai-compatible; } && declare -f openai_compatible_is_available >/dev/null 2>&1 && openai_compatible_is_available; then
+        result="${result}openai-compatible:api-key "
+    fi
+
+    # Detect Atlas Cloud (OpenAI-compatible API key + explicit model)
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed atlascloud; }; then
+        if [[ -z "${ATLASCLOUD_API_KEY:-}" ]]; then
+            resolve_provider_env "ATLASCLOUD_API_KEY" 2>/dev/null
+        fi
+        if [[ -n "${ATLASCLOUD_API_KEY:-}" ]] && { [[ -n "${ATLASCLOUD_MODEL:-}" ]] || [[ -n "${OCTOPUS_ATLASCLOUD_MODEL:-}" ]] || [[ -n "${OPENAI_COMPAT_MODEL:-}" ]]; }; then
+            result="${result}atlascloud:api-key "
+        fi
+    fi
+
+    # Detect Perplexity (API key only)
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed perplexity; } && [[ -n "${PERPLEXITY_API_KEY:-}" ]]; then
+        result="${result}perplexity:api-key "
+    fi
+
+    # Detect Ollama (CLI + server)
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed ollama; } && command -v ollama &>/dev/null; then
+        if curl -sf http://localhost:11434/api/tags &>/dev/null; then
+            result="${result}ollama:running "
+        else
+            result="${result}ollama:installed "
+        fi
+    fi
+
+    # Detect Copilot CLI (v9.9.0)
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed copilot; } && command -v copilot &>/dev/null; then
+        local copilot_auth="none"
+        if [[ -n "${COPILOT_GITHUB_TOKEN:-}" ]]; then
+            copilot_auth="pat"
+        elif [[ -n "${GH_TOKEN:-}" ]] || [[ -n "${GITHUB_TOKEN:-}" ]]; then
+            copilot_auth="env-token"
+        elif [[ -f "${HOME}/.copilot/config.json" ]]; then
+            copilot_auth="keychain"
+        elif command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
+            copilot_auth="gh-cli"
+        fi
+        result="${result}copilot:${copilot_auth} "
+    fi
+
+    # Detect Qwen CLI (v9.10.0). oco-dar: report expiry-aware auth state so an
+    # expired OAuth token surfaces as "oauth-expired" rather than a usable "oauth".
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed qwen; } && command -v qwen &>/dev/null; then
+        local qwen_auth="none"
+        if declare -f qwen_auth_method >/dev/null 2>&1; then
+            case "$(qwen_auth_method)" in
+                env:QWEN_API_KEY) qwen_auth="api-key" ;;
+                env:OPENAI_COMPAT) qwen_auth="openai-compatible" ;;
+                oauth)            qwen_auth="oauth" ;;
+                oauth-unvalidated) qwen_auth="oauth-unvalidated" ;;
+                oauth-expired)    qwen_auth="oauth-expired" ;;
+                config)           qwen_auth="config" ;;
+                *)                qwen_auth="none" ;;
+            esac
+        elif [[ -f "${HOME}/.qwen/oauth_creds.json" ]]; then
+            qwen_auth="oauth-unvalidated"
+        elif [[ -f "${HOME}/.qwen/config.json" ]]; then
+            qwen_auth="config"
+        elif [[ -n "${QWEN_API_KEY:-}" ]]; then
+            qwen_auth="api-key"
+        elif [[ -n "${OPENAI_API_KEY:-}" && -n "${OPENAI_BASE_URL:-}" ]]; then
+            qwen_auth="openai-compatible"
+        fi
+        result="${result}qwen:${qwen_auth} "
+    fi
+
+    # Detect Cursor Agent CLI (Grok via Cursor subscription)
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed cursor-agent; } && declare -f _is_cursor_agent_binary >/dev/null 2>&1 && _is_cursor_agent_binary; then
+        local cursor_auth="none"
+        if [[ -n "${CURSOR_API_KEY:-}" ]]; then
+            cursor_auth="env:CURSOR_API_KEY"
+        elif grep -Eq '"authInfo"[[:space:]]*:[[:space:]]*\{' "${HOME}/.cursor/cli-config.json" 2>/dev/null; then
+            cursor_auth="cursor-session"
+        fi
+        result="${result}cursor-agent:${cursor_auth} "
+    fi
+
+    # Detect xAI Grok CLI (standalone grok provider)
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed grok; } && declare -f grok_is_available >/dev/null 2>&1 && grok_is_available; then
+        result="${result}grok:$(grok_auth_method) "
+    fi
+
+    # Detect Claude Agent SDK seat (v9.50.0 — CLAUDE_SDK_API_KEY unlocks Opus 4.8 + 1M context)
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed claude-sdk; } && [[ -n "${CLAUDE_SDK_API_KEY:-}" ]]; then
+        if command -v claude-agent &>/dev/null; then
+            result="${result}claude-sdk:agent-sdk "
+        elif command -v claude &>/dev/null; then
+            result="${result}claude-sdk:headless-fallback "
+        fi
+    fi
+
+    # Detect Vibe CLI (Mistral Vibe interactive CLI)
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed vibe; } && command -v vibe &>/dev/null; then
+        local vibe_auth="none"
+        if [[ -f "${HOME}/.vibe/.env" ]] && grep -Eq '^[[:space:]]*MISTRAL_API_KEY=' "${HOME}/.vibe/.env" 2>/dev/null; then
+            vibe_auth="env-file"
+        elif [[ -n "${MISTRAL_API_KEY:-}" ]]; then
+            vibe_auth="api-key"
+        elif [[ -f "${HOME}/.vibe/config.toml" ]] && grep -Eq '^[[:space:]]*api_key[[:space:]]*=' "${HOME}/.vibe/config.toml" 2>/dev/null; then
+            vibe_auth="config"
+        fi
+        result="${result}vibe:${vibe_auth} "
+    fi
+
+    # Detect OpenCode CLI (v9.11.0 — multi-provider router)
+    if { ! declare -f octo_provider_allowed >/dev/null 2>&1 || octo_provider_allowed opencode; } && command -v opencode &>/dev/null; then
+        local opencode_auth="none"
+        if [[ -f "${HOME}/.local/share/opencode/auth.json" ]]; then
+            # Verify auth is actually valid via auth list (with timeout to prevent hang)
+            if timeout 3 opencode auth list &>/dev/null 2>&1; then
+                opencode_auth="multi"
+            else
+                opencode_auth="expired"
+            fi
+        fi
+        result="${result}opencode:${opencode_auth} "
+    fi
+
+    # Fail gracefully with helpful message if no providers found
+    if [[ -z "$result" ]]; then
+        log WARN "No AI providers detected. Install at least one:"
+        log WARN "  - Codex: npm i -g @openai/codex"
+        log WARN "  - Gemini: npm i -g @google/gemini-cli"
+        log WARN "  - Claude: Available in Claude Code context"
+        log WARN "  - OpenRouter: Set OPENROUTER_API_KEY environment variable"
+        log WARN "  - Atlas Cloud: Set ATLASCLOUD_API_KEY and ATLASCLOUD_MODEL"
+        log WARN "  - Copilot: brew install copilot-cli (zero additional cost)"
+        log WARN "  - Ollama: brew install ollama (free local LLM)"
+        log WARN "  - Qwen: npm i -g @qwen-code/qwen-code; set QWEN_API_KEY or configure Coding-Plan"
+        log WARN "  - OpenCode: npm i -g opencode (multi-provider router)"
+        echo "none:unavailable"
+        return 1
+    fi
+
+    echo "$result" | xargs  # Trim whitespace
 }

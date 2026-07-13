@@ -27,6 +27,15 @@ import { createInterface } from "node:readline";
 import https from "node:https";
 import { execFileSync } from "node:child_process";
 
+// Remote web sessions default to the lightweight bash statusline path to avoid
+// local keychain/OAuth probes and slow terminal-only HUD work.
+if (
+  (process.env.CLAUDE_CODE_REMOTE === "true" || process.env.OCTOPUS_REMOTE_SESSION === "true") &&
+  process.env.OCTOPUS_REMOTE_STATUSLINE !== "full"
+) {
+  process.exit(0);
+}
+
 // ── Section A: Constants + Colors ────────────────────────────────────────────
 
 const HOME = homedir();
@@ -763,7 +772,7 @@ let _progressCache = { data: null, ts: 0 };
 function readProgress() {
   try {
     if (Date.now() - _progressCache.ts < 2000) return _progressCache.data;
-    const sid = process.env.CLAUDE_SESSION_ID || "";
+    const sid = process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || "";
     if (!sid) { _progressCache = { data: null, ts: Date.now() }; return null; }
     const pf = join(HOME, ".claude-octopus", `progress-${sid}.json`);
     if (!existsSync(pf)) { _progressCache = { data: null, ts: Date.now() }; return null; }
@@ -855,7 +864,7 @@ function costProjection(session, inputCost) {
 function writeContextBridge(input) {
   try {
     const pct = Math.round(input?.context_window?.used_percentage || 0);
-    const sid = input?.session_id || process.env.CLAUDE_SESSION_ID || "unknown";
+    const sid = input?.session_id || process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || "unknown";
     const bf = `/tmp/octopus-ctx-${sid}.json`;
     writeFileSync(bf, JSON.stringify({
       session_id: sid,
@@ -988,7 +997,7 @@ function render(input, session, usage, transcript, latestVersion, config) {
       try {
         if (!existsSync(analyticsPath)) return { label: lbl("Saved"), value: `${C.slate600}0${C.reset}` };
         const lines = readFileSync(analyticsPath, "utf-8").trim().split("\n").filter(Boolean);
-        const sessionId = process.env.CLAUDE_SESSION_ID || "";
+        const sessionId = process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || "";
         let totalSaved = 0, events = 0;
         for (const line of lines) {
           try {

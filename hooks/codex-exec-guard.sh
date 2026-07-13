@@ -4,11 +4,16 @@
 # WHY: `codex "prompt"` launches interactive TUI which fails in non-TTY (Claude Code Bash tool).
 #      `codex exec "prompt"` is the correct non-interactive mode.
 set -euo pipefail
+# EXIT trap — emits diagnostic stderr ONLY when the hook exits non-zero, so
+# the Claude Code harness error "No stderr output" can never recur. EXIT (not
+# ERR) avoids over-firing on intermediate `grep -o`/`cmd | ...` inside $() that
+# the hook's logic already handles. See issue #313.
+_octo_hook_exit() { local c=$?; if [[ $c -ne 0 ]]; then echo "[hook:$(basename "$0")] exit $c" >&2 2>/dev/null || true; fi; return 0; }
+trap _octo_hook_exit EXIT
 
-# Respect bypassPermissions mode — hooks must not override the user's CLI permission setting
-for _sf in "${CLAUDE_PROJECT_DIR:-.}/.claude/settings.local.json" "${CLAUDE_PROJECT_DIR:-.}/.claude/settings.json" "$HOME/.claude/settings.json"; do
-    [[ -f "$_sf" ]] && grep -q '"bypassPermissions"' "$_sf" 2>/dev/null && { echo '{"decision":"allow"}'; exit 0; }
-done
+
+# Note: this gate guards correctness (bare `codex "prompt"` hangs in non-TTY),
+# not user permission policy — so it runs regardless of bypassPermissions.
 
 INPUT=$(cat 2>/dev/null || true)
 [[ -z "$INPUT" ]] && echo '{"decision":"allow"}' && exit 0
@@ -26,7 +31,7 @@ fi
 if echo "$COMMAND" | grep -qE '^\s*codex\s' && \
    ! echo "$COMMAND" | grep -qE '^\s*codex\s+(exec|--version|--help|-h|login|auth|completion)\b'; then
     cat <<'BLOCK'
-{"permissionDecision":"block","message":"BLOCKED: bare `codex \"prompt\"` launches interactive TUI and fails without a TTY.\n\nUse `codex exec` instead:\n```bash\ncodex exec --full-auto \"YOUR PROMPT\"\n```\n\nWith model: `codex exec --full-auto --model gpt-5.4 \"YOUR PROMPT\"`\n\nSee skill-debate.md lines 53-62 for correct syntax."}
+{"permissionDecision":"block","message":"BLOCKED: bare `codex \"prompt\"` launches interactive TUI and fails without a TTY. Flags such as `--approval-mode`, `--full-auto`, `-q`, and `--quiet` are not valid for current non-interactive Codex dispatch.\n\nUse `codex exec` instead:\n```bash\ncodex exec --skip-git-repo-check \"YOUR PROMPT\"\n```\n\nWith model: `codex exec --skip-git-repo-check --model gpt-5.4 \"YOUR PROMPT\"`\n\nFor long prompts, pipe stdin to `codex exec --skip-git-repo-check -`."}
 BLOCK
     exit 0
 fi

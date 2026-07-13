@@ -1,6 +1,6 @@
 ---
 command: schedule
-description: "Manage scheduled workflow jobs (add via wizard, dashboard, list, remove, enable, disable, logs)"
+description: "[advanced] Manage scheduled workflow jobs (add via wizard, dashboard, list, remove, enable, disable, logs)"
 aliases:
   - jobs
   - cron
@@ -12,6 +12,24 @@ Manage scheduled workflow jobs for the Claude Octopus scheduler.
 
 ## Usage
 
+
+**Preflight — Ensure plugin root is resolvable (run via Bash tool FIRST):**
+
+```bash
+OCTO_ROOT="${HOME}/.claude-octopus/plugin"
+if [[ ! -x "$OCTO_ROOT/scripts/orchestrate.sh" ]]; then
+  helper="$OCTO_ROOT/scripts/helpers/ensure-plugin-root.sh"
+  if [[ ! -x "$helper" ]]; then
+    helper="$(find "${HOME}/.claude/plugins/cache" "${HOME}/Library/Application Support/Claude" "${LOCALAPPDATA:-/dev/null}/Claude" "${XDG_DATA_HOME:-${HOME}/.local/share}/Claude" -maxdepth 8 -path "*/nyldn-plugins/octo/*/scripts/helpers/ensure-plugin-root.sh" -print -quit 2>/dev/null)"
+  fi
+  [[ -x "$helper" ]] && bash "$helper" >/dev/null 2>&1 || true
+fi
+test -x "$OCTO_ROOT/scripts/orchestrate.sh" && echo "plugin-root:ok" || echo "plugin-root:missing"
+```
+
+If the output is `plugin-root:missing`, stop and ask the user to run `/octo:setup`.
+
+
 ```bash
 ${HOME}/.claude-octopus/plugin/scripts/scheduler/octopus-scheduler.sh [subcommand]
 ```
@@ -21,6 +39,10 @@ ${HOME}/.claude-octopus/plugin/scripts/scheduler/octopus-scheduler.sh [subcomman
 This command supports **natural language** and provides two primary experiences:
 - **No args / "show jobs" / "what's scheduled"** → Dashboard table
 - **"add a job" / "schedule X" / `add` with no file** → Guided wizard
+
+### MANDATORY COMPLIANCE — DO NOT SKIP
+
+**When the user explicitly invokes `/octo:schedule`, you MUST use the scheduler command paths below.** You are PROHIBITED from inventing job state, editing scheduler files by hand, or bypassing the dashboard/wizard flow.
 
 ---
 

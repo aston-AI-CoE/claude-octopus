@@ -4,6 +4,13 @@
 # Part of Claude Code v2.1.12+ integration
 
 set -euo pipefail
+# EXIT trap — emits diagnostic stderr ONLY when the hook exits non-zero, so
+# the Claude Code harness error "No stderr output" can never recur. EXIT (not
+# ERR) avoids over-firing on intermediate `grep -o`/`cmd | ...` inside $() that
+# the hook's logic already handles. See issue #313.
+_octo_hook_exit() { local c=$?; if [[ $c -ne 0 ]]; then echo "[hook:$(basename "$0")] exit $c" >&2 2>/dev/null || true; fi; return 0; }
+trap _octo_hook_exit EXIT
+
 
 # Get the plugin root directory
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -61,7 +68,7 @@ create_checkpoint() {
   "status": "$status",
   "timestamp": $timestamp,
   "session_id": "${CLAUDE_SESSION_ID:-unknown}",
-  "completed_at": "$(date -Iseconds)",
+  "completed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "last_message_summary": "${ESCAPED_MESSAGE:-}"
 }
 EOF
@@ -102,7 +109,7 @@ update_session_state() {
     # Update state file
     cat > "$session_state" <<EOF
 {
-  "last_updated": "$(date -Iseconds)",
+  "last_updated": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "completed_tasks": $completed_count,
   "session_id": "${CLAUDE_SESSION_ID:-unknown}"
 }

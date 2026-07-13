@@ -21,18 +21,32 @@ Interactive setup wizard. Detects what's installed, offers to install what's mis
 Run a SINGLE comprehensive check:
 
 ```bash
+set -euo pipefail
+
 echo "=== Provider Detection ==="
 printf "codex:%s\n" "$(command -v codex >/dev/null 2>&1 && echo installed || echo missing)"
 printf "codex_auth:%s\n" "$(codex --version >/dev/null 2>&1 && echo ok || echo none)"
 printf "gemini:%s\n" "$(command -v gemini >/dev/null 2>&1 && echo installed || echo missing)"
+printf "agy:%s\n" "$(command -v agy >/dev/null 2>&1 && echo installed || echo missing)"
+printf "agy_model:%s\n" "${OCTOPUS_AGY_MODEL:-}"
 printf "perplexity:%s\n" "$([ -n "${PERPLEXITY_API_KEY:-}" ] && echo configured || echo missing)"
 printf "copilot:%s\n" "$(command -v copilot >/dev/null 2>&1 && echo installed || echo missing)"
 printf "qwen:%s\n" "$(command -v qwen >/dev/null 2>&1 && echo installed || echo missing)"
 printf "ollama:%s\n" "$(command -v ollama >/dev/null 2>&1 && curl -sf http://localhost:11434/api/tags >/dev/null 2>&1 && echo running || command -v ollama >/dev/null 2>&1 && echo installed || echo missing)"
 printf "opencode:%s\n" "$(command -v opencode >/dev/null 2>&1 && echo installed || echo missing)"
+printf "vibe:%s\n" "$(command -v vibe >/dev/null 2>&1 && echo installed || echo missing)"
+printf "vibe_auth:%s\n" "$(if ! command -v vibe >/dev/null 2>&1; then echo n/a; elif [ -f "${HOME}/.vibe/.env" ] && grep -Eq '^[[:space:]]*MISTRAL_API_KEY=' "${HOME}/.vibe/.env" 2>/dev/null; then echo env-file; elif [ -n "${MISTRAL_API_KEY:-}" ]; then echo api-key; elif [ -f "${HOME}/.vibe/config.toml" ] && grep -Eq '^[[:space:]]*api_key[[:space:]]*=' "${HOME}/.vibe/config.toml" 2>/dev/null; then echo config; else echo none; fi)"
+printf "remote_session:%s\n" "$([[ "${CLAUDE_CODE_REMOTE:-}" == "true" || "${OCTOPUS_REMOTE_SESSION:-}" == "true" ]] && echo true || echo false)"
+printf "octo_tier:%s\n" "${OCTO_TIER:-unset}"
+echo "=== Companions ==="
+printf "graphify:%s\n" "$(command -v graphify >/dev/null 2>&1 && echo installed || echo missing)"
+GRAPHIFY_OUT_DIR="${GRAPHIFY_OUT:-graphify-out}"
+printf "graphify_graph:%s\n" "$([ -f "${GRAPHIFY_OUT_DIR}/graph.json" ] && [ -f "${GRAPHIFY_OUT_DIR}/GRAPH_REPORT.md" ] && echo available || echo missing)"
+printf "agentmemory:%s\n" "$(command -v agentmemory >/dev/null 2>&1 && echo installed || echo missing)"
+printf "agentmemory_server:%s\n" "$(curl -sf --max-time 1 "${AGENTMEMORY_URL:-http://localhost:3111}/agentmemory/livez" >/dev/null 2>&1 && echo running || echo missing)"
 echo "=== Token Optimization ==="
 printf "rtk:%s\n" "$(command -v rtk >/dev/null 2>&1 && echo "installed $(rtk --version 2>&1 | head -1)" || echo missing)"
-printf "rtk_hook:%s\n" "$(grep -q 'rtk' "${HOME}/.claude/settings.json" 2>/dev/null && echo active || echo missing)"
+printf "rtk_hook:%s\n" "$(if grep -q 'rtk' "${HOME}/.claude/settings.json" 2>/dev/null; then echo active; else echo missing; fi)"
 printf "octo_compress:%s\n" "$(command -v octo-compress >/dev/null 2>&1 && echo available || echo missing)"
 echo "=== System ==="
 printf "node:%s\n" "$(node --version 2>/dev/null || echo missing)"
@@ -42,7 +56,52 @@ printf "os:%s\n" "$(uname -s)"
 
 ## STEP 2: Display Status Summary
 
-Show a compact table:
+Render the setup status table from actual detection output. Do not hand-write or summarize this provider block; run this block and display its output exactly. The output MUST include the Antigravity line even when `agy` is missing.
+
+```bash
+status_installed() { command -v "$1" >/dev/null 2>&1 && echo "Installed ✓" || echo "Missing ✗"; }
+status_optional() { command -v "$1" >/dev/null 2>&1 && echo "Installed ✓" || echo "Not installed"; }
+status_env() { [[ -n "${1:-}" ]] && echo "Configured ✓" || echo "Not set ✗"; }
+codex_status="$(status_installed codex)"
+gemini_status="$(status_installed gemini)"
+agy_status="$(status_installed agy)"
+agy_model_note=""
+if [[ "$agy_status" == "Installed ✓" ]]; then
+  agy_model_note=" (model: ${OCTOPUS_AGY_MODEL:-agy default})"
+fi
+perplexity_status="$(status_env "${PERPLEXITY_API_KEY:-}")"
+copilot_status="$(status_optional copilot)"
+qwen_status="$(status_optional qwen)"
+opencode_status="$(status_optional opencode)"
+vibe_status="$(status_optional vibe)"
+graphify_status="$(status_optional graphify)"
+GRAPHIFY_OUT_DIR="${GRAPHIFY_OUT:-graphify-out}"
+if [[ -f "${GRAPHIFY_OUT_DIR}/graph.json" && -f "${GRAPHIFY_OUT_DIR}/GRAPH_REPORT.md" ]]; then graphify_graph_status="Graph available ✓"; else graphify_graph_status="Graph missing"; fi
+agentmemory_status="$(status_optional agentmemory)"
+if curl -sf --max-time 1 "${AGENTMEMORY_URL:-http://localhost:3111}/agentmemory/livez" >/dev/null 2>&1; then agentmemory_server_status="Running ✓"; else agentmemory_server_status="Not running"; fi
+if command -v ollama >/dev/null 2>&1 && curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then ollama_status="Running ✓"; elif command -v ollama >/dev/null 2>&1; then ollama_status="Installed"; else ollama_status="Not installed"; fi
+cat <<BANNER
+🐙 Octopus Setup
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Providers:
+  🔴 Codex CLI:      ${codex_status}
+  🟡 Gemini CLI:     ${gemini_status}
+  🧭 Antigravity:    ${agy_status}${agy_model_note}
+  🟣 Perplexity:     ${perplexity_status}
+  🟢 Copilot CLI:    ${copilot_status}
+  🟠 Qwen CLI:       ${qwen_status}
+  🟤 OpenCode:       ${opencode_status}
+  🔶 Vibe (Mistral): ${vibe_status}
+  ⚫ Ollama:         ${ollama_status}
+  🔵 Claude:         Available ✓
+
+Companions:
+  Graphify:         ${graphify_status} (${graphify_graph_status})
+  agentmemory:      ${agentmemory_status} (${agentmemory_server_status})
+BANNER
+```
+
+The rendered setup table must look like this shape, with ACTUAL statuses:
 
 ```
 🐙 Octopus Setup
@@ -50,17 +109,91 @@ Show a compact table:
 Providers:
   🔴 Codex CLI:     [Installed ✓ / Missing ✗]
   🟡 Gemini CLI:    [Installed ✓ / Missing ✗]
+  🧭 Antigravity:   [Installed ✓ (model: OCTOPUS_AGY_MODEL/agy default) / Missing ✗]
   🟣 Perplexity:    [Configured ✓ / Not set ✗]
   🟢 Copilot CLI:   [Installed ✓ / Not installed]
   🟠 Qwen CLI:      [Installed ✓ / Not installed]
   🟤 OpenCode:      [Installed ✓ / Not installed]
-  ��� Ollama:        [Running ✓ / Installed / Not installed]
+  🔶 Vibe (Mistral): [Installed ✓ (auth: env-file/api-key/config) / Not installed]
+  ⚫ Ollama:        [Running ✓ / Installed / Not installed]
   🔵 Claude:        Available ✓
 
 Token Optimization:
   RTK:              [Installed + Hook active ✓ / Installed ✓ / Missing ✗]
   octo-compress:    [Available ✓ / Not in PATH]
+
+Companions:
+  Graphify:         [CLI installed ✓ / Missing] [Graph available ✓ / Missing]
+  agentmemory:      [CLI installed ✓ / Missing] [Server running ✓ / Not running]
+
+Session:
+  Remote/Web:       [Yes / No]
+  Project tier:     [unset / prototype / mvp / production]
 ```
+
+## STEP 2a: v9.29 Migration Prompt (one-time, existing users only)
+
+**Before showing the main menu, check if this is an existing user upgrading from ≤9.28.**
+
+Run this bash check — skip migration if state is fresh (first-run) or already ≥9.29:
+
+```bash
+STATE_FILE="${HOME}/.claude-octopus/state.json"
+if [[ -f "$STATE_FILE" ]] && command -v jq >/dev/null 2>&1; then
+  LAST_VERSION=$(jq -r '.last_version // "0.0.0"' "$STATE_FILE" 2>/dev/null)
+  MODEL_DEFAULTS_V2=$(jq -r '.model_defaults_v2 // "unset"' "$STATE_FILE" 2>/dev/null)
+  # Version compare: show migration only if last_version is between 1.x and 9.28
+  if [[ "$LAST_VERSION" != "0.0.0" ]] && [[ "$MODEL_DEFAULTS_V2" == "unset" ]]; then
+    printf "MIGRATION_PROMPT_NEEDED\nlast_version=%s\n" "$LAST_VERSION"
+  fi
+fi
+```
+
+**If `MIGRATION_PROMPT_NEEDED` appears**, show this AskUserQuestion BEFORE the main menu:
+
+```javascript
+AskUserQuestion({
+  questions: [{
+    question: "v9.29.0 refreshed model defaults based on April 2026 benchmarks. Planning + security reviews now use Claude Opus 4.7 (best on SWE-bench Pro + LMArena). Code review + implementation stay on GPT-5.4 (best on Terminal-Bench + edge cases). Opus is ~2x the cost of GPT-5.4 per MTok — this will increase planning-phase cost. How would you like to proceed?",
+    header: "v9.29 Models",
+    multiSelect: false,
+    options: [
+      {label: "Accept new defaults (Recommended)", description: "Use Opus 4.7 for planning/strategy/security, GPT-5.4 for review/implementation"},
+      {label: "Keep v9.28 defaults (GPT-5.4 everywhere)", description: "Sets OCTOPUS_LEGACY_ROLES=1 in your shell profile"},
+      {label: "Open /octo:model-config", description: "Customize per-role routing directly"},
+      {label: "See the diff", description: "Show before/after routing table, then ask again"}
+    ]
+  }]
+})
+```
+
+**Route based on selection:**
+
+- **Accept new defaults** → Write `model_defaults_v2=accepted` and `last_version=9.29.0` to `~/.claude-octopus/state.json`. Continue to STEP 3.
+- **Keep v9.28 defaults** → Append `export OCTOPUS_LEGACY_ROLES=1` to the user's shell profile (detect `~/.zshrc` vs `~/.bashrc` via `$SHELL`), notify them to reload the shell, then write `model_defaults_v2=legacy` + `last_version=9.29.0`. Continue to STEP 3.
+- **Open /octo:model-config** → Invoke that command. Do NOT write state — defer to whatever the user picks there.
+- **See the diff** → Print the routing table below, then re-ask the question.
+
+**Diff table to show:**
+
+```
+Role                 v9.28 (old)                v9.29 (new)
+architect            codex:gpt-5.4              claude-opus:claude-opus-4.7   (was GPT-5.4)
+reviewer             codex-review:gpt-5.4       codex-review:gpt-5.4          (alias → code-reviewer)
+code-reviewer        —                          codex-review:gpt-5.4          (NEW, same as reviewer)
+security-reviewer    —                          claude-opus:claude-opus-4.7   (NEW, split from reviewer)
+implementer          codex:gpt-5.4              codex:gpt-5.4                 (unchanged)
+implementer-heavy    —                          claude-opus:claude-opus-4.7   (NEW, opt-in via role name)
+synthesizer          claude:claude-sonnet-4.6   claude:claude-sonnet-4.6      (unchanged)
+strategist           claude-opus:claude-opus-4.6 claude-opus:claude-opus-4.7  (already on 4.7 via resolver)
+researcher           gemini:gemini-3.1-pro      gemini:gemini-3.1-pro         (unchanged)
+
+Cost impact (per MTok): Opus 4.7 $5/$25 vs GPT-5.4 $2.50/$15 — roughly 2x for planning phases.
+Graceful fallback: roles requiring Opus silently downshift to GPT-5.4 if no Anthropic auth.
+Opt-out anytime: OCTOPUS_LEGACY_ROLES=1
+```
+
+**WHY:** Existing users should not silently inherit the new defaults without a chance to opt out. The one-time prompt gates the behavior change on explicit consent, surfaces cost impact, and writes state so the prompt doesn't recur. Skip entirely for fresh installs (they have no prior mental model to migrate).
 
 ## STEP 3: Interactive Menu (ALWAYS show — even for returning users)
 
@@ -73,11 +206,15 @@ AskUserQuestion({
     header: "Setup",
     multiSelect: false,
     options: [
-      {label: "Add or configure a provider", description: "Install Codex, Gemini, Perplexity, Copilot, Qwen, or OpenCode"},
+      {label: "Use Claude alone (recommended)", description: "Start immediately — Claude is built in. No extra setup needed. Add providers anytime via this menu."},
+      {label: "Add or configure a provider", description: "Install Codex, Gemini, Antigravity, Perplexity, Copilot, Qwen, OpenCode, or Vibe (Mistral)"},
       {label: "Configure models", description: "Set which models are used for each workflow phase → launches /octo:model-config"},
       {label: "Set up token optimization (RTK)", description: "Install RTK for 60-90% token savings on bash output"},
+      {label: "Set up Graphify companion", description: "Detect or install Graphify for optional knowledge-graph context"},
+      {label: "Set up memory companion", description: "Install or connect agentmemory for persistent cross-agent memory"},
       {label: "Change work mode", description: "Switch between Dev mode and Knowledge Work mode"},
-      {label: "Fine-tune preferences", description: "Banner verbosity, telemetry, cost mode"},
+      {label: "Set project tier", description: "Set OCTO_TIER=prototype|mvp|production as a routing hint"},
+      {label: "Fine-tune preferences", description: "Auto-routing, banner verbosity, telemetry, cost mode"},
       {label: "Troubleshoot an issue", description: "Diagnose a problem → launches /octo:doctor"},
       {label: "Done — everything looks good", description: "Exit setup"}
     ]
@@ -86,17 +223,21 @@ AskUserQuestion({
 ```
 
 Route based on selection:
+- **Use Claude alone (recommended)** → Show "Run /octo:setup anytime to change these settings" and exit
 - **Add or configure a provider** → Continue to the provider install flow below
 - **Configure models** → Invoke `/octo:model-config` (the interactive model config wizard)
 - **Set up RTK** → Jump to the RTK section below
+- **Set up Graphify companion** → Jump to the Graphify Companion section below
+- **Set up memory companion** → Jump to the Memory Companion section below
 - **Change work mode** → Jump to the Work Mode section (STEP 4)
+- **Set project tier** → Jump to Project Tier Hint (STEP 4c)
 - **Fine-tune preferences** → Jump to the Fine-tune section (STEP 5)
 - **Troubleshoot** → Suggest `/octo:doctor`
 - **Done** → Show "Run /octo:setup anytime to change these settings" and exit
 
 ## STEP 3a: Provider Install (if selected above, or if core providers are missing on first run)
 
-**If core providers are missing (Codex/Gemini):**
+**If optional external providers are missing:**
 
 ```javascript
 AskUserQuestion({
@@ -107,13 +248,36 @@ AskUserQuestion({
     options: [
       {label: "Codex CLI (Recommended)", description: "npm install -g @openai/codex — OpenAI's coding agent"},
       {label: "Gemini CLI", description: "brew install gemini-cli — Google's research agent"},
+      {label: "Antigravity CLI (agy)", description: "Install Google Antigravity CLI — adds the agy provider"},
       {label: "Skip", description: "Continue with what's already installed"}
     ]
   }]
 })
 ```
 
-Execute installs for each selected option. After install, offer auth:
+Execute installs for each selected option. After each npm install completes, refresh PATH:
+
+```bash
+hash -r 2>/dev/null || rehash 2>/dev/null || true
+```
+
+This ensures the installed CLI (codex, gemini) is immediately available in the current shell without a restart.
+
+For **Antigravity CLI (agy)**, first check whether `agy install` is available:
+
+```bash
+if command -v agy >/dev/null 2>&1; then
+  agy install
+  hash -r 2>/dev/null || rehash 2>/dev/null || true
+  agy models
+else
+  echo "agy CLI not found; install Google Antigravity CLI first, then run: agy --version && agy models"
+fi
+```
+
+If `agy` is not available yet, direct the user to install Google Antigravity CLI, then verify with `agy --version` and `agy models`. Octopus uses `OCTOPUS_AGY_MODEL` when set; when unset, `agy` uses its own built-in default model.
+
+After install, offer auth:
 
 ```javascript
 AskUserQuestion({
@@ -174,9 +338,139 @@ AskUserQuestion({
 
 If Knowledge Work selected, offer to install document-skills plugin.
 
+After work mode is confirmed, persist the choice:
+
+```bash
+OCTO_ROOT="${OCTO_ROOT:-${CLAUDE_PLUGIN_ROOT:-${HOME}/.claude-octopus/plugin}}"
+PLUGIN_FALLBACK_ROOT="${HOME}/.claude-octopus/plugin"
+if ! source "${OCTO_ROOT}/scripts/lib/user-config.sh" 2>/dev/null; then
+  source "${PLUGIN_FALLBACK_ROOT}/scripts/lib/user-config.sh" 2>/dev/null || echo "Warning: could not load Octopus user-config helpers; setup preferences were not persisted."
+fi
+WORK_MODE_VALUE="dev"  # dev, knowledge, or both based on user selection
+if declare -f octo_config_write >/dev/null 2>&1; then
+  octo_config_write "work_mode" "\"${WORK_MODE_VALUE}\""
+  octo_config_write "setup_complete" 'true'
+fi
+```
+
+(Replace `"dev"` with `"knowledge"` or `"both"` based on the user selection.)
+
+## STEP 4b: Prompt Cache Optimization (Claude Code v2.1.108+)
+
+Skip this step when `SUPPORTS_PROMPT_CACHE_1H=false`. Otherwise:
+
+```javascript
+AskUserQuestion({
+  questions: [{
+    question: "Enable 1-hour prompt cache TTL? (Saves tokens on long /octo:embrace and /octo:loop sessions — the default is 5 minutes.)",
+    header: "Prompt Cache",
+    multiSelect: false,
+    options: [
+      {label: "Yes, enable 1-hour cache", description: "Adds ENABLE_PROMPT_CACHING_1H=1 to your shell profile — applies to Claude API/Bedrock/Vertex/Foundry."},
+      {label: "No, keep 5-minute default", description: "Simpler mental model; lower cost ceiling if you only run short sessions."}
+    ]
+  }]
+})
+```
+
+If "Yes", append `export ENABLE_PROMPT_CACHING_1H=1` to `~/.bashrc` (or `~/.zshrc` per `$SHELL`), only if not already present. Note to the user: this only affects Claude-to-Claude round-trips inside Claude Code. External CLI subshells (Codex, Gemini, Antigravity, Perplexity) are unaffected — their providers manage caching independently.
+
+## STEP 4c: Project Tier Hint
+
+`OCTO_TIER` is a routing and verification hint, not a hard policy.
+
+```javascript
+AskUserQuestion({
+  questions: [{
+    question: "What project tier should Octopus optimize for?",
+    header: "Tier",
+    multiSelect: false,
+    options: [
+      {label: "MVP (Recommended)", description: "Balanced checks, normal review, consensus on risky changes"},
+      {label: "Prototype", description: "Prefer speed, light review, lower provider spend"},
+      {label: "Production", description: "Full verification, security review, stronger consensus before merge/release"},
+      {label: "Leave unset", description: "Use default balanced behavior without a project hint"}
+    ]
+  }]
+})
+```
+
+If a tier is selected, append `export OCTO_TIER=<prototype|mvp|production>` to the user's shell profile or project-local environment, only if not already present.
+
+## Graphify Companion
+
+Graphify is optional and is not a provider. If `graphify-out/GRAPH_REPORT.md` already exists, Octopus uses it as a compact architecture map for escalated workflows such as `/octo:review`; it does not build or refresh graphs automatically.
+
+To install and initialize Graphify when the user opts in:
+
+```bash
+uv tool install graphifyy
+graphify extract .
+graphify claude install
+graphify codex install
+graphify hook install
+```
+
+Use `OCTOPUS_GRAPHIFY=0` to disable passive Graphify context injection.
+
+## Memory Companion
+
+agentmemory is optional and is not a provider. Octopus works without it. If agentmemory is installed and connected as an MCP server, Octopus can use it through the existing memory contract for cross-session context; if MCP tools are unavailable, Octopus falls back to the local REST bridge at `${AGENTMEMORY_URL:-http://localhost:3111}`.
+
+To install and connect agentmemory when the user opts in:
+
+```bash
+npm install -g @agentmemory/agentmemory
+agentmemory --version
+agentmemory connect claude-code
+```
+
+For Codex or Cursor installs, use the matching connector instead:
+
+```bash
+agentmemory connect codex
+agentmemory connect cursor
+```
+
+Start or verify the local server:
+
+```bash
+agentmemory &
+curl -fsS "${AGENTMEMORY_URL:-http://localhost:3111}/agentmemory/health"
+```
+
+If the user prefers not to install globally, use `npx -y @agentmemory/agentmemory@latest` in place of `agentmemory`. Use `OCTOPUS_MEMORY_BACKEND=agentmemory` to force Octopus to prefer agentmemory; `OCTOPUS_MEMORY_BACKEND=auto` detects an agentmemory MCP registration or `AGENTMEMORY_URL`.
+
+## Remote/Web Session Defaults
+
+If `remote_session:true` appears in the detection output, assume the user is in a Claude Code web/remote session. Do not launch interactive provider logins from this command. Explain that Octopus defaults to autonomous mode, skips provider probe calls, and uses the lightweight statusline unless overridden with:
+
+```bash
+export OCTOPUS_REMOTE_STATUSLINE=full
+export OCTOPUS_REMOTE_STATUSLINE=off
+```
+
 ## STEP 5: Verify & Summarize
 
 Re-run provider detection to confirm everything works:
+
+
+**Preflight — Ensure plugin root is resolvable (run via Bash tool FIRST):**
+
+```bash
+OCTO_ROOT="${HOME}/.claude-octopus/plugin"
+if [[ ! -x "$OCTO_ROOT/scripts/orchestrate.sh" ]]; then
+  helper="$OCTO_ROOT/scripts/helpers/ensure-plugin-root.sh"
+  if [[ ! -x "$helper" ]]; then
+    helper="$(find "${HOME}/.claude/plugins/cache" "${HOME}/Library/Application Support/Claude" "${LOCALAPPDATA:-/dev/null}/Claude" "${XDG_DATA_HOME:-${HOME}/.local/share}/Claude" -maxdepth 8 -path "*/nyldn-plugins/octo/*/scripts/helpers/ensure-plugin-root.sh" -print -quit 2>/dev/null)"
+  fi
+  [[ -x "$helper" ]] && bash "$helper" >/dev/null 2>&1 || true
+fi
+test -x "$OCTO_ROOT/scripts/orchestrate.sh" && echo "plugin-root:ok" || echo "plugin-root:missing"
+```
+
+If the output is `plugin-root:missing`, stop and ask the user to reinstall `octo@nyldn-plugins`, then retry setup.
+
 
 ```bash
 ${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh detect-providers
@@ -187,7 +481,7 @@ Show final summary:
 ```
 ✅ Setup Complete!
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Providers: X active (Codex, Gemini, ...)
+Providers: X active (Codex, Gemini, Antigravity, ...)
 RTK: [Active / Not installed]
 Mode: [Dev / Knowledge / Both]
 

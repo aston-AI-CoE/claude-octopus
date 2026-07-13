@@ -31,10 +31,10 @@ record_result_hash() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# EFFORT LEVEL MAPPING (v8.32.0)
-# Maps phase + complexity to Claude SDK effort levels (low/medium/high)
+# EFFORT LEVEL MAPPING (v8.32.0; refreshed for Opus 4.8 in v9.42.0)
+# Maps phase + complexity to Claude SDK effort levels.
 # Gated by SUPPORTS_SDK_MODEL_CAPS (Claude Code v2.1.49+)
-# Override: OCTOPUS_EFFORT_OVERRIDE=low|medium|high
+# Override: OCTOPUS_EFFORT_OVERRIDE=low|medium|high|xhigh|max
 # ═══════════════════════════════════════════════════════════════════════════════
 
 get_effort_level() {
@@ -55,48 +55,69 @@ get_effort_level() {
             return 0
         fi
         case "$OCTOPUS_EFFORT_OVERRIDE" in
-            low|medium|high) echo "$OCTOPUS_EFFORT_OVERRIDE"; return ;;
-            *) log "WARN" "Invalid OCTOPUS_EFFORT_OVERRIDE='$OCTOPUS_EFFORT_OVERRIDE' — ignoring (use low|medium|high)" ;;
+            low|medium|high|xhigh|max)
+                # v9.51: Fable 5 clamp applies to explicit overrides too.
+                if declare -f fable5_clamp_effort >/dev/null 2>&1; then
+                    fable5_clamp_effort "$OCTOPUS_EFFORT_OVERRIDE"
+                else
+                    echo "$OCTOPUS_EFFORT_OVERRIDE"
+                fi
+                return ;;
+            *) log "WARN" "Invalid OCTOPUS_EFFORT_OVERRIDE='$OCTOPUS_EFFORT_OVERRIDE' — ignoring (use low|medium|high|xhigh|max)" ;;
         esac
+    fi
+
+    # v9.42: Opus 4.8 defaults to high. Use xhigh only for difficult
+    # implementation, deep review, and long-running asynchronous workflows.
+    local _deep="high"
+    if [[ "${SUPPORTS_XHIGH_EFFORT:-false}" == "true" ]]; then
+        _deep="xhigh"
     fi
 
     # Phase-aware mapping
     local effort=""
     case "$phase" in
         probe|discover)
-            # Research: low complexity = medium effort (v8.34: Opus defaults to medium), high = medium (never high — broad not deep)
-            case "$complexity" in
-                1) effort="medium" ;;
-                3) effort="medium" ;;
-                *) effort="medium" ;;
-            esac
+            # Research: Opus 4.8 high is the balanced default.
+            effort="high"
             ;;
         grasp|define)
-            # Scoping: always medium — needs reasoning but not maximum depth
-            effort="medium"
+            # Scoping/planning: high by default, xhigh only if explicitly marked complex.
+            case "$complexity" in
+                3) effort="$_deep" ;;
+                *) effort="high" ;;
+            esac
             ;;
         tangle|develop)
-            # Implementation: scale with complexity — this is where depth matters
+            # Implementation: xhigh for complex work, high for ordinary work.
             case "$complexity" in
-                1) effort="medium" ;;
-                3) effort="high" ;;
-                *) effort="medium" ;;
+                1) effort="high" ;;
+                3) effort="$_deep" ;;
+                *) effort="high" ;;
             esac
             ;;
         ink|deliver)
-            # Review: medium for standard, high for complex (security, architecture)
+            # Review: xhigh for security/architecture/deep review, high otherwise.
             case "$complexity" in
-                3) effort="high" ;;
-                *) effort="medium" ;;
+                3) effort="$_deep" ;;
+                *) effort="high" ;;
             esac
             ;;
         *)
-            effort="medium"
+            effort="high"
             ;;
     esac
 
     # Defensive default
-    effort="${effort:-medium}"
+    effort="${effort:-high}"
+
+    # v9.51: Fable 5 effort clamp — xhigh/max → high when the opus seat is
+    # pinned to claude-fable-5 (applies to user overrides too; that is the
+    # point of the guard). No-op when lib/fable5.sh is not loaded.
+    if declare -f fable5_clamp_effort >/dev/null 2>&1; then
+        effort="$(fable5_clamp_effort "$effort")"
+    fi
+
     echo "$effort"
 }
 
@@ -334,6 +355,10 @@ get_agent_permission_mode() {
 load_agent_skill_content() {
     local skill_name="$1"
     local skill_file="${PLUGIN_DIR}/.claude/skills/${skill_name}.md"
+
+    if [[ ! -f "$skill_file" ]]; then
+        skill_file="${PLUGIN_DIR}/.claude/skills/${skill_name}/SKILL.md"
+    fi
 
     if [[ -f "$skill_file" ]]; then
         # Extract content after YAML frontmatter
@@ -585,9 +610,9 @@ get_agent_for_task() {
         image) echo "gemini-image" ;;
         review) echo "codex-review" ;;
         coding) echo "codex" ;;
-        design) echo "gemini" ;;       # Gemini excels at reasoning about design
-        copywriting) echo "gemini" ;;  # Gemini strong at creative writing
-        research) echo "gemini" ;;     # Gemini good at analysis/synthesis
+        design) echo "agy" ;;          # Antigravity (Google seat) — Gemini CLI sunset 2026-06-18
+        copywriting) echo "agy" ;;     # Antigravity — creative writing
+        research) echo "agy" ;;        # Antigravity — analysis/synthesis
         general) echo "codex" ;;       # Default to codex for general tasks
         *) echo "codex" ;;
     esac
@@ -677,11 +702,9 @@ get_tiered_agent() {
             esac
             ;;
         design|copywriting|research)
-            # Gemini tasks: tier based on complexity
-            case "$adjusted_complexity" in
-                1) agent="gemini-fast" ;;     # Trivial → flash (cheaper)
-                *) agent="gemini" ;;          # Standard+ → pro
-            esac
+            # Antigravity (agy) is the Google seat (Gemini CLI sunset 2026-06-18).
+            # Model tier is selected via OCTOPUS_AGY_MODEL, not separate agents.
+            agent="agy"
             ;;
         diamond-*)
             # Double Diamond workflows: respect resource tier

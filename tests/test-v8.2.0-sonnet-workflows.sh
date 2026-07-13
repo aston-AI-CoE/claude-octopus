@@ -12,20 +12,19 @@
 set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+source "$SCRIPT_DIR/helpers/test-framework.sh"
+test_suite "v8.2.0 Sonnet 4.6 Agent in Multi-Agent Workflows"
+
 PLUGIN_DIR="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$PLUGIN_DIR"
 ORCHESTRATE_SH="${PLUGIN_DIR}/scripts/orchestrate.sh"
 # v9.12: Search orchestrate.sh + lib/*.sh for functions that may have been decomposed
 ALL_SRC=$(mktemp)
 cat "$ORCHESTRATE_SH" "$(dirname "$ORCHESTRATE_SH")/lib/"*.sh > "$ALL_SRC" 2>/dev/null
 trap 'rm -f "$ALL_SRC"' EXIT
-SKILL_DEBATE="${PLUGIN_DIR}/.claude/skills/skill-debate.md"
+SKILL_DEBATE="$(resolve_claude_skill_path "skill-debate")"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
 
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -44,7 +43,9 @@ assert_fail() {
     TESTS_RUN=$((TESTS_RUN + 1))
     TESTS_FAILED=$((TESTS_FAILED + 1))
     echo -e "${RED}✗${NC} $test_name"
-    [[ -n "$detail" ]] && echo -e "  ${YELLOW}$detail${NC}"
+    if [[ -n "$detail" ]]; then
+        echo -e "  ${YELLOW}$detail${NC}"
+    fi
 }
 
 echo ""
@@ -59,63 +60,63 @@ echo ""
 echo -e "${BLUE}Test Group 1: grapple_debate() - 3-way Debate${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# Extract grapple_debate function (large function, need ~400 lines)
-GRAPPLE_FN=$(grep -A 400 '^grapple_debate()' "$ALL_SRC" | head -400)
+# Extract grapple_debate function (large function, includes config-driven slots)
+GRAPPLE_FN=$(grep -A 820 '^grapple_debate()' "$ALL_SRC" | head -820)
 
 # 1.1: grapple_debate references claude-sonnet agent
-if echo "$GRAPPLE_FN" | grep -q '"claude-sonnet"'; then
+if echo "$GRAPPLE_FN" | grep -q 'agent_c="claude-sonnet"'; then
     assert_pass "1.1 grapple_debate references claude-sonnet agent"
 else
     assert_fail "1.1 grapple_debate references claude-sonnet agent"
 fi
 
-# 1.2: grapple_debate references gemini agent for proposals
-if echo "$GRAPPLE_FN" | grep -q 'gemini_proposal=$(run_agent_sync "gemini"'; then
-    assert_pass "1.2 grapple_debate generates gemini proposal"
+# 1.2: grapple_debate defaults the second debate slot to gemini
+if echo "$GRAPPLE_FN" | grep -q 'agent_b="gemini"'; then
+    assert_pass "1.2 grapple_debate defaults slot B to gemini"
 else
-    assert_fail "1.2 grapple_debate generates gemini proposal"
+    assert_fail "1.2 grapple_debate defaults slot B to gemini"
 fi
 
-# 1.3: grapple_debate generates sonnet proposal
-if echo "$GRAPPLE_FN" | grep -q 'sonnet_proposal=$(run_agent_sync "claude-sonnet"'; then
-    assert_pass "1.3 grapple_debate generates sonnet proposal"
+# 1.3: grapple_debate dispatches the third proposal through the resolved Sonnet slot
+if echo "$GRAPPLE_FN" | grep -q 'sonnet_proposal=$(run_agent_sync "$agent_c"'; then
+    assert_pass "1.3 grapple_debate generates resolved Sonnet-slot proposal"
 else
-    assert_fail "1.3 grapple_debate generates sonnet proposal"
+    assert_fail "1.3 grapple_debate generates resolved Sonnet-slot proposal"
 fi
 
 # 1.4: grapple_debate has 3-way critique (codex critiques gemini+sonnet)
-if echo "$GRAPPLE_FN" | grep -q 'codex_critique=$(run_agent_sync'; then
+if echo "$GRAPPLE_FN" | grep -q 'codex_critique=$(run_agent_sync "$agent_a"'; then
     assert_pass "1.4 grapple_debate has codex_critique"
 else
     assert_fail "1.4 grapple_debate has codex_critique"
 fi
 
 # 1.5: grapple_debate has gemini critique
-if echo "$GRAPPLE_FN" | grep -q 'gemini_critique=$(run_agent_sync'; then
+if echo "$GRAPPLE_FN" | grep -q 'gemini_critique=$(run_agent_sync "$agent_b"'; then
     assert_pass "1.5 grapple_debate has gemini_critique"
 else
     assert_fail "1.5 grapple_debate has gemini_critique"
 fi
 
 # 1.6: grapple_debate has sonnet critique
-if echo "$GRAPPLE_FN" | grep -q 'sonnet_critique=$(run_agent_sync'; then
+if echo "$GRAPPLE_FN" | grep -q 'sonnet_critique=$(run_agent_sync "$agent_c"'; then
     assert_pass "1.6 grapple_debate has sonnet_critique"
 else
     assert_fail "1.6 grapple_debate has sonnet_critique"
 fi
 
-# 1.7: Banner shows "Sonnet 4.6"
-if echo "$GRAPPLE_FN" | grep -q 'Sonnet 4.6'; then
-    assert_pass "1.7 grapple_debate banner mentions Sonnet 4.6"
+# 1.7: Dry-run banner uses resolved labels instead of hardcoded participants
+if echo "$GRAPPLE_FN" | grep -q 'Round 1: Generate competing proposals.*label_a.*label_b.*label_c'; then
+    assert_pass "1.7 grapple_debate dry-run uses resolved labels"
 else
-    assert_fail "1.7 grapple_debate banner mentions Sonnet 4.6"
+    assert_fail "1.7 grapple_debate dry-run uses resolved labels"
 fi
 
 # 1.8: Summary shows 3 participants
-if echo "$GRAPPLE_FN" | grep -q 'Codex.*vs.*Gemini.*vs.*Sonnet'; then
-    assert_pass "1.8 grapple_debate summary shows 3 participants"
+if echo "$GRAPPLE_FN" | grep -q 'label_a.*vs.*label_b.*vs.*label_c'; then
+    assert_pass "1.8 grapple_debate summary shows 3 resolved participants"
 else
-    assert_fail "1.8 grapple_debate summary shows 3 participants"
+    assert_fail "1.8 grapple_debate summary shows 3 resolved participants"
 fi
 
 echo ""
@@ -259,16 +260,4 @@ echo ""
 # ═══════════════════════════════════════════════════════════════════════════════
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "${BLUE}Test Summary - v8.2.0 Sonnet 4.6 in Multi-Agent Workflows${NC}"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "Total tests:  ${BLUE}$TESTS_RUN${NC}"
-echo -e "Passed:       ${GREEN}$TESTS_PASSED${NC}"
-echo -e "Failed:       ${RED}$TESTS_FAILED${NC}"
-echo ""
-
-if [[ $TESTS_FAILED -eq 0 ]]; then
-    echo -e "${GREEN}✅ All Sonnet 4.6 multi-agent workflow tests passed!${NC}"
-    exit 0
-else
-    echo -e "${RED}❌ $TESTS_FAILED test(s) failed${NC}"
-    exit 1
-fi
+test_summary

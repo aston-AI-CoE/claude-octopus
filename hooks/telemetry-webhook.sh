@@ -8,12 +8,25 @@
 # Only fires if OCTOPUS_WEBHOOK_URL is set — zero noise when unconfigured
 
 set -euo pipefail
+# EXIT trap — emits diagnostic stderr ONLY when the hook exits non-zero, so
+# the Claude Code harness error "No stderr output" can never recur. EXIT (not
+# ERR) avoids over-firing on intermediate `grep -o`/`cmd | ...` inside $() that
+# the hook's logic already handles. See issue #313.
+_octo_hook_exit() { local c=$?; if [[ $c -ne 0 ]]; then echo "[hook:$(basename "$0")] exit $c" >&2 2>/dev/null || true; fi; return 0; }
+trap _octo_hook_exit EXIT
+
 
 WEBHOOK_URL="${OCTOPUS_WEBHOOK_URL:-}"
 
 # Skip silently if no webhook configured
 if [[ -z "$WEBHOOK_URL" ]]; then
     echo '{"decision": "continue"}'
+    exit 0
+fi
+
+# Reject non-HTTPS URLs to prevent credential leakage (localhost exempted for dev)
+if [[ "$WEBHOOK_URL" != https://* && "$WEBHOOK_URL" != http://localhost* && "$WEBHOOK_URL" != http://127.0.0.1* ]]; then
+    echo '{"decision": "continue"}' # silent — don't block on misconfiguration
     exit 0
 fi
 

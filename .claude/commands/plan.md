@@ -19,6 +19,45 @@ aliases:
 
 ## 🤖 INSTRUCTIONS FOR CLAUDE
 
+### MANDATORY: Detect Plan Mode Write Conflict Before Starting
+
+**THIS CHECK RUNS FIRST — before intent capture, before any artifact write.**
+
+Native plan mode blocks all Write/Edit tool calls until `ExitPlanMode` is
+called. If you are currently in plan mode (you entered it earlier this session
+or the harness placed you in it), attempting to write `.claude/session-intent.md`
+or `.claude/session-plan.md` will silently fail, producing a degraded native
+plan instead of a full octo multi-provider plan.
+
+**If you are in plan mode when /octo:plan is invoked, you MUST:**
+
+1. Emit this exact warning as the very first output:
+
+   ```text
+   ⚠️  OCTO PLAN DEGRADED — Plan Mode Write Conflict
+
+   Native plan mode is active. Octo cannot save its planning artifacts
+   (.claude/session-intent.md, .claude/session-plan.md) while plan mode
+   restricts writes. You are getting display-only output — this is NOT
+   a full octo multi-provider plan.
+
+   To get the full octo plan:
+     1. Exit or cancel native plan mode
+     2. Re-run /octo:plan
+
+   Continuing with plan visualization only (no artifacts saved)…
+   ```
+
+2. Skip Step 2 (Create Intent Contract) and Step 5 (Save the Plan) entirely.
+   Do not attempt these writes — they will silently fail.
+3. Complete Steps 1, 3, 4, and 6 so the user sees the visualization.
+4. Repeat the re-run reminder at the end of Step 6.
+
+**Do NOT silently fall through to generic native planning. The user invoked
+/octo:plan deliberately. A visible degradation warning is mandatory.**
+
+---
+
 ### MANDATORY COMPLIANCE — DO NOT SKIP
 
 **When the user explicitly invokes `/octo:plan`, you MUST execute the structured planning workflow below.** You are PROHIBITED from doing the task directly, skipping the intent capture questions, or deciding the task is "too simple" for structured planning. The user chose this command deliberately — respect that choice.
@@ -145,7 +184,7 @@ if (nativePlanModePreferred) {
         },
         {
           label: "Multi-AI orchestration",
-          description: "Research with Codex + Gemini + Claude. Better for complex problems requiring diverse perspectives."
+          description: "Research with Claude plus available external providers. Better for complex problems requiring diverse perspectives."
         }
       ]
     }]
@@ -160,7 +199,7 @@ if (nativePlanModePreferred) {
 - ✅ When context clearing after planning is OK
 
 **When to use /octo:plan (octopus workflows):**
-- ✅ Multi-AI orchestration (Codex + Gemini + Claude)
+- ✅ Multi-AI orchestration (Claude plus available external providers)
 - ✅ Double Diamond 4-phase execution
 - ✅ State needs to persist across sessions
 - ✅ Complex intent capture with routing
@@ -244,6 +283,7 @@ recommend debate gates. Include the debate checkpoint markers in the saved plan
 echo "PROVIDER_CHECK_START"
 printf "codex:%s\n" "$(command -v codex >/dev/null 2>&1 && echo available || echo missing)"
 printf "gemini:%s\n" "$(command -v gemini >/dev/null 2>&1 && echo available || echo missing)"
+printf "agy:%s\n" "$(command -v agy >/dev/null 2>&1 && echo available || echo missing)"
 printf "perplexity:%s\n" "$([ -n "${PERPLEXITY_API_KEY:-}" ] && echo available || echo missing)"
 printf "opencode:%s\n" "$(command -v opencode >/dev/null 2>&1 && echo available || echo missing)"
 printf "copilot:%s\n" "$(command -v copilot >/dev/null 2>&1 && echo available || echo missing)"
@@ -251,6 +291,33 @@ printf "qwen:%s\n" "$(command -v qwen >/dev/null 2>&1 && echo available || echo 
 printf "ollama:%s\n" "$(command -v ollama >/dev/null 2>&1 && curl -sf http://localhost:11434/api/tags >/dev/null 2>&1 && echo available || echo missing)"
 printf "openrouter:%s\n" "$([ -n "${OPENROUTER_API_KEY:-}" ] && echo available || echo missing)"
 echo "PROVIDER_CHECK_END"
+```
+
+Render provider availability from actual provider checks before the plan visualization. Do not hand-write or summarize this provider block; run this block and include its output exactly in the plan. The output MUST include the Antigravity line even when `agy` is missing.
+
+```bash
+status_cli() { command -v "$1" >/dev/null 2>&1 && echo "Available ✓" || echo "Not installed ✗"; }
+status_env() { [[ -n "${1:-}" ]] && echo "Configured ✓" || echo "Not configured ✗"; }
+codex_status="$(status_cli codex)"
+gemini_status="$(status_cli gemini)"
+agy_status="$(status_cli agy)"
+opencode_status="$(status_cli opencode)"
+copilot_status="$(status_cli copilot)"
+qwen_status="$(status_cli qwen)"
+if command -v ollama >/dev/null 2>&1 && curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then ollama_status="Available ✓"; else ollama_status="Not installed ✗"; fi
+perplexity_status="$(status_env "${PERPLEXITY_API_KEY:-}")"
+cat <<BANNER
+Provider Availability:
+🔴 Codex CLI: ${codex_status}
+🟡 Gemini CLI: ${gemini_status}
+🧭 Antigravity CLI: ${agy_status}
+🟤 OpenCode: ${opencode_status}
+🟢 Copilot CLI: ${copilot_status}
+🟠 Qwen CLI: ${qwen_status}
+⚫ Ollama: ${ollama_status}
+🔵 Claude: Available ✓
+🟣 Perplexity: ${perplexity_status}
+BANNER
 ```
 
 **Display a comprehensive plan visualization with ACTUAL provider status:**
@@ -280,11 +347,15 @@ Validate quality — Review and refine
 → /octo:deliver
 
 Provider Availability:
-🔴 Codex CLI: [Available ✓ / Not installed ✗] — based on bash check
-🟡 Gemini CLI: [Available ✓ / Not installed ✗] — based on bash check
-🟣 Perplexity: [Available ✓ / Not configured ✗] — based on bash check
-🟤 OpenCode: [Available ✓ / Not installed ✗] — based on bash check
+🔴 Codex CLI: [Available ✓ / Not installed ✗]
+🟡 Gemini CLI: [Available ✓ / Not installed ✗]
+🧭 Antigravity CLI: [Available ✓ / Not installed ✗]
+🟤 OpenCode: [Available ✓ / Not installed ✗]
+🟢 Copilot CLI: [Available ✓ / Not installed ✗]
+🟠 Qwen CLI: [Available ✓ / Not installed ✗]
+⚫ Ollama: [Available ✓ / Not installed ✗]
 🔵 Claude: Available ✓
+🟣 Perplexity: [Configured ✓ / Not configured ✗]
 
 YOUR INVOLVEMENT: [Checkpoints / Semi-autonomous / Hands-off]
 
@@ -331,6 +402,8 @@ Or execute phases individually:
 ## Provider Requirements
 🔴 Codex CLI: [Available ✓ / Not installed ✗]
 🟡 Gemini CLI: [Available ✓ / Not installed ✗]
+🧭 Antigravity CLI: [Available ✓ / Not installed ✗]
+🟣 Perplexity: [Configured ✓ / Not configured ✗]
 🔵 Claude: Available ✓
 
 ## Success Criteria
@@ -371,7 +444,7 @@ AskUserQuestion({
         {label: "Review and execute later", description: "Plan saved, I'll run /octo:embrace when ready (Recommended)"},
         {label: "Adjust plan weights", description: "Change phase emphasis before saving"},
         {label: "Execute now", description: "Run /octo:embrace immediately with this plan"},
-        {label: "Multi-LLM debate the plan first", description: "Claude + Codex + Gemini debate the plan's assumptions and risks before executing (uses external API credits)"},
+        {label: "Multi-LLM debate the plan first", description: "Claude plus available external providers debate the plan's assumptions and risks before executing"},
         {label: "Different approach", description: "Suggest an alternative strategy"}
       ]
     }
@@ -396,7 +469,7 @@ AskUserQuestion({
 - Let embrace workflow handle execution
 
 **If "Multi-LLM debate the plan first":**
-- Invoke `/octo:debate` with the plan as context (Claude + Codex + Gemini deliberate):
+- Invoke `/octo:debate` with the plan as context (Claude plus available providers deliberate):
   - Topic: "Should we proceed with this plan? What are the risks and blind spots?"
   - `--rounds 2 --debate-style adversarial --context-file .claude/session-plan.md`
 - After the Multi-LLM debate completes, present the synthesis and return to Step 6

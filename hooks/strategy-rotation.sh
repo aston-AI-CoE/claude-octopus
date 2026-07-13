@@ -14,6 +14,15 @@
 # Hook event: PostToolUse (matcher: Bash|Edit|Write)
 
 set -euo pipefail
+# EXIT trap — emits diagnostic stderr ONLY when the hook exits non-zero, so
+# the Claude Code harness error "No stderr output" can never recur. EXIT (not
+# ERR) avoids over-firing on intermediate `grep -o`/`cmd | ...` inside $() that
+# the hook's logic already handles. See issue #313.
+_octo_hook_exit() { local c=$?; if [[ $c -ne 0 ]]; then echo "[hook:$(basename "$0")] exit $c" >&2 2>/dev/null || true; fi; return 0; }
+trap _octo_hook_exit EXIT
+
+_HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_HOOK_DIR/../scripts/lib/session-id.sh" 2>/dev/null || true
 
 # ── Kill switch ──────────────────────────────────────────────────────
 [[ "${OCTO_STRATEGY_ROTATION:-on}" == "off" ]] && exit 0
@@ -27,7 +36,11 @@ else
 fi
 
 # ── Session identification ───────────────────────────────────────────
-SESSION="${CLAUDE_SESSION_ID:-$$}"
+if declare -f octo_resolve_session_id >/dev/null 2>&1; then
+    SESSION=$(octo_resolve_session_id "$$" "$INPUT")
+else
+    SESSION="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-$$}}"
+fi
 STATE_FILE="/tmp/octopus-failures-${SESSION}.json"
 THRESHOLD="${OCTO_STRATEGY_ROTATION_THRESHOLD:-2}"
 

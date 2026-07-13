@@ -165,7 +165,7 @@ get_model_cost() {
 
     case "$model" in
         # Claude models (input cost, simplified)
-        claude-opus-4-6)        echo "5.00" ;;
+        claude-opus-4-8|claude-opus-4-7|claude-opus-4-6) echo "5.00" ;;
         claude-opus-4-5)        echo "15.00" ;;    # legacy
         claude-sonnet-4-5)      echo "3.00" ;;
         claude-sonnet-4)        echo "3.00" ;;
@@ -405,6 +405,7 @@ display_per_phase_cost_table() {
         case "$agent" in
             codex*) provider_label="🔴 codex" ;;
             gemini*) provider_label="🟡 gemini" ;;
+            agy*|antigravity) provider_label="🧭 agy" ;;
             claude*) provider_label="🔵 claude" ;;
             *) provider_label="   $agent" ;;
         esac
@@ -452,7 +453,7 @@ display_per_phase_cost_table() {
         notes+=("* = native metrics (from Task tool)")
     fi
     if [[ "$has_fast" == "true" ]]; then
-        notes+=("⚡ = fast mode (6x cost vs standard)")
+        notes+=("⚡ = fast mode (2x standard on Opus 4.8; legacy 4.6 fast remains 6x)")
     fi
     for note in "${notes[@]}"; do
         echo "  $note"

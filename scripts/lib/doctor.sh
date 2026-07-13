@@ -2,6 +2,23 @@
 # Claude Octopus — Environment Doctor Diagnostics
 # Extracted from orchestrate.sh
 # Source-safe: no main execution block.
+set -eo pipefail
+
+if ! declare -f _is_cursor_agent_binary >/dev/null 2>&1; then
+    _doctor_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    source "${_doctor_lib_dir}/cursor-agent.sh" 2>/dev/null || true
+fi
+
+if ! declare -f octo_graphify_status_json >/dev/null 2>&1; then
+    _doctor_lib_dir="${_doctor_lib_dir:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+    source "${_doctor_lib_dir}/graphify.sh" 2>/dev/null || true
+fi
+
+if ! declare -f qwen_auth_method >/dev/null 2>&1; then
+    _doctor_lib_dir="${_doctor_lib_dir:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+    source "${_doctor_lib_dir}/auth.sh" 2>/dev/null || true
+    source "${_doctor_lib_dir}/qwen.sh" 2>/dev/null || true
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # MODULAR DOCTOR SYSTEM (v8.16.0)
@@ -67,6 +84,29 @@ cmd_update_clis() {
 }
 
 doctor_check_providers() {
+    local _doctor_lib_dir
+    _doctor_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local _octo_root="${OCTO_ROOT:-}"
+    if [[ -z "$_octo_root" ]]; then
+        _octo_root="$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null || true)"
+    fi
+    if [[ -z "$_octo_root" || ! -r "$_octo_root/scripts/lib/provider-versions.sh" ]]; then
+        _octo_root="$(cd "${_doctor_lib_dir}/../.." && pwd)"
+    fi
+
+    if [[ -r "$_octo_root/scripts/lib/provider-versions.sh" ]]; then
+        source "${_octo_root}/scripts/lib/provider-versions.sh"
+    fi
+    if ! type -t octo_version_ok >/dev/null 2>&1; then
+        # shellcheck disable=SC2317  # fallback stub
+        octo_version_ok() { return 0; }
+    fi
+    local _timeout_cmd=""
+    if command -v gtimeout &>/dev/null; then
+        _timeout_cmd="gtimeout"
+    elif command -v timeout &>/dev/null; then
+        _timeout_cmd="timeout"
+    fi
     # Claude Code version + compatibility
     local cc_ver="${CLAUDE_CODE_VERSION:-}"
     if [[ -n "$cc_ver" ]]; then
@@ -82,9 +122,9 @@ doctor_check_providers() {
         local codex_ver codex_path
         codex_ver=$(codex --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
         codex_path=$(command -v codex)
-        if [[ "$codex_ver" != "unknown" ]] && [[ "$codex_ver" =~ ^0\.(([0-9]{1,2})|9[0-9])\. ]]; then
+        if ! octo_version_ok "${codex_ver}" "${OCTO_CODEX_MIN_VERSION:-0.100.0}"; then
             doctor_add "codex-cli" "providers" "warn" \
-                "Codex CLI v${codex_ver} (outdated)" \
+                "Codex CLI v${codex_ver} (outdated, min: v${OCTO_CODEX_MIN_VERSION:-0.100.0})" \
                 "${codex_path} — run orchestrate.sh update-clis or: npm install -g @openai/codex"
         else
             doctor_add "codex-cli" "providers" "pass" \
@@ -100,11 +140,34 @@ doctor_check_providers() {
         local gemini_ver gemini_path
         gemini_ver=$(gemini --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
         gemini_path=$(command -v gemini)
-        doctor_add "gemini-cli" "providers" "pass" \
-            "Gemini CLI v${gemini_ver}" "$gemini_path"
+        if ! octo_version_ok "${gemini_ver}" "${OCTO_GEMINI_MIN_VERSION:-1.0.0}"; then
+            doctor_add "gemini-cli" "providers" "warn" \
+               "Gemini CLI v${gemini_ver} (outdated, min: v${OCTO_GEMINI_MIN_VERSION:-1.0.0})" \
+               "${gemini_path} — npm install -g @google/gemini-cli"
+        else
+            doctor_add "gemini-cli" "providers" "pass" \
+               "Gemini CLI v${gemini_ver}" "$gemini_path"
+        fi
     else
         doctor_add "gemini-cli" "providers" "warn" \
             "Gemini CLI not installed" "npm install -g @google/gemini-cli"
+    fi
+
+    # Antigravity CLI (agy)
+    if command -v agy &>/dev/null; then
+        local agy_ver agy_path
+        agy_ver=$(agy --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+        agy_path=$(command -v agy)
+        if ! octo_version_ok "${agy_ver}" "${OCTO_AGY_MIN_VERSION:-1.0.6}"; then
+            doctor_add "agy-cli" "providers" "warn" \
+               "Antigravity CLI v${agy_ver} (below floor v${OCTO_AGY_MIN_VERSION:-1.0.6})" "${agy_path} — run: agy update"
+        else
+            doctor_add "agy-cli" "providers" "pass" \
+               "Antigravity CLI v${agy_ver}" "$agy_path"
+        fi
+    else
+        doctor_add "agy-cli" "providers" "info" \
+            "Antigravity CLI not installed (optional)" "Install agy to enable Antigravity provider routing"
     fi
 
     # Perplexity API (v8.24.0 - optional)
@@ -121,10 +184,25 @@ doctor_check_providers() {
         local ollama_health
         ollama_health=$(curl -sf http://localhost:11434/api/tags 2>/dev/null) || true
         if [[ -n "$ollama_health" ]]; then
-            local model_count
-            model_count=$(printf '%s' "$ollama_health" | grep -c '"name"' 2>/dev/null || echo "0")
-            doctor_add "ollama" "providers" "pass" \
-                "Ollama running (${model_count} models)" "http://localhost:11434"
+            local model_count stale_count
+            model_count=$(printf '%s' "$ollama_health" | grep -c '"name"' 2>/dev/null || true)
+            [[ "$model_count" =~ ^[0-9]+$ ]] || model_count=0
+            # Check model staleness via check-ollama-models.sh (Pre-mortem F2: sanitize to integer)
+            stale_count=0
+            local _check="${_octo_root}/scripts/helpers/check-ollama-models.sh"
+            if [[ -r "$_check" ]]; then
+                stale_count=$(bash "$_check" --count-stale 2>/dev/null || echo "0")
+                stale_count=$(printf '%s' "$stale_count" | grep -oE '^[0-9]+$' || echo "0")
+                stale_count="${stale_count:-0}"
+            fi
+            if [[ "$stale_count" -gt 0 ]]; then
+                doctor_add "ollama" "providers" "warn" \
+                    "Ollama running (${model_count} models, ${stale_count} stale)" \
+                    "Run: ollama pull <model> to refresh stale models (threshold: ${OCTO_OLLAMA_STALE_DAYS:-30}d)"
+            else
+                doctor_add "ollama" "providers" "pass" \
+                    "Ollama running (${model_count} models)" "http://localhost:11434"
+            fi
         else
             doctor_add "ollama" "providers" "warn" \
                 "Ollama installed but server not running" "Run: ollama serve"
@@ -148,7 +226,17 @@ doctor_check_providers() {
         elif command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
             copilot_auth="gh-cli"
         fi
-        if [[ "$copilot_auth" != "none" ]]; then
+        local gh_ver
+        if [[ -n "$_timeout_cmd" ]]; then
+            gh_ver=$("$_timeout_cmd" 3 gh --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+        else
+            gh_ver=$(gh --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+        fi
+        if ! octo_version_ok "${gh_ver}" "${OCTO_GH_MIN_VERSION:-2.0.0}"; then
+            doctor_add "copilot-cli" "providers" "warn" \
+               "gh CLI v${gh_ver} (outdated, min: v${OCTO_GH_MIN_VERSION:-2.0.0})" \
+               "$(command -v gh) — gh extension upgrade --all"
+        elif [[ "$copilot_auth" != "none" ]]; then
             doctor_add "copilot-cli" "providers" "pass" \
                 "Copilot CLI installed (auth: ${copilot_auth})" "$(command -v copilot) — research/exploration via copilot -p"
         else
@@ -160,36 +248,125 @@ doctor_check_providers() {
             "Copilot CLI not installed (optional)" "brew install copilot-cli — zero-cost research via GitHub subscription"
     fi
 
-    # Qwen CLI (optional — free tier)
+    # Qwen CLI (optional). oco-dar: free OAuth tier was discontinued 2026-04-15
+    # and token refresh is broken — expired OAuth never recovers. Durable auth is
+    # API key / Coding-Plan. Use expiry-aware qwen_auth_method when available.
+    local _qwen_setup="Set QWEN_API_KEY, or configure Coding-Plan (OPENAI_API_KEY + OPENAI_BASE_URL), or run: qwen auth coding-plan"
     if command -v qwen &>/dev/null; then
         local qwen_auth="none"
-        if [[ -f "${HOME}/.qwen/oauth_creds.json" ]]; then
+        if declare -f qwen_auth_method &>/dev/null; then
+            qwen_auth="$(qwen_auth_method)"
+        elif [[ -f "${HOME}/.qwen/oauth_creds.json" ]]; then
             qwen_auth="oauth"
         elif [[ -f "${HOME}/.qwen/config.json" ]]; then
             qwen_auth="config"
         elif [[ -n "${QWEN_API_KEY:-}" ]]; then
             qwen_auth="env:QWEN_API_KEY"
+        elif [[ -n "${OPENAI_API_KEY:-}" && -n "${OPENAI_BASE_URL:-}" ]]; then
+            qwen_auth="env:OPENAI_COMPAT"
         fi
-        if [[ "$qwen_auth" != "none" ]]; then
+        local qwen_ver
+        if [[ -n "$_timeout_cmd" ]]; then
+            qwen_ver=$("$_timeout_cmd" 3 qwen --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+        else
+            qwen_ver=$(qwen --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+        fi
+        if ! octo_version_ok "${qwen_ver}" "${OCTO_QWEN_MIN_VERSION:-0.14.0}"; then
+            doctor_add "qwen-cli" "providers" "warn" \
+               "Qwen CLI v${qwen_ver} (outdated, min: v${OCTO_QWEN_MIN_VERSION:-0.14.0})" \
+               "$(command -v qwen) — npm install -g @qwen-code/qwen-code"
+        elif [[ "$qwen_auth" == "oauth-expired" ]]; then
+            doctor_add "qwen-cli" "providers" "warn" \
+                "Qwen CLI v${qwen_ver} — OAuth token expired (free tier discontinued 2026-04-15, not refreshable)" \
+                "$_qwen_setup"
+        elif [[ "$qwen_auth" == "oauth-unvalidated" ]]; then
+            doctor_add "qwen-cli" "providers" "warn" \
+                "Qwen CLI v${qwen_ver} — OAuth token could not be validated" \
+                "$_qwen_setup"
+        elif [[ "$qwen_auth" != "none" ]]; then
             doctor_add "qwen-cli" "providers" "pass" \
-                "Qwen CLI installed (auth: ${qwen_auth})" "$(command -v qwen) — free-tier research via Qwen OAuth"
+                "Qwen CLI v${qwen_ver} (auth: ${qwen_auth})" "$(command -v qwen)"
         else
             doctor_add "qwen-cli" "providers" "warn" \
-                "Qwen CLI installed but not authenticated" "Run: qwen (to trigger OAuth) or set QWEN_API_KEY"
+                "Qwen CLI installed but not authenticated" "$_qwen_setup"
         fi
     else
         doctor_add "qwen-cli" "providers" "info" \
-            "Qwen CLI not installed (optional)" "npm install -g @qwen-code/qwen-code — free-tier research via Qwen OAuth"
+            "Qwen CLI not installed (optional)" "npm install -g @qwen-code/qwen-code — auth via QWEN_API_KEY / Coding-Plan"
+    fi
+
+    # Cursor Agent CLI (optional — Grok 4.20 via Cursor subscription)
+    if declare -f _is_cursor_agent_binary >/dev/null 2>&1 && _is_cursor_agent_binary; then
+        local cursor_auth="none"
+        if [[ -n "${CURSOR_API_KEY:-}" ]]; then
+            cursor_auth="env:CURSOR_API_KEY"
+        elif grep -Eq '"authInfo"[[:space:]]*:[[:space:]]*\{' "${HOME}/.cursor/cli-config.json" 2>/dev/null; then
+            cursor_auth="cursor-session"
+        fi
+        if [[ "$cursor_auth" != "none" ]]; then
+            doctor_add "cursor-agent" "providers" "pass" \
+                "Cursor Agent CLI installed (auth: ${cursor_auth})" "$(command -v agent) — Grok 4.20 via Cursor subscription"
+        else
+            doctor_add "cursor-agent" "providers" "warn" \
+                "Cursor Agent CLI installed but not authenticated" "Run: agent login (or set CURSOR_API_KEY)"
+        fi
+    else
+        doctor_add "cursor-agent" "providers" "info" \
+            "Cursor Agent CLI not installed (optional)" "curl -fsSL https://cursor.com/install | bash — Grok 4.20 via Cursor subscription"
+    fi
+
+    # xAI Grok CLI (optional — standalone grok provider, distinct from cursor-agent's grok-4-20)
+    if command -v grok >/dev/null 2>&1; then
+        if [[ -n "${XAI_API_KEY:-}" || -f "${HOME}/.grok/auth.json" ]]; then
+            doctor_add "grok" "providers" "pass" \
+                "xAI Grok CLI installed and authenticated" "$(command -v grok) — standalone xAI Grok provider"
+        else
+            doctor_add "grok" "providers" "warn" \
+                "xAI Grok CLI installed but not authenticated" "Run: grok login (or set XAI_API_KEY)"
+        fi
+    else
+        doctor_add "grok" "providers" "info" \
+            "xAI Grok CLI not installed (optional)" "https://grok.com — standalone xAI Grok provider"
+    fi
+
+    # Vibe CLI (optional — Mistral Vibe interactive CLI)
+    if command -v vibe &>/dev/null; then
+        local vibe_auth="none"
+        if [[ -f "${HOME}/.vibe/.env" ]] && grep -Eq '^[[:space:]]*MISTRAL_API_KEY=' "${HOME}/.vibe/.env" 2>/dev/null; then
+            vibe_auth="env-file"
+        elif [[ -n "${MISTRAL_API_KEY:-}" ]]; then
+            vibe_auth="env:MISTRAL_API_KEY"
+        elif [[ -f "${HOME}/.vibe/config.toml" ]] && grep -Eq '^[[:space:]]*api_key[[:space:]]*=' "${HOME}/.vibe/config.toml" 2>/dev/null; then
+            vibe_auth="config"
+        fi
+        if [[ "$vibe_auth" != "none" ]]; then
+            doctor_add "vibe-cli" "providers" "pass" \
+                "Vibe CLI installed (auth: ${vibe_auth})" "$(command -v vibe) — Mistral Vibe interactive CLI"
+        else
+            doctor_add "vibe-cli" "providers" "warn" \
+                "Vibe CLI installed but not authenticated" "Run: vibe --setup (or set MISTRAL_API_KEY)"
+        fi
+    else
+        doctor_add "vibe-cli" "providers" "info" \
+            "Vibe CLI not installed (optional)" "pip install mistral-vibe (or pipx) — Mistral Vibe interactive CLI"
     fi
 
     # OpenCode CLI (optional — multi-provider router, v9.11.0)
     if command -v opencode &>/dev/null; then
+        local opencode_ver
+        if [[ -n "$_timeout_cmd" ]]; then
+            opencode_ver=$("$_timeout_cmd" 3 opencode --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+        else
+            opencode_ver=$(opencode --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+        fi
+        if ! octo_version_ok "${opencode_ver}" "${OCTO_OPENCODE_MIN_VERSION:-0.1.0}"; then
+            doctor_add "opencode-version" "providers" "warn" "OpenCode v${opencode_ver} (below floor v${OCTO_OPENCODE_MIN_VERSION:-0.1.0})" "$(command -v opencode) — npm install -g opencode-ai"
+        fi
         local opencode_auth="none"
-        # Portable timeout: prefer gtimeout (macOS via coreutils), fallback to timeout
-        local _timeout_cmd="timeout"
-        command -v gtimeout &>/dev/null && _timeout_cmd="gtimeout"
         if [[ -f "${HOME}/.local/share/opencode/auth.json" ]]; then
-            if "$_timeout_cmd" 3 opencode auth list &>/dev/null; then
+            if [[ -n "$_timeout_cmd" ]] && "$_timeout_cmd" 3 opencode auth list &>/dev/null; then
+                opencode_auth="multi"
+            elif [[ -z "$_timeout_cmd" ]] && opencode auth list &>/dev/null; then
                 opencode_auth="multi"
             else
                 opencode_auth="expired"
@@ -248,6 +425,68 @@ doctor_check_providers() {
     fi
 }
 
+# --- Category 1b: Optional companions ---
+doctor_check_companions() {
+    if ! declare -f octo_graphify_status_json >/dev/null 2>&1; then
+        doctor_add "graphify-companion" "companions" "info" \
+            "Graphify companion unavailable" "scripts/lib/graphify.sh not loaded"
+        return 0
+    fi
+
+    local project_root status installed version bin graph_exists report_exists needs_update out_dir hook_status
+    project_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+    status=$(octo_graphify_status_json "$project_root" 2>/dev/null || true)
+    if [[ -z "$status" ]]; then
+        doctor_add "graphify-companion" "companions" "info" \
+            "Graphify companion disabled" "Set OCTOPUS_GRAPHIFY=1 to re-enable"
+        return 0
+    fi
+
+    installed=$(printf '%s' "$status" | jq -r '.installed')
+    version=$(printf '%s' "$status" | jq -r '.version')
+    bin=$(printf '%s' "$status" | jq -r '.bin')
+    graph_exists=$(printf '%s' "$status" | jq -r '.graph_exists')
+    report_exists=$(printf '%s' "$status" | jq -r '.report_exists')
+    needs_update=$(printf '%s' "$status" | jq -r '.needs_update')
+    out_dir=$(printf '%s' "$status" | jq -r '.out_dir')
+    hook_status=$(printf '%s' "$status" | jq -r '.hook_status // ""')
+
+    if [[ "$installed" == "true" ]]; then
+        doctor_add "graphify-cli" "companions" "pass" \
+            "Graphify CLI installed (v${version})" "$bin"
+    else
+        doctor_add "graphify-cli" "companions" "info" \
+            "Graphify CLI not installed (optional)" "uv tool install graphifyy"
+    fi
+
+    if [[ "$graph_exists" == "true" && "$report_exists" == "true" ]]; then
+        doctor_add "graphify-graph" "companions" "pass" \
+            "Graphify graph available" "$out_dir"
+    elif [[ "$graph_exists" == "true" || "$report_exists" == "true" ]]; then
+        doctor_add "graphify-graph" "companions" "warn" \
+            "Graphify output incomplete" "Expected both graph.json and GRAPH_REPORT.md under $out_dir"
+    else
+        doctor_add "graphify-graph" "companions" "info" \
+            "No Graphify graph for this project" "Run graphify extract . when a graph map would help"
+    fi
+
+    if [[ "$needs_update" == "true" ]]; then
+        doctor_add "graphify-freshness" "companions" "warn" \
+            "Graphify graph may be stale" "needs_update flag present under $out_dir"
+    elif [[ "$graph_exists" == "true" ]]; then
+        doctor_add "graphify-freshness" "companions" "pass" \
+            "No Graphify stale flag found" "$out_dir"
+    else
+        doctor_add "graphify-freshness" "companions" "info" \
+            "Graphify freshness not applicable" "No graphify-out graph found"
+    fi
+
+    if [[ "$installed" == "true" && -n "$hook_status" ]]; then
+        doctor_add "graphify-hooks" "companions" "info" \
+            "Graphify hook status checked" "$hook_status"
+    fi
+}
+
 # --- Category 2: Auth ---
 doctor_check_auth() {
     # Codex auth
@@ -277,6 +516,19 @@ doctor_check_auth() {
         fi
     fi
 
+    # Cursor Agent auth
+    if declare -f _is_cursor_agent_binary >/dev/null 2>&1 && _is_cursor_agent_binary; then
+        if [[ -n "${CURSOR_API_KEY:-}" ]] || grep -Eq '"authInfo"[[:space:]]*:[[:space:]]*\{' "$HOME/.cursor/cli-config.json" 2>/dev/null; then
+            local method="cursor-session"
+            [[ -n "${CURSOR_API_KEY:-}" ]] && method="CURSOR_API_KEY"
+            doctor_add "cursor-agent-auth" "auth" "pass" \
+                "Cursor Agent authenticated" "via $method"
+        else
+            doctor_add "cursor-agent-auth" "auth" "fail" \
+                "Cursor Agent not authenticated" "Run: agent login  OR  export CURSOR_API_KEY=\"...\""
+        fi
+    fi
+
     # Perplexity auth (v8.24.0 - optional, info-only)
     if [[ -n "${PERPLEXITY_API_KEY:-}" ]]; then
         doctor_add "perplexity-auth" "auth" "pass" \
@@ -286,12 +538,13 @@ doctor_check_auth() {
     # At least one provider must be authenticated
     local any_auth=false
     if [[ -f "$HOME/.codex/auth.json" ]] || [[ -n "${OPENAI_API_KEY:-}" ]] || \
-       [[ -f "$HOME/.gemini/oauth_creds.json" ]] || [[ -n "${GEMINI_API_KEY:-}" ]] || [[ -n "${GOOGLE_API_KEY:-}" ]]; then
+       [[ -f "$HOME/.gemini/oauth_creds.json" ]] || [[ -n "${GEMINI_API_KEY:-}" ]] || [[ -n "${GOOGLE_API_KEY:-}" ]] || \
+       [[ -n "${CURSOR_API_KEY:-}" ]] || grep -Eq '"authInfo"[[:space:]]*:[[:space:]]*\{' "$HOME/.cursor/cli-config.json" 2>/dev/null; then
         any_auth=true
     fi
     if [[ "$any_auth" == "false" ]]; then
         doctor_add "any-provider-auth" "auth" "fail" \
-            "No provider authenticated" "At least one of Codex or Gemini must be authenticated"
+            "No provider authenticated" "At least one of Codex, Gemini, or Cursor Agent must be authenticated"
     else
         doctor_add "any-provider-auth" "auth" "pass" \
             "At least one provider authenticated" ""
@@ -443,6 +696,73 @@ doctor_check_config() {
     local backend="${OCTOPUS_BACKEND:-api}"
     doctor_add "backend-detection" "config" "pass" \
         "Backend: $backend" ""
+
+    # v9.36: CC v2.1.126-129 compatibility checks
+    if [[ "${SUPPORTS_GATEWAY_MODEL_DISCOVERY:-false}" == "true" ]]; then
+        if [[ -n "${ANTHROPIC_BASE_URL:-}" && "${CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY:-0}" != "1" ]]; then
+            doctor_add "gateway-model-discovery" "config" "warn" \
+                "Gateway model discovery is opt-in on current Claude Code" \
+                "ANTHROPIC_BASE_URL is set; set CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 to populate /model from /v1/models"
+        elif [[ -n "${ANTHROPIC_BASE_URL:-}" ]]; then
+            doctor_add "gateway-model-discovery" "config" "pass" \
+                "Gateway model discovery enabled" "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1"
+        else
+            doctor_add "gateway-model-discovery" "config" "info" \
+                "Gateway model discovery available" "Set ANTHROPIC_BASE_URL plus CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 for compatible gateways"
+        fi
+    fi
+
+    if [[ "${SUPPORTS_FORCE_SYNC_OUTPUT:-false}" == "true" ]]; then
+        if [[ "${CLAUDE_CODE_FORCE_SYNC_OUTPUT:-0}" == "1" ]]; then
+            doctor_add "force-sync-output" "config" "pass" \
+                "Synchronized terminal output forced" "CLAUDE_CODE_FORCE_SYNC_OUTPUT=1"
+        else
+            doctor_add "force-sync-output" "config" "info" \
+                "CC v2.1.129 CLAUDE_CODE_FORCE_SYNC_OUTPUT available" \
+                "Set CLAUDE_CODE_FORCE_SYNC_OUTPUT=1 if your terminal misses synchronized-output auto-detection"
+        fi
+    fi
+
+    if [[ "${SUPPORTS_PACKAGE_MANAGER_AUTO_UPDATE:-false}" == "true" ]]; then
+        if [[ "${CLAUDE_CODE_PACKAGE_MANAGER_AUTO_UPDATE:-0}" == "1" ]]; then
+            doctor_add "package-manager-auto-update" "config" "pass" \
+                "Claude Code package-manager auto-update enabled" "CLAUDE_CODE_PACKAGE_MANAGER_AUTO_UPDATE=1"
+        else
+            doctor_add "package-manager-auto-update" "config" "info" \
+                "CC v2.1.129 package-manager auto-update available" \
+                "Set CLAUDE_CODE_PACKAGE_MANAGER_AUTO_UPDATE=1 for Homebrew/WinGet installs to prompt after background upgrades"
+        fi
+    fi
+
+    if [[ "${SUPPORTS_EXPERIMENTAL_MANIFEST_KEYS:-false}" == "true" ]] && command -v jq &>/dev/null; then
+        if jq -e 'has("themes") or has("monitors")' "$plugin_json" >/dev/null 2>&1; then
+            doctor_add "experimental-manifest-keys" "config" "warn" \
+                "Plugin manifest still uses top-level themes/monitors" \
+                "CC v2.1.129 validates these under experimental.themes / experimental.monitors"
+        else
+            doctor_add "experimental-manifest-keys" "config" "pass" \
+                "No top-level themes/monitors manifest keys" "CC v2.1.129 experimental manifest layout is clean"
+        fi
+    fi
+
+    if [[ "${SUPPORTS_MCP_WORKSPACE_RESERVED:-false}" == "true" ]] && command -v jq &>/dev/null; then
+        local _workspace_mcp_files=""
+        local _mcp_file
+        for _mcp_file in "$PLUGIN_DIR/.mcp.json" "$PWD/.mcp.json" "$HOME/.claude/settings.json" "$HOME/.claude/settings.local.json"; do
+            [[ -f "$_mcp_file" ]] || continue
+            if jq -e '.mcpServers.workspace? // empty' "$_mcp_file" >/dev/null 2>&1; then
+                _workspace_mcp_files="${_workspace_mcp_files:+$_workspace_mcp_files, }$_mcp_file"
+            fi
+        done
+        if [[ -n "$_workspace_mcp_files" ]]; then
+            doctor_add "mcp-workspace-reserved" "config" "warn" \
+                "MCP server named 'workspace' will be skipped by Claude Code" \
+                "Rename mcpServers.workspace in: $_workspace_mcp_files"
+        else
+            doctor_add "mcp-workspace-reserved" "config" "pass" \
+                "No reserved MCP server name 'workspace' detected" ""
+        fi
+    fi
 }
 
 # --- Category 4: State ---
@@ -642,7 +962,7 @@ doctor_check_skills() {
         skill_path=$(jq -r ".skills[$i]" "$plugin_json" 2>/dev/null)
         # Resolve relative paths from plugin dir
         local resolved="${PLUGIN_DIR}/${skill_path#./}"
-        if [[ ! -f "$resolved" ]]; then
+        if [[ ! -e "$resolved" ]]; then
             doctor_add "skill-missing-$(basename "$skill_path")" "skills" "fail" \
                 "Skill file missing: $(basename "$skill_path")" "$resolved"
             ((skill_missing++)) || true
@@ -840,9 +1160,24 @@ doctor_check_skills() {
     fi
 
     if [[ "$SUPPORTS_BARE_FLAG" == "true" ]]; then
-        doctor_add "bare-flag" "skills" "pass" \
-            "CC v2.1.87 --bare flag active — subprocess synthesis runs faster" \
-            "Octopus uses --bare for claude -p subprocess calls to skip hooks/LSP loading"
+        if [[ "${OCTOPUS_DISABLE_BARE:-0}" == "1" ]]; then
+            doctor_add "bare-flag" "skills" "warn" \
+                "--bare flag disabled via OCTOPUS_DISABLE_BARE=1" \
+                "Subprocess synthesis falls back to standard claude -p (slower but avoids auth issues)"
+        else
+            # Probe whether --bare can authenticate (CC v2.1.114 regression, issue #288)
+            local _bare_test
+            _bare_test=$(echo "x" | claude --bare --print --model claude-haiku-4-5-20251001 2>/dev/null | head -1 || true)
+            if [[ "$_bare_test" == *"Not logged in"* || "$_bare_test" == *"Please run /login"* ]]; then
+                doctor_add "bare-flag" "skills" "fail" \
+                    "--bare flag breaks subprocess auth on this install (issue #288)" \
+                    "Set OCTOPUS_DISABLE_BARE=1 in your shell profile or ~/.claude/settings.json env block to fix"
+            else
+                doctor_add "bare-flag" "skills" "pass" \
+                    "CC v2.1.87 --bare flag active — subprocess synthesis runs faster" \
+                    "Octopus uses --bare for claude -p subprocess calls to skip hooks/LSP loading"
+            fi
+        fi
     fi
 
     if [[ "$SUPPORTS_MODEL_CAP_ENV_VARS" == "true" ]]; then
@@ -930,6 +1265,94 @@ doctor_check_skills() {
             "claude-cli://open?q= supports encoded newlines (%0A) for multi-step prompts"
     fi
 
+    # ── v9.36.0: CC v2.1.126-129 doctor tips ───────────────────────────────────
+
+    if [[ "${SUPPORTS_PROJECT_PURGE:-false}" == "true" ]]; then
+        doctor_add "project-purge" "skills" "info" \
+            "CC v2.1.126 claude project purge available" \
+            "Use 'claude project purge --dry-run .' to inspect stale Claude Code project state before deleting transcripts/tasks/config"
+    fi
+
+    if [[ "${SUPPORTS_SKILL_ACTIVATED_OTEL_TRIGGER:-false}" == "true" ]]; then
+        doctor_add "skill-activated-otel" "skills" "info" \
+            "CC v2.1.126 skill activation telemetry includes invocation_trigger" \
+            "claude_code.skill_activated can distinguish user-slash, claude-proactive, and nested-skill activations"
+    fi
+
+    if [[ "${SUPPORTS_PLUGIN_ZIP_DIR:-false}" == "true" ]]; then
+        doctor_add "plugin-zip-dir" "skills" "info" \
+            "CC v2.1.128 --plugin-dir accepts .zip plugin archives" \
+            "Release validation can smoke-test the packaged plugin archive, not just the source directory"
+    fi
+
+    if [[ "${SUPPORTS_INIT_PLUGIN_ERRORS:-false}" == "true" ]]; then
+        doctor_add "init-plugin-errors" "skills" "info" \
+            "CC v2.1.128 stream-json init.plugin_errors reports plugin-dir load failures" \
+            "Use --output-format stream-json --include-hook-events in release smoke tests to catch plugin load errors"
+    fi
+
+    if [[ "${SUPPORTS_PLUGIN_URL:-false}" == "true" ]]; then
+        doctor_add "plugin-url" "skills" "info" \
+            "CC v2.1.129 --plugin-url can load a plugin zip for the current session" \
+            "Use --plugin-url with a release artifact URL to reproduce marketplace/plugin loading without installing"
+    fi
+
+    if [[ "${SUPPORTS_SKILL_OVERRIDES:-false}" == "true" ]]; then
+        local _settings_file _has_skill_overrides="false"
+        for _settings_file in "$PWD/.claude/settings.json" "$HOME/.claude/settings.json" "$HOME/.claude/settings.local.json"; do
+            [[ -f "$_settings_file" ]] || continue
+            if command -v jq &>/dev/null && jq -e 'has("skillOverrides")' "$_settings_file" >/dev/null 2>&1; then
+                _has_skill_overrides="true"
+                break
+            fi
+        done
+        if [[ "$_has_skill_overrides" == "true" ]]; then
+            doctor_add "skill-overrides" "skills" "pass" \
+                "CC v2.1.129 skillOverrides configured" "Use off, user-invocable-only, or name-only to tune Octopus skill context"
+        else
+            doctor_add "skill-overrides" "skills" "info" \
+                "CC v2.1.129 skillOverrides available for reducing Octopus skill context" \
+                "Set skillOverrides in Claude settings to hide niche skills or collapse them to name-only"
+        fi
+    fi
+
+    if [[ "${SUPPORTS_PR_COUNT_MCP_OTEL:-false}" == "true" ]]; then
+        doctor_add "pr-count-mcp-otel" "skills" "info" \
+            "CC v2.1.129 PR count telemetry includes MCP-created PRs/MRs" \
+            "claude_code.pull_request.count now covers GitHub/GitLab MCP creation as well as shell-created PRs"
+    fi
+
+    if [[ "${SUPPORTS_BASH_SESSION_ID_ENV:-false}" == "true" ]]; then
+        doctor_add "bash-session-id-env" "skills" "pass" \
+            "CC v2.1.132 CLAUDE_CODE_SESSION_ID is available in Bash tool subprocesses" \
+            "Octopus uses it for Claude-specific careful/freeze state, proof packets, usage files, and session-scoped caches"
+    fi
+
+    # v9.42: Surface Claude Code v2.1.154-157 / Opus 4.8 capabilities.
+    if [[ "${SUPPORTS_OPUS_4_8:-false}" == "true" ]]; then
+        doctor_add "opus-4-8" "skills" "pass" \
+            "CC v2.1.154 Opus 4.8 available; claude-opus routes to the current premium model" \
+            "Use OCTOPUS_OPUS_MODEL=claude-opus-4.6 only when you need legacy behavior"
+    fi
+
+    if [[ "${SUPPORTS_DYNAMIC_WORKFLOWS:-false}" == "true" ]]; then
+        doctor_add "dynamic-workflows" "skills" "info" \
+            "CC v2.1.154 dynamic workflows available for huge single-Claude migrations" \
+            "Prefer native workflows for codebase-scale single-model migrations; use Octopus for multi-provider disagreement, councils, adversarial review, and validation"
+    fi
+
+    if [[ "${SUPPORTS_SKILLS_AUTO_PLUGIN_LOAD:-false}" == "true" ]]; then
+        doctor_add "skills-auto-plugin-load" "skills" "info" \
+            "CC v2.1.157 auto-loads plugins from .claude/skills directories" \
+            "Local Octopus development can use .claude/skills without marketplace installation when testing plugin changes"
+    fi
+
+    if [[ "${SUPPORTS_ENTER_WORKTREE_SWITCH:-false}" == "true" ]]; then
+        doctor_add "enter-worktree-switch" "skills" "info" \
+            "CC v2.1.157 EnterWorktree can switch between Claude-managed worktrees mid-session" \
+            "Octopus worktree handoff can reuse native switching instead of forcing a fresh checkout"
+    fi
+
     # v9.20.0: Output compression
     if [[ -x "${CLAUDE_PLUGIN_ROOT:-}/hooks/output-compressor.sh" ]]; then
         if [[ "${OCTOPUS_COMPRESS_ENABLED:-true}" == "true" ]]; then
@@ -989,6 +1412,29 @@ doctor_check_conflicts() {
         doctor_add "companion-claude-mem" "conflicts" "pass" \
             "claude-mem v${mem_version} detected (companion — persistent cross-session memory)" \
             "Octopus workflows can use claude-mem MCP tools (search, timeline, get_observations) for past session context"
+    fi
+
+    local agentmemory_dir=""
+    for dir in \
+        "$HOME"/.claude/plugins/cache/rohitg00/agentmemory/*/ \
+        "$HOME"/.claude/plugins/cache/agentmemory/agentmemory/*/ \
+        "$HOME"/.codex/plugins/cache/rohitg00/agentmemory/*/ \
+        "$HOME"/.codex/plugins/cache/agentmemory/agentmemory/*/; do
+        [[ -d "$dir" ]] && agentmemory_dir="$dir" && break
+    done
+    if [[ -n "$agentmemory_dir" ]]; then
+        local agentmemory_version
+        agentmemory_version=$(basename "${agentmemory_dir%/}" 2>/dev/null || echo "unknown")
+        doctor_add "companion-agentmemory" "conflicts" "pass" \
+            "agentmemory v${agentmemory_version} detected (companion — persistent cross-agent memory)" \
+            "Octopus memory hooks can use agentmemory through MCP or the local REST bridge"
+    elif command -v agentmemory >/dev/null 2>&1; then
+        doctor_add "companion-agentmemory" "conflicts" "pass" \
+            "agentmemory CLI detected (companion — persistent cross-agent memory)" \
+            "$(command -v agentmemory)"
+    elif [[ -n "${AGENTMEMORY_URL:-}" ]]; then
+        doctor_add "companion-agentmemory" "conflicts" "info" \
+            "agentmemory URL configured" "$AGENTMEMORY_URL"
     fi
 }
 
@@ -1172,6 +1618,50 @@ doctor_check_recurrence() {
     fi
 }
 
+# --- Category 12: Plugin cache hygiene (v9.29.0) ---
+# Reports stale octo cache versions so users can reclaim disk space.
+# Cleanup is interactive — never deletes from this check.
+doctor_check_cache() {
+    local hygiene_lib="${OCTOPUS_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}/cache-hygiene.sh"
+    if [[ ! -r "$hygiene_lib" ]]; then
+        doctor_add "cache-hygiene-lib" "cache" "info" \
+            "cache-hygiene.sh not found — skipping" "$hygiene_lib"
+        return
+    fi
+    # shellcheck disable=SC1090
+    source "$hygiene_lib"
+
+    local total stale_count
+    total=$(octo_cache_versions | wc -l | tr -d ' ')
+    stale_count=$(octo_cache_stale | grep -c . || true)
+    stale_count="${stale_count:-0}"
+
+    if [[ "$total" -eq 0 ]]; then
+        doctor_add "cache-versions" "cache" "info" \
+            "No octo cache directory yet" "$OCTO_CACHE_DIR"
+        return
+    fi
+
+    local active="${CLAUDE_PLUGIN_ROOT:+$(octo_cache_active_version)}"
+    local active_msg=""
+    [[ -n "$active" ]] && active_msg=" (active: ${active})"
+
+    if [[ "$stale_count" -eq 0 ]]; then
+        doctor_add "cache-versions" "cache" "pass" \
+            "${total} octo version(s) cached${active_msg}" "Within keep window (${OCTOPUS_CACHE_KEEP:-2})"
+        return
+    fi
+
+    local bytes human stale_list
+    bytes=$(octo_cache_stale_bytes)
+    human=$(octo_cache_format_bytes "$bytes")
+    stale_list=$(octo_cache_stale | tr '\n' ',' | sed 's/,$//;s/,/, /g')
+
+    doctor_add "cache-stale-versions" "cache" "warn" \
+        "${stale_count} stale octo version(s) — ${human}${active_msg}" \
+        "Stale: ${stale_list}. Run: bash \$CLAUDE_PLUGIN_ROOT/scripts/lib/cache-hygiene.sh clean (or set OCTOPUS_AUTO_CLEAN_CACHE=1)"
+}
+
 # --- Output: Human-readable ---
 doctor_output_human() {
     local verbose="${1:-false}"
@@ -1182,9 +1672,9 @@ doctor_output_human() {
     for ((i=0; i<total; i++)); do
         local status="${DOCTOR_RESULTS_STATUS[$i]}"
         case "$status" in
-            pass) ((pass_count++)) ;;
-            warn) ((warn_count++)) ;;
-            fail) ((fail_count++)) ;;
+            pass) ((++pass_count)) ;;
+            warn) ((++warn_count)) ;;
+            fail) ((++fail_count)) ;;
         esac
     done
 
@@ -1215,8 +1705,12 @@ doctor_output_human() {
         esac
 
         echo -e "  ${icon} ${msg}"
-        if [[ -n "$detail" && "$verbose" == "true" ]]; then
-            echo -e "    ${DIM}${detail}${NC}"
+        # Always show detail for warn/fail (it contains the actionable fix).
+        # Only gate detail behind --verbose for passing checks.
+        if [[ -n "$detail" ]]; then
+            if [[ "$status" == "warn" || "$status" == "fail" || "$verbose" == "true" ]]; then
+                echo -e "    ${DIM}${detail}${NC}"
+            fi
         fi
     done
 
@@ -1281,7 +1775,7 @@ do_doctor() {
     DOCTOR_RESULTS_DETAIL=()
 
     # Run checks (filtered if category specified)
-    local categories=(providers auth config state smoke hooks scheduler skills conflicts agents recurrence)
+    local categories=(providers companions auth config state smoke hooks scheduler skills conflicts agents recurrence cache)
     for cat in "${categories[@]}"; do
         if [[ -z "$category_filter" || "$category_filter" == "$cat" ]]; then
             "doctor_check_${cat}"

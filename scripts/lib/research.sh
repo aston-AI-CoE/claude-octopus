@@ -38,10 +38,10 @@ Analyze the research context and provide:
 3. Unmet needs and opportunities
 4. Behavioral themes across user segments
 
-Format as a structured research synthesis." 180 "ux-researcher" "empathize") || {
+Format as a structured research synthesis." "${TIMEOUT:-300}" "ux-researcher" "empathize") || {
         log WARN "Gemini failed for research synthesis, falling back to Claude"
         echo -e " ${YELLOW}⚠${NC}  Gemini unavailable — falling back to Claude"
-        synthesis=$(run_agent_sync "claude-sonnet" "You are a UX researcher. Synthesize user research for: $prompt. Provide: key insights, pain points, unmet needs, behavioral themes." 180 "ux-researcher" "empathize") || true
+        synthesis=$(run_agent_sync "claude-sonnet" "You are a UX researcher. Synthesize user research for: $prompt. Provide: key insights, pain points, unmet needs, behavioral themes." "${TIMEOUT:-300}" "ux-researcher" "empathize") || true
     }
 
     echo -e "${CYAN}🦑 Phase 2/4: Creating personas and journey maps...${NC}"
@@ -54,10 +54,10 @@ Create:
 2. A current-state journey map for the primary persona
 3. Key moments of truth and emotional highs/lows
 
-Use evidence-based persona development." 180 "ux-researcher" "empathize") || {
+Use evidence-based persona development." "${TIMEOUT:-300}" "ux-researcher" "empathize") || {
         log WARN "Gemini failed for personas, falling back to Claude"
         echo -e " ${YELLOW}⚠${NC}  Gemini unavailable — falling back to Claude"
-        personas=$(run_agent_sync "claude-sonnet" "Based on this research: $synthesis. Create 2-3 user personas and a journey map for the primary persona." 180 "ux-researcher" "empathize") || true
+        personas=$(run_agent_sync "claude-sonnet" "Based on this research: $synthesis. Create 2-3 user personas and a journey map for the primary persona." "${TIMEOUT:-300}" "ux-researcher" "empathize") || true
     }
 
     echo -e "${CYAN}🦑 Phase 3/4: Defining product requirements...${NC}"
@@ -76,10 +76,10 @@ Create product requirements:
 3. Success metrics tied to user outcomes
 4. Prioritized backlog recommendations
 
-Original context: $prompt" 180 "product-writer" "empathize") || {
+Original context: $prompt" "${TIMEOUT:-300}" "product-writer" "empathize") || {
         log WARN "Codex failed for requirements, falling back to Claude"
         echo -e " ${YELLOW}⚠${NC}  Codex unavailable — falling back to Claude"
-        requirements=$(run_agent_sync "claude-sonnet" "Based on research: $synthesis and personas: $personas. Create: user stories, acceptance criteria, success metrics, prioritized backlog. Context: $prompt" 180 "product-writer" "empathize") || true
+        requirements=$(run_agent_sync "claude-sonnet" "Based on research: $synthesis and personas: $personas. Create: user stories, acceptance criteria, success metrics, prioritized backlog. Context: $prompt" "${TIMEOUT:-300}" "product-writer" "empathize") || true
     }
 
     echo -e "${CYAN}🦑 Phase 4/4: Validating through adversarial review...${NC}"
@@ -176,10 +176,10 @@ Provide:
 3. Seminal works and key researchers in the field
 4. Taxonomy for organizing the literature
 
-Create a structure for systematic review." 180 "research-synthesizer" "synthesize") || {
+Create a structure for systematic review." "${TIMEOUT:-300}" "research-synthesizer" "synthesize") || {
         log WARN "Gemini failed for literature gathering, falling back to Claude"
         echo -e " ${YELLOW}⚠${NC}  Gemini unavailable — falling back to Claude"
-        gathering=$(run_agent_sync "claude-sonnet" "You are a research synthesizer. For: $prompt. Provide: key research areas, theoretical frameworks, seminal works, taxonomy for systematic review." 180 "research-synthesizer" "synthesize") || true
+        gathering=$(run_agent_sync "claude-sonnet" "You are a research synthesizer. For: $prompt. Provide: key research areas, theoretical frameworks, seminal works, taxonomy for systematic review." "${TIMEOUT:-300}" "research-synthesizer" "synthesize") || true
     }
 
     echo -e "${CYAN}🦑 Phase 2/4: Conducting thematic analysis...${NC}"
@@ -193,10 +193,10 @@ Conduct thematic analysis:
 3. Identify conflicting findings and their sources
 4. Trace the evolution of thinking on this topic
 
-Topic: $prompt" 180 "research-synthesizer" "synthesize") || {
+Topic: $prompt" "${TIMEOUT:-300}" "research-synthesizer" "synthesize") || {
         log WARN "Gemini failed for thematic analysis, falling back to Claude"
         echo -e " ${YELLOW}⚠${NC}  Gemini unavailable — falling back to Claude"
-        themes=$(run_agent_sync "claude-sonnet" "Based on: $gathering. Identify 4-6 themes, consensus points, conflicts, and evolution of thinking. Topic: $prompt" 180 "research-synthesizer" "synthesize") || true
+        themes=$(run_agent_sync "claude-sonnet" "Based on: $gathering. Identify 4-6 themes, consensus points, conflicts, and evolution of thinking. Topic: $prompt" "${TIMEOUT:-300}" "research-synthesizer" "synthesize") || true
     }
 
     echo -e "${CYAN}🦑 Phase 3/4: Identifying gaps and future directions...${NC}"
@@ -213,10 +213,10 @@ Identify:
 4. Practical implications needing research
 5. Priority research questions for the field
 
-Original topic: $prompt" 180 "research-synthesizer" "synthesize") || {
+Original topic: $prompt" "${TIMEOUT:-300}" "research-synthesizer" "synthesize") || {
         log WARN "Codex failed for gap identification, falling back to Claude"
         echo -e " ${YELLOW}⚠${NC}  Codex unavailable — falling back to Claude"
-        gaps=$(run_agent_sync "claude-sonnet" "Based on structure: $gathering and themes: $themes. Identify: research gaps, methodological limitations, theoretical gaps, practical implications, priority questions. Topic: $prompt" 180 "research-synthesizer" "synthesize") || true
+        gaps=$(run_agent_sync "claude-sonnet" "Based on structure: $gathering and themes: $themes. Identify: research gaps, methodological limitations, theoretical gaps, practical implications, priority questions. Topic: $prompt" "${TIMEOUT:-300}" "research-synthesizer" "synthesize") || true
     }
 
     echo -e "${CYAN}🦑 Phase 4/4: Drafting synthesis narrative...${NC}"
@@ -234,10 +234,10 @@ Create:
 3. Critical synthesis connecting themes
 4. Conclusion with gaps and future directions
 
-Use academic writing conventions." 180 "academic-writer" "synthesize") || {
+Use academic writing conventions." "${TIMEOUT:-300}" "academic-writer" "synthesize") || {
         log WARN "Gemini failed for synthesis narrative, falling back to Claude"
         echo -e " ${YELLOW}⚠${NC}  Gemini unavailable — falling back to Claude"
-        narrative=$(run_agent_sync "claude-sonnet" "Write a literature review for: $prompt. Structure: $gathering. Themes: $themes. Gaps: $gaps. Use academic writing conventions, organize by themes." 180 "academic-writer" "synthesize") || true
+        narrative=$(run_agent_sync "claude-sonnet" "Write a literature review for: $prompt. Structure: $gathering. Themes: $themes. Gaps: $gaps. Use academic writing conventions, organize by themes." "${TIMEOUT:-300}" "academic-writer" "synthesize") || true
     }
 
     local result_file="$RESULTS_DIR/synthesize-${task_group}.md"

@@ -1,12 +1,22 @@
 ---
 name: flow-discover
-version: 1.0.0
-description: "Multi-AI research using Codex and Gemini CLIs (Double Diamond Discover phase). Use when: AUTOMATICALLY ACTIVATE when user requests research or exploration:. \"research X\" or \"explore Y\" or \"investigate Z\". \"what are the options for X\" or \"what are my choices for Y\""
+description: "Multi-AI research using available external providers (Double Diamond Discover phase)"
 ---
 
-> This file is generated from a template. Edit the `.tmpl` file, not this file directly.
-> Run `scripts/gen-skill-docs.sh` to regenerate after changes.
+> **Host: Codex CLI** — This skill was designed for Claude Code and adapted for Codex.
+> Cross-reference commands use installed skill names in Codex rather than `/octo:*` slash commands.
+> Use the active Codex shell and subagent tools. Do not claim a provider, model, or host subagent is available until the current session exposes it.
+> For host tool equivalents, see `skills/blocks/codex-host-adapter.md`.
 
+
+{{PREAMBLE}}
+
+## Compaction-Resistant Contract
+
+- Dispatch MUST go through background agents that call `${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh probe-single`; direct single-model research is not a valid substitute.
+- Use the dynamic fleet from `build-fleet.sh`; the plugin can route across Codex, Gemini, Antigravity, Copilot, Qwen, OpenCode, Ollama, Perplexity, OpenRouter, Cursor Agent, and Claude depending on local availability.
+- Before synthesis, run `${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh agent-summary` and use only providers reported as `ok`, `degraded`, or `timeout` with usable output.
+- For `standard` and `deep` research, require at least 2 usable provider outputs unless fewer providers are installed; failed/rejected providers are reported as gaps, not cited as evidence.
 
 ## Pre-Discovery: Project Initialization
 
@@ -32,7 +42,6 @@ fi
   --status "in_progress"
 ```
 
----
 
 ## Native Plan Mode Compatibility (v7.23.0+)
 
@@ -64,7 +73,6 @@ fi
 
 **No action required** - state management handles this automatically via STEP 3 in the execution contract.
 
----
 
 ## ⚠️ EXECUTION CONTRACT (MANDATORY - CANNOT SKIP)
 
@@ -89,24 +97,21 @@ Analyze the user's prompt and project to determine context:
 
 **DO NOT PROCEED TO STEP 2 until context determined.** Context type (Dev vs Knowledge) determines which provider prompts to use — wrong context produces irrelevant research that wastes provider credits.
 
----
 
 ### STEP 2: Display Visual Indicators (MANDATORY - BLOCKING)
 
-**MANDATORY: Run the centralized provider check BEFORE displaying the banner:**
+**MANDATORY: You MUST use the native shell command tool to run this provider check BEFORE displaying the banner. Do NOT skip it. Do NOT assume availability.**
 
 ```bash
 bash "${HOME}/.claude-octopus/plugin/scripts/helpers/check-providers.sh"
 ```
 
-**Use the ACTUAL results. PROHIBITED: Showing only "🔵 Claude: Available ✓" without listing all providers.**
+**Use the ACTUAL results below. PROHIBITED: Showing only "🔵 Claude: Available ✓" without listing all providers.**
 
-**Validation:**
-- If ALL external CLI providers unavailable -> STOP, suggest: `/octo:setup`
-- If some unavailable -> Continue with available provider(s)
-- If multiple available -> Proceed normally
+If `OCTO_ALLOWED_PROVIDERS` is set, treat it as the source of truth for which providers may participate. Providers filtered out by that allowlist are intentionally reported as unavailable; do not invoke or recommend them in the workflow.
 
-**Display this banner BEFORE orchestrate.sh execution (list ALL providers from check output):**
+
+**Display this banner BEFORE orchestrate.sh execution:**
 
 **For Dev Context:**
 ```
@@ -114,11 +119,10 @@ bash "${HOME}/.claude-octopus/plugin/scripts/helpers/check-providers.sh"
 🔍 [Dev] Discover Phase: [Brief description of technical research]
 
 Provider Availability:
-🔴 Codex CLI: [status from check]
-🟡 Gemini CLI: [status from check]
-🟢 Copilot CLI: [status from check]
-🟣 Qwen CLI: [status from check]
-🟤 OpenCode CLI: [status from check]
+🔴 Codex CLI: ${codex_status}
+🟡 Gemini CLI: ${gemini_status}
+🧭 Antigravity CLI: ${agy_status}
+🟣 Perplexity: ${perplexity_status}
 🔵 Claude: Available ✓ (Strategic synthesis)
 
 💰 Estimated Cost: $0.01-0.08
@@ -133,6 +137,7 @@ Provider Availability:
 Provider Availability:
 🔴 Codex CLI: ${codex_status}
 🟡 Gemini CLI: ${gemini_status}
+🧭 Antigravity CLI: ${agy_status}
 🟣 Perplexity: ${perplexity_status}
 🔵 Claude: Available ✓ (Strategic synthesis)
 
@@ -142,7 +147,6 @@ Provider Availability:
 
 **DO NOT PROCEED TO STEP 3 until banner displayed.** The banner shows users which providers will run and what costs they'll incur — starting API calls without this visibility violates cost transparency.
 
----
 
 ### STEP 3: Read Prior State (MANDATORY - State Management)
 
@@ -176,13 +180,12 @@ fi
 
 **DO NOT PROCEED TO STEP 4 until state read.**
 
----
 
 ### STEP 3.5: Parse Intensity & Build Agent Fleet (MANDATORY)
 
-**Parse the `intensity` parameter from the skill args.** The args string may start with `[intensity=quick|standard|deep]`. If no intensity is specified, default to `"standard"` (backward compatible with `/octo:embrace` which doesn't pass intensity).
+**Parse the `breadth` and `intensity` parameters from the skill args.** The args string may start with `[breadth=light|standard|exhaustive]` and/or `[intensity=quick|standard|deep]`. If only breadth is specified, map `light -> quick`, `standard -> standard`, and `exhaustive -> deep`. If neither is specified, default to `"standard"` (backward compatible with `/octo:embrace` which doesn't pass intensity).
 
-**Build the fleet dynamically using `build-fleet.sh`** — this is the single source of truth for provider-to-perspective assignment. It detects ALL available providers (codex, gemini, copilot, qwen, opencode, ollama, perplexity, openrouter) and assigns perspectives with model family diversity enforcement.
+**Build the fleet dynamically using `build-fleet.sh`** — this is the single source of truth for provider-to-perspective assignment. It detects ALL available providers (codex, gemini, agy, copilot, qwen, opencode, ollama, perplexity, openrouter) and assigns perspectives with model family diversity enforcement.
 
 ```bash
 FLEET_OUTPUT=$("${HOME}/.claude-octopus/plugin/scripts/helpers/build-fleet.sh" research "${INTENSITY}" "${PROMPT}" 2>/dev/null)
@@ -191,7 +194,7 @@ FLEET_OUTPUT=$("${HOME}/.claude-octopus/plugin/scripts/helpers/build-fleet.sh" r
 The output is one line per agent: `agent_type|label|perspective_prompt`
 
 **Parse each line into the fleet array:**
-- `agent_type`: the provider to dispatch (codex, gemini, copilot, qwen, opencode, claude-sonnet, perplexity, etc.)
+- `agent_type`: the provider to dispatch (codex, gemini, agy, copilot, qwen, opencode, claude-sonnet, perplexity, etc.)
 - `label`: human-readable name (e.g., "Problem Analysis", "Ecosystem Overview", "Contrarian Analysis")
 - `perspective_prompt`: the angle-specific prompt to send to that provider
 - `task_id`: generate as `probe-<timestamp>-<index>` for each entry
@@ -206,23 +209,22 @@ The output is one line per agent: `agent_type|label|perspective_prompt`
 
 **Model family diversity is enforced automatically** — the script prioritizes spreading agents across different model families (OpenAI, Google, Microsoft, Alibaba, Anthropic) to avoid agreement bias from same-family models.
 
-**DO NOT hardcode provider assignments.** Always use build-fleet.sh output. If the script is unavailable, fall back to the previous behavior (codex + gemini + claude-sonnet).
+**DO NOT hardcode provider assignments.** Always use build-fleet.sh output. If the script is unavailable, fall back to the available-provider path (for example codex + gemini + agy + claude-sonnet when installed).
 
 **DO NOT PROCEED TO STEP 4 until the fleet is built.**
 
----
 
 ### STEP 4: Launch Parallel Agent Subagents (MANDATORY - Use Agent Tool)
 
 **Launch each perspective as a background Agent subagent.** Each agent calls `orchestrate.sh probe-single` which handles persona application, credential isolation, and result file writing.
 
-**CRITICAL: You MUST use the Agent tool with `run_in_background: true` for each perspective.** Launch external CLI agents first (higher latency — gemini, codex, copilot, qwen, opencode), then Claude Sonnet agents, then API-only agents (perplexity).
+**CRITICAL: You MUST use the host subagent tool with `background execution: true` for each perspective.** Launch providers strictly in the runtime FLEET_OUTPUT sequence.
 
 For each perspective in the fleet, launch:
 
 ```
 Agent(
-  run_in_background: true,
+  background execution: true,
   description: "<label> (<agent_type>)",
   prompt: "Run this command and return its COMPLETE stdout output, including the result file path on the last line:
 
@@ -232,7 +234,7 @@ After the command completes, read the result file path that was printed and retu
 )
 ```
 
-**Launch order:** All Gemini agents first, then all Codex agents, then Claude Sonnet, then Perplexity. Within each provider group, launch simultaneously (multiple Agent calls in a single message).
+**Launch order:** Iterate the parsed `FLEET_OUTPUT` order from `build-fleet.sh`. Launch all entries from that runtime fleet in parallel when possible; do not reorder by hardcoded provider names.
 
 **CRITICAL: You are PROHIBITED from:**
 - ❌ Researching directly without calling orchestrate.sh probe-single — single-model research misses perspectives that Codex (implementation depth) and Gemini (ecosystem breadth) bring
@@ -240,7 +242,6 @@ After the command completes, read the result file path that was printed and retu
 - ❌ Using web search instead of orchestrate.sh
 - ❌ Claiming you're "simulating" the workflow
 
----
 
 ### STEP 5: Collect Results (MANDATORY - Wait for Background Agents)
 
@@ -254,7 +255,14 @@ After the command completes, read the result file path that was printed and retu
 
 **For each completed agent, collect its output** (the result file contents returned by the agent).
 
----
+Run the status table before synthesis:
+
+```bash
+"${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" agent-summary
+```
+
+Only cite providers with usable output (`ok`, `degraded`, or timeout with partial content). Failed provider output, context-limit errors, and empty outputs are evidence of coverage gaps only.
+
 
 ### STEP 6: Synthesize In-Conversation (MANDATORY - Claude Synthesizes)
 
@@ -288,7 +296,6 @@ mkdir -p "$(dirname "$SYNTHESIS_FILE")"
 
 Write the synthesis content to `$SYNTHESIS_FILE`. The file MUST exist for the validation gate.
 
----
 
 ### STEP 7: Verify, Update State & Present (Only After Steps 1-6 Complete)
 
@@ -334,13 +341,11 @@ done
 
 **Include attribution:**
 ```
----
 *Multi-AI Research powered by Claude Octopus*
-*Providers: 🔴 Codex | 🟡 Gemini | 🔵 Claude*
+*Providers: available external providers + 🔵 Claude*
 *Full synthesis: $SYNTHESIS_FILE*
 ```
 
----
 
 # Discover Workflow - Discovery Phase 🔍
 
@@ -396,17 +401,8 @@ Providers:
 🔵 Claude - Strategic synthesis
 ```
 
-| Indicator | Provider | Cost Source |
-|-----------|----------|-------------|
-| 🔴 | Codex CLI | User's OPENAI_API_KEY |
-| 🟡 | Gemini CLI | User's GEMINI_API_KEY |
-| 🟣 | Perplexity Sonar | User's PERPLEXITY_API_KEY |
-| 🔵 | Claude | Included with Claude Code |
+{{VISUAL_INDICATORS}}
 
-**This is NOT optional.** Users need to see which AI providers are active and understand they are being charged for external API calls (🔴 🟡).
-
-
----
 
 **Part of Double Diamond: DISCOVER** (divergent thinking)
 
@@ -434,7 +430,6 @@ The **discover** phase executes multi-perspective research using external CLI pr
 
 This is the **divergent** phase - we cast a wide net to explore all possibilities before narrowing down.
 
----
 
 ## When to Use Discover
 
@@ -457,7 +452,6 @@ Use discover when you need:
 - Questions about specific implementation details (use code review)
 - Quick factual questions Claude knows (no need for multi-provider)
 
----
 
 ## Visual Indicators
 
@@ -474,7 +468,6 @@ Providers:
 🔵 Claude - Strategic synthesis
 ```
 
----
 
 ## How It Works
 
@@ -506,7 +499,7 @@ background_task(agent="librarian", prompt="Research external documentation for [
 ```
 
 **Benefits of hybrid approach:**
-- External CLIs (Codex/Gemini) provide broad ecosystem research
+- External CLIs such as Codex, Gemini, and Antigravity provide broad ecosystem research
 - Native background tasks provide codebase-specific context
 - Parallel execution reduces total research time
 - 2.1.14 memory fixes make native parallelism reliable
@@ -522,7 +515,6 @@ Results are saved to:
 
 Read the synthesis file and present key findings to the user in the chat.
 
----
 
 ## Implementation Instructions
 
@@ -547,7 +539,7 @@ Create tasks to track execution progress:
 // At start of skill execution
 TaskCreate({
   subject: "Execute discover workflow with multi-AI providers",
-  description: "Run orchestrate.sh probe with Codex and Gemini",
+  description: "Run orchestrate.sh probe with available providers",
   activeForm: "Running multi-AI discover workflow"
 })
 
@@ -562,7 +554,7 @@ TaskUpdate({taskId: "...", status: "completed"})
 
 If any step fails:
 - **Step 1 (Context)**: Default to Dev Context if ambiguous
-- **Step 2 (Providers)**: If both unavailable, suggest `/octo:setup` and STOP
+- **Step 2 (Providers)**: If all external providers are unavailable, suggest `/octo:setup` and STOP
 - **Step 4 (Agent launch)**: If an agent fails, continue with remaining agents (graceful degradation)
 - **Step 5 (Collection)**: If fewer than 2 results, report error and let user decide
 - **Step 6 (Synthesis)**: If synthesis fails, present raw agent results without synthesis
@@ -628,7 +620,6 @@ After successful execution, present findings formatted for context:
    [Strategic action items]
    ```
 
----
 
 ## Example Usage
 
@@ -695,7 +686,6 @@ Claude:
 [Includes pros/cons, use cases, and strategic recommendation]
 ```
 
----
 
 ## Integration with Other Workflows
 
@@ -712,20 +702,18 @@ After probe completes, you may continue to:
 
 Or use standalone for pure research tasks.
 
----
 
 ## Quality Checklist
 
 Before completing probe workflow, ensure:
 
-- [ ] All providers (Codex, Gemini, Claude) responded
+- [ ] Available providers responded
 - [ ] Synthesis file created and readable
 - [ ] Key findings presented clearly in chat
 - [ ] Strategic recommendation provided
 - [ ] User understands next steps
 - [ ] Full research path shared with user
 
----
 
 ## Cost Awareness
 
@@ -737,7 +725,6 @@ Before completing probe workflow, ensure:
 
 Probe workflows typically cost $0.01-0.05 per query depending on complexity and response length.
 
----
 
 ## Security: External Content
 
@@ -792,7 +779,6 @@ See **skill-security-framing.md** for complete documentation on:
 - Content sanitization patterns
 - Prompt injection defense
 
----
 
 ## Post-Discovery: State Update
 
@@ -817,6 +803,5 @@ if [[ -f "$SYNTHESIS_FILE" ]]; then
 fi
 ```
 
----
 
 **Ready to research!** This skill activates automatically when users request research or exploration.

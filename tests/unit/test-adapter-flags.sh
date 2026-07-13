@@ -132,6 +132,46 @@ test_oc_debate_has_mode_param() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Council Adapter Wiring
+# ═══════════════════════════════════════════════════════════════════════════════
+
+test_mcp_exposes_council_tool() {
+    test_case "MCP server exposes octopus_council"
+    if grep -q 'octopus_council' "$MCP_SRC" && grep -q 'runOrchestrate("council"' "$MCP_SRC"; then
+        test_pass
+    else
+        test_fail "MCP server should expose octopus_council mapped to council"
+    fi
+}
+
+test_oc_exposes_council_tool() {
+    test_case "OpenClaw exposes octopus_council"
+    if grep -q 'name: "octopus_council"' "$OC_SRC" && grep -q 'executeOrchestrate("council"' "$OC_SRC"; then
+        test_pass
+    else
+        test_fail "OpenClaw should expose octopus_council mapped to council"
+    fi
+}
+
+test_oc_manifest_allows_council_workflow() {
+    test_case "OpenClaw manifest allows council workflow"
+    if grep -q '"council"' "$PROJECT_ROOT/openclaw/openclaw.plugin.json"; then
+        test_pass
+    else
+        test_fail "OpenClaw manifest should include council in enabledWorkflows"
+    fi
+}
+
+test_cursor_has_council_command() {
+    test_case "Cursor plugin has octo-council command"
+    if [[ -f "$PROJECT_ROOT/.cursor-plugin/commands/octo-council.md" ]]; then
+        test_pass
+    else
+        test_fail "Cursor plugin should include octo-council.md"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Copilot Provider Wiring
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -146,8 +186,14 @@ test_copilot_in_available_agents() {
 }
 
 test_copilot_in_dispatch() {
-    test_case "copilot dispatch wired in dispatch.sh"
-    if grep -q 'copilot.*no-ask-user\|copilot_execute' "$PROJECT_ROOT/scripts/lib/dispatch.sh"; then test_pass; else test_fail "missing copilot dispatch"; fi
+    test_case "copilot dispatch routes through helpers/copilot-exec.sh"
+    if grep -q 'helpers/copilot-exec.sh' "$PROJECT_ROOT/scripts/lib/dispatch.sh"; then test_pass; else test_fail "copilot dispatch does not route through the shim"; fi
+}
+
+test_copilot_shim_nonint_flags() {
+    test_case "copilot-exec.sh shim runs copilot non-interactively"
+    if grep -q 'copilot -p' "$PROJECT_ROOT/scripts/helpers/copilot-exec.sh" && \
+       grep -q 'no-ask-user' "$PROJECT_ROOT/scripts/helpers/copilot-exec.sh"; then test_pass; else test_fail "shim missing -p/--no-ask-user non-interactive invocation"; fi
 }
 
 test_copilot_lib_exists() {
@@ -195,9 +241,16 @@ test_mcp_forwards_gh_token
 test_oc_debate_says_four_way
 test_oc_debate_has_mode_param
 
+# Council adapters
+test_mcp_exposes_council_tool
+test_oc_exposes_council_tool
+test_oc_manifest_allows_council_workflow
+test_cursor_has_council_command
+
 # Copilot wiring
 test_copilot_in_available_agents
 test_copilot_in_dispatch
+test_copilot_shim_nonint_flags
 test_copilot_lib_exists
 test_copilot_in_doctor
 test_copilot_in_providers_health

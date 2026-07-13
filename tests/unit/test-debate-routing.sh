@@ -144,6 +144,20 @@ test_debate_styles_documented() {
     fi
 }
 
+test_debate_provider_checks_are_portable() {
+    test_case "Debate skill rejects non-portable provider checks"
+
+    local debate_skill="$PROJECT_ROOT/skills/skill-debate/SKILL.md"
+
+    if grep -q "never use \`grep -P\`" "$debate_skill" && \
+       grep -q "capture the exit code" "$debate_skill"; then
+        test_pass
+    else
+        test_fail "Debate skill must forbid grep -P and fail-open shell checks"
+        return 1
+    fi
+}
+
 # Run all tests
 test_debate_command_exists
 test_debate_submodule_check
@@ -154,5 +168,6 @@ test_debate_dry_run
 test_deliberate_alias
 test_consensus_alias
 test_debate_styles_documented
+test_debate_provider_checks_are_portable
 
 test_summary

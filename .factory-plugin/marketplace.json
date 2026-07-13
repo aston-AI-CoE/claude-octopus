@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "Multi-tentacled orchestration plugin for Factory AI Droid",
-    "version": "1.0.0"
+    "version": "9.52.0"
   },
   "plugins": [
     {
       "name": "claude-octopus",
       "source": "./",
-      "description": "v8.38.3 - Multi-AI orchestration with Double Diamond workflow. 32 personas, 49 commands, 44 skills. Run /setup after install.",
-      "version": "8.38.3",
+      "description": "v9.52.0 - Reliability wave: tangle contextual review correction loop with hard round ceiling, progress-supervised review rounds (per-agent stall watch, descendant-tree kills), council diversity and agy pin fixes, marketplace generator source-of-truth fix, provider troubleshooting runbook and cost-expectations docs. 42 agents, 50 commands, 58 skills. Run /octo:setup.",
+      "version": "9.52.0",
       "author": {
         "name": "nyldn"
       },

@@ -14,12 +14,25 @@ updated: 2026-02-21
 
 GitHub-aware work monitor that triages issues, PRs, and CI failures. Sentinel observes and recommends workflows but never auto-executes them.
 
+## MANDATORY COMPLIANCE — DO NOT SKIP
+
+**When the user explicitly invokes `/octo:sentinel`, you MUST run the Sentinel orchestrator path below.** You are PROHIBITED from manually guessing repository status, skipping GitHub checks, or starting remediation without explicit user approval.
+
 ## Usage
 
 ```bash
 /octo:sentinel              # One-time triage scan
 /octo:sentinel --watch       # Continuous monitoring
+/octo:sentinel --canary      # Post-deploy canary monitoring
 ```
+
+## Scheduled Claude Code Web Usage
+
+For recurring triage, schedule Sentinel as a read-only Claude Code web or hosted task. Use `/octo:sentinel` for the normal scan and `/octo:sentinel --canary https://example.com` for post-deploy monitoring.
+
+Scheduled Sentinel should stay triage-only. It may recommend `/octo:debug`,
+`/octo:review`, or `/octo:embrace`, but it must not start remediation unless
+the user explicitly asks for it.
 
 ## What Sentinel Monitors
 

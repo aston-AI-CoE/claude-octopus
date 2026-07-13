@@ -6,13 +6,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-SKILLS_DIR="$PROJECT_ROOT/.claude/skills"
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+source "$SCRIPT_DIR/helpers/test-framework.sh"
+test_suite "v7.22.0 lifecycle command skills exist and are properly structured"
 
 TEST_COUNT=0
 PASS_COUNT=0
@@ -21,45 +17,36 @@ FAIL_COUNT=0
 echo -e "${BLUE}🧪 Testing v7.22.0 Lifecycle Commands${NC}"
 echo ""
 
-pass() {
-    ((TEST_COUNT++))
-    ((PASS_COUNT++))
-    echo -e "${GREEN}✅ PASS${NC}: $1"
-}
+pass() { test_case "$1"; test_pass; }
 
-fail() {
-    ((TEST_COUNT++))
-    ((FAIL_COUNT++))
-    echo -e "${RED}❌ FAIL${NC}: $1"
-    echo -e "   ${YELLOW}$2${NC}"
-}
+fail() { test_case "$1"; test_fail "${2:-$1}"; }
 
-info() {
-    echo -e "${BLUE}ℹ${NC}  $1"
-}
+info() { echo "$1"; }
 
 LIFECYCLE_SKILLS=(
-    "skill-status.md"
-    "skill-issues.md"
-    "skill-rollback.md"
-    "skill-resume.md"
-    "skill-ship.md"
+    "skill-status"
+    "skill-issues"
+    "skill-rollback"
+    "skill-resume"
+    "skill-ship"
 )
 
 echo "Test 1: Checking lifecycle skill files exist..."
 for skill in "${LIFECYCLE_SKILLS[@]}"; do
-    if [[ -f "$SKILLS_DIR/$skill" ]]; then
+    skill_file="$(resolve_claude_skill_path "$skill")"
+    if [[ -f "$skill_file" ]]; then
         pass "$skill exists"
     else
-        fail "$skill not found" "Expected: $SKILLS_DIR/$skill"
+        fail "$skill not found" "Expected: $skill_file"
     fi
 done
 
 echo ""
 echo "Test 2: Checking skill files have proper frontmatter..."
 for skill in "${LIFECYCLE_SKILLS[@]}"; do
-    if [[ -f "$SKILLS_DIR/$skill" ]]; then
-        if head -1 "$SKILLS_DIR/$skill" | grep -q "^---$"; then
+    skill_file="$(resolve_claude_skill_path "$skill")"
+    if [[ -f "$skill_file" ]]; then
+        if head -1 "$skill_file" | grep -q "^---$"; then
             pass "$skill has frontmatter delimiter"
         else
             fail "$skill missing frontmatter" "Should start with ---"
@@ -70,8 +57,9 @@ done
 echo ""
 echo "Test 3: Checking skills reference octo-state.sh..."
 for skill in "${LIFECYCLE_SKILLS[@]}"; do
-    if [[ -f "$SKILLS_DIR/$skill" ]]; then
-        if grep -q "octo-state.sh" "$SKILLS_DIR/$skill"; then
+    skill_file="$(resolve_claude_skill_path "$skill")"
+    if [[ -f "$skill_file" ]]; then
+        if grep -q "octo-state.sh" "$skill_file"; then
             pass "$skill references octo-state.sh"
         else
             info "$skill does not reference octo-state.sh (may be intentional)"
@@ -83,7 +71,7 @@ echo ""
 echo "Test 4: Checking skills are registered in plugin.json..."
 PLUGIN_JSON="$PROJECT_ROOT/.claude-plugin/plugin.json"
 for skill in "${LIFECYCLE_SKILLS[@]}"; do
-    skill_path="./.claude/skills/$skill"
+    skill_path="./skills/$skill"
     if grep -q "\"$skill_path\"" "$PLUGIN_JSON"; then
         pass "$skill registered in plugin.json"
     else
@@ -93,7 +81,7 @@ done
 
 echo ""
 echo "Test 5: Checking skill-status.md content..."
-STATUS_SKILL="$SKILLS_DIR/skill-status.md"
+STATUS_SKILL="$(resolve_claude_skill_path "skill-status")"
 if [[ -f "$STATUS_SKILL" ]]; then
     if grep -qi "status\|dashboard\|progress" "$STATUS_SKILL"; then
         pass "skill-status.md mentions status/dashboard/progress"
@@ -104,7 +92,7 @@ fi
 
 echo ""
 echo "Test 6: Checking skill-issues.md content..."
-ISSUES_SKILL="$SKILLS_DIR/skill-issues.md"
+ISSUES_SKILL="$(resolve_claude_skill_path "skill-issues")"
 if [[ -f "$ISSUES_SKILL" ]]; then
     if grep -qi "issue\|track\|CRUD\|add\|resolve" "$ISSUES_SKILL"; then
         pass "skill-issues.md mentions issue tracking"
@@ -115,7 +103,7 @@ fi
 
 echo ""
 echo "Test 7: Checking skill-rollback.md content..."
-ROLLBACK_SKILL="$SKILLS_DIR/skill-rollback.md"
+ROLLBACK_SKILL="$(resolve_claude_skill_path "skill-rollback")"
 if [[ -f "$ROLLBACK_SKILL" ]]; then
     if grep -qi "rollback\|checkpoint\|restore\|git.*tag" "$ROLLBACK_SKILL"; then
         pass "skill-rollback.md mentions rollback/checkpoint"
@@ -126,7 +114,7 @@ fi
 
 echo ""
 echo "Test 8: Checking skill-resume.md content..."
-RESUME_SKILL="$SKILLS_DIR/skill-resume.md"
+RESUME_SKILL="$(resolve_claude_skill_path "skill-resume")"
 if [[ -f "$RESUME_SKILL" ]]; then
     if grep -qi "resume\|restore\|session\|context" "$RESUME_SKILL"; then
         pass "skill-resume.md mentions resume/session"
@@ -137,7 +125,7 @@ fi
 
 echo ""
 echo "Test 9: Checking skill-ship.md content..."
-SHIP_SKILL="$SKILLS_DIR/skill-ship.md"
+SHIP_SKILL="$(resolve_claude_skill_path "skill-ship")"
 if [[ -f "$SHIP_SKILL" ]]; then
     if grep -qi "ship\|deliver\|multi-ai\|validation" "$SHIP_SKILL"; then
         pass "skill-ship.md mentions ship/deliver"
@@ -199,18 +187,4 @@ fi
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "${BLUE}Test Summary${NC}"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "Total tests:  ${BLUE}$TEST_COUNT${NC}"
-echo -e "Passed:       ${GREEN}$PASS_COUNT${NC}"
-echo -e "Failed:       ${RED}$FAIL_COUNT${NC}"
-echo ""
-
-if [[ $FAIL_COUNT -eq 0 ]]; then
-    echo -e "${GREEN}✅ All tests passed!${NC}"
-    echo ""
-    info "v7.22.0 lifecycle commands are properly configured"
-    exit 0
-else
-    echo -e "${RED}❌ Some tests failed${NC}"
-    exit 1
-fi
+test_summary

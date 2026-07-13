@@ -4,12 +4,20 @@
 # Returns JSON decision: {"decision": "continue|block", "reason": "..."}
 # v8.43: Added reference integrity check for cross-file dependencies
 set -euo pipefail
+# EXIT trap — emits diagnostic stderr ONLY when the hook exits non-zero, so
+# the Claude Code harness error "No stderr output" can never recur. EXIT (not
+# ERR) avoids over-firing on intermediate `grep -o`/`cmd | ...` inside $() that
+# the hook's logic already handles. See issue #313.
+_octo_hook_exit() { local c=$?; if [[ $c -ne 0 ]]; then echo "[hook:$(basename "$0")] exit $c" >&2 2>/dev/null || true; fi; return 0; }
+trap _octo_hook_exit EXIT
 
-VALIDATION_FILE=$(ls -t ~/.claude-octopus/results/tangle-validation-*.md 2>/dev/null | head -1)
+
+VALIDATION_FILE=$(ls -t ~/.claude-octopus/results/tangle-validation-*.md 2>/dev/null | head -1 || true)
 
 if [[ -f "$VALIDATION_FILE" ]]; then
-    # Check if quality gate passed
-    STATUS=$(grep -E "^## (Quality Gate|Status):" "$VALIDATION_FILE" | head -1)
+    # Check if quality gate passed. `|| true` — grep-no-match must not cascade
+    # under `set -o pipefail` and trigger the silent-fail path (issue #313).
+    STATUS=$(grep -E "^## (Quality Gate|Status):" "$VALIDATION_FILE" 2>/dev/null | head -1 || true)
 
     if echo "$STATUS" | grep -qi "failed"; then
         echo '{"decision": "block", "reason": "Quality gate validation failed. Review tangle output before proceeding."}'
@@ -22,9 +30,15 @@ if [[ -f "$VALIDATION_FILE" ]]; then
     fi
 fi
 
-# Reference integrity check: scan recently created/modified files for broken references
+# Reference integrity check: scan recently created/modified files for broken references.
+# Only defined here — called below when VALIDATION_FILE exists (i.e. tangle was recently run).
 # Catches: HTML linking missing JS/CSS, scripts sourcing missing files, configs referencing missing paths
 check_reference_integrity() {
+    # Scope-local: disable -u because bash 3.2 (macOS CI) aborts (exit 134)
+    # on `local arr=()` + `${#arr[@]}` when the array stays empty. We re-enable
+    # -u on exit. See issue #313 PR #314 CI failure trail.
+    set +u
+    trap 'set -u' RETURN
     local issues=()
 
     # Find files modified in the last 10 minutes (likely tangle output)
@@ -41,7 +55,7 @@ check_reference_integrity() {
             if [[ ! -f "$dir/$ref" && ! -f "$ref" ]]; then
                 issues+=("$file references missing script: $ref")
             fi
-        done < <(grep -oP '<script[^>]+src=["'\'']\K[^"'\'']+' "$file" 2>/dev/null | grep -v '^https\?://' || true)
+        done < <(grep -oE '<script[^>]+src=["'"'"'][^"'"'"']+' "$file" 2>/dev/null | sed 's/.*src=["'"'"']//' | grep -v '^https\?://' || true)
 
         # Check <link href="..."> stylesheet references (skip http/https/CDN URLs)
         while IFS= read -r ref; do
@@ -49,7 +63,7 @@ check_reference_integrity() {
             if [[ ! -f "$dir/$ref" && ! -f "$ref" ]]; then
                 issues+=("$file references missing stylesheet: $ref")
             fi
-        done < <(grep -oP '<link[^>]+href=["'\'']\K[^"'\'']+' "$file" 2>/dev/null | grep -v '^https\?://' | grep -v '^#' || true)
+        done < <(grep -oE '<link[^>]+href=["'"'"'][^"'"'"']+' "$file" 2>/dev/null | sed 's/.*href=["'"'"']//' | grep -v '^https\?://' | grep -v '^#' || true)
     done
 
     # Check shell scripts sourcing missing files
@@ -67,7 +81,7 @@ check_reference_integrity() {
             if [[ ! -f "$dir/$ref" && ! -f "$ref" ]]; then
                 issues+=("$file sources missing file: $ref")
             fi
-        done < <(grep -oP '^\s*(\.|source)\s+["'\''"]?\K[^"'\''"\s]+' "$file" 2>/dev/null || true)
+        done < <(grep -oE '^\s*(\.|source)\s+["'"'"'"]?[^"'"'"'"[:space:]]+' "$file" 2>/dev/null | sed -E 's/^[[:space:]]*(\.| source)[[:space:]]*//' | sed 's/^["'"'"'"]//' || true)
     done
 
     # Check docker-compose referencing missing Dockerfiles/configs
@@ -83,7 +97,7 @@ check_reference_integrity() {
             if [[ ! -f "$dir/$ref" && ! -f "$ref" ]]; then
                 issues+=("$file references missing file: $ref")
             fi
-        done < <(grep -oP '^\s*(dockerfile|env_file|config):\s*\K\S+' "$file" 2>/dev/null || true)
+        done < <(grep -oE '^\s*(dockerfile|env_file|config):\s*\S+' "$file" 2>/dev/null | sed -E 's/^[[:space:]]*(dockerfile|env_file|config):[[:space:]]*//' || true)
     done
 
     if [[ ${#issues[@]} -gt 0 ]]; then
@@ -102,7 +116,11 @@ check_reference_integrity() {
     fi
 }
 
-check_reference_integrity
+# Only scan for broken references when a tangle run actually happened recently.
+# Skipping when VALIDATION_FILE is absent avoids scanning the plugin source tree
+# in CI (where all .sh files are "recently modified" by the checkout), which
+# triggered Abort trap: 6 on bash 3.2 macOS. See issue #313.
+[[ -f "$VALIDATION_FILE" ]] && check_reference_integrity
 
 # No validation file or quality gate passed
 echo '{"decision": "continue"}'

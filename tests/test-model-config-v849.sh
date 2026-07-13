@@ -6,6 +6,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+source "$SCRIPT_DIR/helpers/test-framework.sh"
+test_suite "for v8.49.0 model-config improvements"
+
 ORCHESTRATE="${SCRIPT_DIR}/../scripts/orchestrate.sh"
 # v9.3.0: Support grepping across orchestrate.sh + lib/ for extracted functions
 _ORCH_ALL_TMP=$(mktemp)
@@ -16,8 +20,8 @@ PASSED=0
 FAILED=0
 TOTAL=0
 
-pass() { ((PASSED++)); ((TOTAL++)); echo -e "\033[0;32m✓\033[0m $1"; }
-fail() { ((FAILED++)); ((TOTAL++)); echo -e "\033[0;31m✗\033[0m $1"; }
+pass() { test_case "$1"; test_pass; }
+fail() { test_case "$1"; test_fail "${2:-$1}"; }
 
 echo "Testing Model Config v8.49.0 Improvements"
 echo "==========================================="
@@ -45,8 +49,10 @@ else
     pass "Old CACHE_ collision-prone pattern removed"
 fi
 
-# Verify per-field sanitization variables exist
-if grep -q 'safe_p="\${provider//\[^a-zA-Z0-9\]/_}"' "$_ORCH_ALL_TMP"; then
+# Verify per-field sanitization variables exist. The provider field is sanitized
+# from its canonical form (alias-resolved), so accept both `provider` and
+# `canonical_provider` — the resolver keys the cache on the canonical name.
+if grep -qE 'safe_p="\$\{(canonical_)?provider//\[\^a-zA-Z0-9\]/_\}"' "$_ORCH_ALL_TMP"; then
     pass "Per-field sanitization for cache keys present"
 else
     fail "Missing per-field sanitization for cache keys"
@@ -355,7 +361,7 @@ fi
 
 # Verify health checks cover all 5 providers
 for provider in codex gemini claude perplexity openrouter; do
-    if grep -A 60 'check_provider_health()' "$_ORCH_ALL_TMP" | grep -q "$provider)"; then
+    if grep -A 120 'check_provider_health()' "$_ORCH_ALL_TMP" | grep -q "$provider)"; then
         pass "Health check covers $provider"
     else
         fail "Health check missing $provider"
@@ -370,7 +376,7 @@ else
 fi
 
 # Verify health check is wired into run_agent_sync
-if grep -A 100 'run_agent_sync()' "$_ORCH_ALL_TMP" | grep -q 'check_provider_health'; then
+if grep -A 160 'run_agent_sync()' "$_ORCH_ALL_TMP" | grep -q 'check_provider_health'; then
     pass "run_agent_sync() calls check_provider_health() before dispatch"
 else
     fail "run_agent_sync() not wired to health check"
@@ -519,7 +525,8 @@ else
 fi
 
 # Verify lint/typecheck checklist in flow-develop.md
-DEVELOP_SKILL="${SCRIPT_DIR}/../.claude/skills/flow-develop.md"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+DEVELOP_SKILL="$(resolve_claude_skill_path "flow-develop")"
 if grep -q 'Lint/typecheck commands run' "$DEVELOP_SKILL"; then
     pass "flow-develop.md includes lint/typecheck in checklist"
 else
@@ -541,7 +548,7 @@ else
 fi
 
 # Verify lint/typecheck in flow-deliver.md
-DELIVER_SKILL="${SCRIPT_DIR}/../.claude/skills/flow-deliver.md"
+DELIVER_SKILL="$(resolve_claude_skill_path "flow-deliver")"
 if grep -q 'lint/typecheck' "$DELIVER_SKILL"; then
     pass "flow-deliver.md includes lint/typecheck quality step"
 else
@@ -615,21 +622,22 @@ else
 fi
 
 # Verify enhanced synthesis prompt has structured output
-if grep -A 100 'aggregate_results()' "$_ORCH_ALL_TMP" | grep -q 'Key Findings'; then
+if grep -A 120 'aggregate_results()' "$_ORCH_ALL_TMP" | grep -q 'Key Findings'; then
     pass "aggregate_results() synthesis prompt includes structured output format"
 else
     fail "aggregate_results() synthesis prompt missing structured output"
 fi
 
 # Verify minority opinion preservation in synthesis prompt
-if grep -A 60 'aggregate_results()' "$_ORCH_ALL_TMP" | grep -q 'minority'; then
+if grep -A 120 'aggregate_results()' "$_ORCH_ALL_TMP" | grep -q 'minority'; then
     pass "aggregate_results() synthesis prompt preserves minority opinions"
 else
     fail "aggregate_results() synthesis prompt missing minority opinion rule"
 fi
 
-# Verify synthesize_probe_results uses ranking
-if grep -A 100 'synthesize_probe_results()' "$_ORCH_ALL_TMP" | grep -q 'rank_results_by_signals\|score_result_file'; then
+# Verify synthesize_probe_results uses ranking directly or via compact context helper
+if grep -A 140 'synthesize_probe_results()' "$_ORCH_ALL_TMP" | grep -q 'build_probe_synthesis_context' && \
+   grep -A 80 'build_probe_synthesis_context()' "$_ORCH_ALL_TMP" | grep -q 'rank_results_by_signals\|score_result_file'; then
     pass "synthesize_probe_results() uses quality ranking"
 else
     fail "synthesize_probe_results() not using quality ranking"
@@ -643,7 +651,7 @@ else
 fi
 
 # Verify quality score annotation in concatenated results
-if grep -A 50 'aggregate_results()' "$_ORCH_ALL_TMP" | grep -q 'Quality:'; then
+if grep -A 120 'aggregate_results()' "$_ORCH_ALL_TMP" | grep -q 'Quality:'; then
     pass "aggregate_results() annotates results with quality scores"
 else
     fail "aggregate_results() missing quality score annotations"
@@ -657,12 +665,4 @@ echo "==========================================="
 echo "Test Summary"
 echo "==========================================="
 echo "Total tests: $TOTAL"
-echo -e "\033[0;32mPassed: $PASSED\033[0m"
-if [[ "$FAILED" -gt 0 ]]; then
-    echo -e "\033[0;31mFailed: $FAILED\033[0m"
-    exit 1
-else
-    echo "Failed: 0"
-    echo ""
-    echo -e "\033[0;32m✓ All v8.49.0 model-config tests passed!\033[0m"
-fi
+test_summary

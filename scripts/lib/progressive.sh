@@ -2,6 +2,11 @@
 # Progressive synthesis monitoring — extracted from orchestrate.sh
 # v7.19.0 P2.4: Progressive synthesis - start synthesis as results become available
 
+if ! type probe_result_file_status >/dev/null 2>&1; then
+    _octo_probe_results_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/probe-results.sh"
+    [[ -f "$_octo_probe_results_lib" ]] && source "$_octo_probe_results_lib"
+fi
+
 progressive_synthesis_monitor() {
     local task_group="$1"
     local prompt="$2"
@@ -19,9 +24,7 @@ progressive_synthesis_monitor() {
         local result_count=0
         for result in "$RESULTS_DIR"/*-probe-${task_group}-*.md; do
             [[ ! -f "$result" ]] && continue
-            local file_size
-            file_size=$(wc -c < "$result" 2>/dev/null || echo "0")
-            [[ $file_size -gt 500 ]] && ((result_count++)) || true
+            probe_result_file_is_usable "$result" && ((result_count++)) || true
         done
 
         # If we have minimum results and haven't started synthesis yet
@@ -65,10 +68,8 @@ synthesize_probe_results_partial() {
     local results=""
     local result_count=0
     for result in "$RESULTS_DIR"/*-probe-${task_group}-*.md; do
-        [[ ! -f "$result" ]] || continue
-        local file_size
-        file_size=$(wc -c < "$result" 2>/dev/null || echo "0")
-        if [[ $file_size -gt 500 ]]; then
+        [[ ! -f "$result" ]] && continue
+        if probe_result_file_is_usable "$result"; then
             results+="$(<"$result")\n\n---\n\n"
             ((result_count++)) || true
         fi

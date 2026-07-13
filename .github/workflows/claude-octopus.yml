@@ -56,7 +56,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -112,8 +112,13 @@ jobs:
           if-no-files-found: ignore
 
   # Job for PR code review
+  # Fork PRs: secrets are unavailable and GITHUB_TOKEN is read-only, so the
+  # review step produces nothing and the comment step 403s. Guard to first-party
+  # PRs only; fork contributors see CodeRabbit review instead.
   pr-review:
-    if: github.event_name == 'pull_request'
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
 
     permissions:
@@ -122,7 +127,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -162,7 +167,7 @@ jobs:
           ./scripts/orchestrate.sh --ci code-review '{"target":"staged","publish":"never"}' 2>&1 | tee review-output.txt
 
       - name: Post Review Comment
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
@@ -194,7 +199,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -242,7 +247,7 @@ jobs:
           ./scripts/orchestrate.sh --ci auto "$OCTOPUS_PROMPT" 2>&1 | tee octopus-output.txt
 
       - name: Reply to Comment
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');

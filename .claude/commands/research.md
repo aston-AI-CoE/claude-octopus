@@ -27,9 +27,18 @@ description: Deep research with multi-source synthesis and comprehensive analysi
 
 When the user invokes this command (e.g., `/octo:research <arguments>`):
 
-### Step 1: Ask Research Intensity
+### Step 1: Resolve Research Breadth/Intensity
 
-**CRITICAL: Before starting research, use the AskUserQuestion tool to select intensity:**
+First parse explicit flags from the user's arguments:
+- `--breadth=light|standard|exhaustive`
+- `--intensity=quick|standard|deep`
+
+Map breadth to intensity when intensity is absent:
+- `light` -> `quick`
+- `standard` -> `standard`
+- `exhaustive` -> `deep`
+
+If neither flag is present, use the AskUserQuestion tool to select intensity:
 
 ```javascript
 AskUserQuestion({
@@ -57,13 +66,16 @@ Map the answer to an intensity value:
 
 **✓ CORRECT - Use the Skill tool:**
 ```
-Skill(skill: "octo:discover", args: "[intensity=quick|standard|deep] <user's arguments>")
+Skill(skill: "octopus-research", args: "[breadth=light|standard|exhaustive] [intensity=quick|standard|deep] <user's arguments without routing flags>")
 ```
 
-Example: `Skill(skill: "octo:discover", args: "[intensity=standard] OAuth 2.0 authentication patterns")`
+Examples:
+- `Skill(skill: "octopus-research", args: "[breadth=standard] [intensity=standard] OAuth 2.0 authentication patterns")`
+- `/octo:research --breadth=exhaustive current agent orchestration patterns` -> `Skill(skill: "octopus-research", args: "[breadth=exhaustive] [intensity=deep] current agent orchestration patterns")`
 
 **✗ INCORRECT - Do NOT use these:**
 ```
+Using the octo:discover skill       ❌ Wrong here! Research has a dedicated skill contract
 Skill(skill: "flow-discover", ...)   ❌ Wrong! Internal skill name, not resolvable by Skill tool
 Skill(skill: "discover", ...)        ❌ Wrong! Must use full namespaced name
 Task(subagent_type: "octo:discover", ...)  ❌ Wrong! This is a skill, not an agent type
@@ -71,7 +83,7 @@ Task(subagent_type: "octo:discover", ...)  ❌ Wrong! This is a skill, not an ag
 
 ---
 
-**Auto-loads the discover skill for comprehensive research tasks.**
+**Auto-loads the dedicated research skill for comprehensive multi-provider research tasks.**
 
 ## Quick Usage
 
@@ -84,7 +96,7 @@ Just use natural language:
 
 ## What Is Research?
 
-An alias for the **Discover** phase of the Double Diamond methodology:
+A dedicated research workflow aligned with the **Discover** phase of the Double Diamond methodology:
 - Multi-AI research (Claude + Gemini + Codex)
 - Comprehensive analysis of options
 - Trade-off evaluation

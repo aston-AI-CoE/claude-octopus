@@ -389,10 +389,10 @@ test_tool_naming_consistency() {
     local ok=true
     for tool in octopus_discover octopus_define octopus_develop octopus_deliver \
                 octopus_embrace octopus_debate octopus_review octopus_security; do
-        if ! echo "$mcp_tools" | grep -q "$tool"; then
+        if ! grep -q "$tool" <<< "$mcp_tools"; then
             ok=false
         fi
-        if ! echo "$oclaw_tools" | grep -q "$tool"; then
+        if ! grep -q "$tool" <<< "$oclaw_tools"; then
             ok=false
         fi
     done
@@ -418,8 +418,8 @@ test_plugin_json_unchanged() {
 test_no_openclaw_in_skills() {
     test_case "No OpenClaw-specific code in .claude/skills/ or .claude/commands/ (excluding claw files)"
     local found=""
-    # skill-claw.md and claw.md are intentionally OpenClaw-specific (sysadmin skill for managing OpenClaw instances)
-    if grep -rl 'openclaw\|OpenClaw' "$PROJECT_ROOT/.claude/skills/" 2>/dev/null | grep -v 'skill-claw\.md' | head -1 | grep -q .; then
+    # skill-claw and claw.md are intentionally OpenClaw-specific (sysadmin skill for managing OpenClaw instances)
+    if grep -rl 'openclaw\|OpenClaw' "$PROJECT_ROOT/.claude/skills/" 2>/dev/null | grep -Ev 'skill-claw(\.md|/SKILL\.md)$' | head -1 | grep -q .; then
         found="skills"
     fi
     if grep -rl 'openclaw\|OpenClaw' "$PROJECT_ROOT/.claude/commands/" 2>/dev/null | grep -v 'claw\.md' | head -1 | grep -q .; then

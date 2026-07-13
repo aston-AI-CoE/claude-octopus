@@ -2,6 +2,110 @@
 # spawn_agent — extracted from orchestrate.sh (v9.7.x)
 # Agent spawning and lifecycle management
 
+if ! type start_quota_watcher >/dev/null 2>&1; then
+    _octopus_spawn_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    source "${_octopus_spawn_lib_dir}/quota-watcher.sh" 2>/dev/null || true
+fi
+
+quota_watcher_kill_spawn_children() {
+    local spawn_pid="$1"
+    pkill -TERM -P "$spawn_pid" 2>/dev/null || true
+    sleep 1
+    pkill -KILL -P "$spawn_pid" 2>/dev/null || true
+}
+
+
+# Emit agent lifecycle events to the Octopus JSONL event stream and, optionally,
+# to an external observer hook. The event stream is the primary integration
+# surface; OCTOPUS_AGENT_LIFECYCLE_HOOK is a best-effort bridge for local control
+# planes that need an immediate callback without tailing OCTO_EVENT_LOG.
+_octopus_agent_lifecycle_event() {
+    local event="$1"
+    local agent_type="$2"
+    local task_id="$3"
+    local role="${4:-}"
+    local phase="${5:-}"
+    local normalized_phase="${phase:-unknown}"
+    local pid="${6:-}"
+    local result_file="${7:-}"
+    local exit_code="${8:-}"
+    local status="${9:-}"
+
+    local provider="${agent_type%%-*}"
+    local event_name="agent.${event}"
+
+    if declare -f octo_event_emit >/dev/null 2>&1; then
+        octo_event_emit "$event_name" \
+            provider="$provider" \
+            agent_type="$agent_type" \
+            task_id="$task_id" \
+            role="$role" \
+            phase="$normalized_phase" \
+            pid="$pid" \
+            result_file="$result_file" \
+            results_dir="${RESULTS_DIR:-}" \
+            workspace_dir="${WORKSPACE_DIR:-}" \
+            exit_code="$exit_code" \
+            status="$status" \
+            root_session_id="${CRABFLEET_ROOT_SESSION_ID:-${OCTOPUS_ROOT_SESSION_ID:-}}" \
+            parent_session_id="${CRABFLEET_PARENT_SESSION_ID:-${OCTOPUS_PARENT_SESSION_ID:-}}" || true
+    fi
+
+    local hook="${OCTOPUS_AGENT_LIFECYCLE_HOOK:-}"
+    [[ -n "$hook" && -x "$hook" ]] || return 0
+
+    local hook_log="${OCTOPUS_AGENT_LIFECYCLE_HOOK_LOG:-/dev/null}"
+    (
+        export OCTOPUS_AGENT_HOOK_EVENT="$event"
+        export OCTOPUS_AGENT_EVENT_NAME="$event_name"
+        export OCTOPUS_AGENT_PROVIDER="$provider"
+        export OCTOPUS_AGENT_TYPE="$agent_type"
+        export OCTOPUS_AGENT_TASK_ID="$task_id"
+        export OCTOPUS_AGENT_ROLE="$role"
+        export OCTOPUS_AGENT_PHASE="$normalized_phase"
+        export OCTOPUS_AGENT_PID="$pid"
+        export OCTOPUS_AGENT_RESULT_FILE="$result_file"
+        export OCTOPUS_AGENT_RESULTS_DIR="${RESULTS_DIR:-}"
+        export OCTOPUS_AGENT_WORKSPACE_DIR="${WORKSPACE_DIR:-}"
+        export OCTOPUS_AGENT_EXIT_CODE="$exit_code"
+        export OCTOPUS_AGENT_STATUS="$status"
+        export OCTOPUS_AGENT_ROOT_SESSION_ID="${CRABFLEET_ROOT_SESSION_ID:-${OCTOPUS_ROOT_SESSION_ID:-}}"
+        export OCTOPUS_AGENT_PARENT_SESSION_ID="${CRABFLEET_PARENT_SESSION_ID:-${OCTOPUS_PARENT_SESSION_ID:-}}"
+        local hook_timeout="${OCTOPUS_AGENT_LIFECYCLE_HOOK_TIMEOUT:-3}"
+        if [[ ! "$hook_timeout" =~ ^[0-9]+$ ]]; then
+            hook_timeout=3
+        else
+            hook_timeout=$((10#$hook_timeout))
+            [[ "$hook_timeout" -lt 1 ]] && hook_timeout=3
+        fi
+        if declare -f run_with_timeout >/dev/null 2>&1; then
+            run_with_timeout "$hook_timeout" "$hook" "$event"
+        elif command -v timeout >/dev/null 2>&1; then
+            timeout "$hook_timeout" "$hook" "$event"
+        else
+            # Built-in timeout fallback: run hook in background, wait with a
+            # SECONDS-based deadline, and kill if still running. Uses Bash plus
+            # the already-required sleep command, so systems without the Octopus
+            # run_with_timeout helper or GNU timeout do not execute hooks
+            # unbounded. See issue #511.
+            "$hook" "$event" &
+            local _hook_pid=$!
+            local _hook_deadline=$((SECONDS + hook_timeout))
+            while kill -0 "$_hook_pid" 2>/dev/null && [[ "$SECONDS" -lt "$_hook_deadline" ]]; do
+                sleep 1
+            done
+            if kill -0 "$_hook_pid" 2>/dev/null; then
+                kill -TERM "$_hook_pid" 2>/dev/null || true
+                pkill -TERM -P "$_hook_pid" 2>/dev/null || true
+                sleep 1
+                kill -KILL "$_hook_pid" 2>/dev/null || true
+                pkill -KILL -P "$_hook_pid" 2>/dev/null || true
+            fi
+            wait "$_hook_pid" 2>/dev/null || true
+        fi
+    ) >>"$hook_log" 2>&1 || true
+}
+
 spawn_agent() {
     local _ts; _ts=$(date +%s)
     local agent_type="$1"
@@ -249,12 +353,24 @@ ${heuristic_ctx}"
         fi
     fi
 
-    # v8.10.0: Enforce context budget AFTER all injections (skill + memory)
-    # Previously called before injections, causing final prompt to exceed budget (Issue #25)
-    enhanced_prompt=$(enforce_context_budget "$enhanced_prompt" "${role:-}")
+    # v8.10.0/v9.37.0: Enforce context budget AFTER all injections and after
+    # the Codex subagent preamble. Previously the Codex preamble was appended in
+    # the subprocess after budgeting, so Codex prompts could still exceed limits.
+    if [[ "$agent_type" == codex* && "$agent_type" != "codex-review" ]]; then
+        enhanced_prompt="${CODEX_SUBAGENT_PREAMBLE}${enhanced_prompt}"
+    fi
+    local tokens_in
+    tokens_in=$(( ${#enhanced_prompt} / 4 ))
+    enhanced_prompt=$(enforce_context_budget "$enhanced_prompt" "${role:-}" "$agent_type")
+    local _budget_rc=$?
+    if [[ $_budget_rc -ne 0 ]]; then
+        type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "failed" "$tokens_in" 0 "Prompt exceeded context budget" 0 "" "${role:-}" || true
+        return "$_budget_rc"
+    fi
 
-    # v8.4: Auto-route claude-opus to fast mode when appropriate
-    # WARNING: Fast Opus is 6x more expensive ($30/$150 vs $5/$25 per MTok)
+    # v8.4/v9.42: Auto-route claude-opus to fast mode when appropriate.
+    # Opus 4.8 fast is 2x standard ($10/$50 vs $5/$25 per MTok); legacy 4.6
+    # fast remains 6x standard.
     # Only used for interactive single-shot tasks, never for multi-phase workflows
     if [[ "$agent_type" == "claude-opus" ]] && [[ "$SUPPORTS_FAST_OPUS" == "true" ]]; then
         local opus_tier
@@ -265,8 +381,12 @@ ${heuristic_ctx}"
         opus_mode=$(select_opus_mode "$phase" "$opus_tier" "$session_autonomy")
         if [[ "$opus_mode" == "fast" ]]; then
             agent_type="claude-opus-fast"
-            log "INFO" "Auto-routing to Opus 4.6 Fast mode (phase=$phase, tier=$opus_tier, autonomy=$session_autonomy)"
-            log "WARN" "Fast Opus is 6x more expensive: \$30/\$150 per MTok vs \$5/\$25 standard"
+            log "INFO" "Auto-routing to Opus Fast mode (phase=$phase, tier=$opus_tier, autonomy=$session_autonomy)"
+            if [[ "${SUPPORTS_OPUS_4_8:-false}" == "true" && "${OCTOPUS_OPUS_MODEL:-}" != "claude-opus-4.6" ]]; then
+                log "WARN" "Opus 4.8 fast is 2x standard: \$10/\$50 per MTok vs \$5/\$25 standard"
+            else
+                log "WARN" "Legacy Opus 4.6 fast is 6x standard: \$30/\$150 per MTok vs \$5/\$25 standard"
+            fi
         fi
     fi
 
@@ -278,6 +398,9 @@ ${heuristic_ctx}"
         return 1
     fi
 
+    # oco-aek: provider selected for dispatch (circuit closed). Opt-in event.
+    declare -f octo_event_emit >/dev/null 2>&1 && octo_event_emit "provider.selected" provider="$provider_prefix" agent_type="$agent_type" phase="${phase:-unknown}" || true
+
     local cmd
     if ! cmd=$(get_agent_command "$agent_type" "${phase:-}" "${role:-}"); then
         log ERROR "Unknown agent type: $agent_type"
@@ -288,6 +411,13 @@ ${heuristic_ctx}"
     # Validate command to prevent injection
     if ! validate_agent_command "$cmd"; then
         log ERROR "Invalid agent command returned: $cmd"
+        return 1
+    fi
+
+    # Cursor Agent uses a generic `agent` binary name; validate binary identity
+    # and auth at spawn time so all caller paths enforce the same guard.
+    if [[ "$agent_type" == cursor-agent* ]] && ! cursor_agent_is_available; then
+        log ERROR "Cursor Agent is not available or authenticated"
         return 1
     fi
 
@@ -432,11 +562,13 @@ ${heuristic_ctx}"
             echo "# Result-capture: SubagentStop hook" >> "$result_file"
         fi
         echo "" >> "$result_file"
+        type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "running" "$tokens_in" 0 "Dispatched via Agent Teams" 0 "$result_file" "${role:-none}" || true
 
         log "DEBUG" "Agent Teams instruction written to: $agent_instruction_file"
         if [[ "$SUPPORTS_HOOK_LAST_MESSAGE" == "true" ]]; then
             log "DEBUG" "Result capture via SubagentStop hook (last_assistant_message)"
         fi
+        _octopus_agent_lifecycle_event "spawned" "$agent_type" "$task_id" "$role" "$phase" "" "$result_file" "" "running"
         return 0
     fi
 
@@ -463,13 +595,14 @@ ${heuristic_ctx}"
         # SECURITY: Use array-based execution to prevent word-splitting vulnerabilities
         # v8.32.0: Per-provider credential isolation — each agent only sees its own API key
         local -a cmd_array
-        local env_prefix
-        env_prefix=$(build_provider_env "$agent_type")
-        if [[ -n "$env_prefix" ]]; then
-            read -ra cmd_array <<< "$env_prefix $cmd"
+        local -a inner_cmd_array
+        build_provider_env "$agent_type"
+        read -ra inner_cmd_array <<< "$cmd"
+        if [[ ${#PROVIDER_ENV_ARRAY[@]} -gt 0 ]]; then
+            cmd_array=("${PROVIDER_ENV_ARRAY[@]}" "${inner_cmd_array[@]}")
             log "DEBUG" "Credential isolation active for $agent_type"
         else
-            read -ra cmd_array <<< "$cmd"
+            cmd_array=("${inner_cmd_array[@]}")
         fi
 
         # IMPROVED: Use temp files for reliable output capture (v7.13.2 - Issue #10)
@@ -490,6 +623,7 @@ ${heuristic_ctx}"
         # Use seconds instead of milliseconds for compatibility (macOS date doesn't support %N)
         start_time_ms=$(( $(date +%s) * 1000 ))
         update_agent_status "$agent_type" "running" 0 0.0
+        type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "running" "$tokens_in" 0 "" 0 "$result_file" "${role:-none}" || true
 
         # v7.19.0 P0.1: Use tee to stream output to both temp file and raw backup
         # v8.10.0: Gemini uses stdin-based prompt delivery (Issue #25)
@@ -505,27 +639,69 @@ ${heuristic_ctx}"
             max_auth_retries=$((max_auth_retries > 1 ? 1 : max_auth_retries))
         fi
 
-        # Append gemini headless flag once before retry loop
-        if [[ "$agent_type" == gemini* ]]; then
+        # Append headless flag (-p "") for CLI providers that read prompt from stdin
+        if [[ "$agent_type" == gemini* ]] || [[ "$agent_type" == cursor-agent* ]] || [[ "$agent_type" == copilot* ]] || [[ "$agent_type" == qwen* ]]; then
             cmd_array+=(-p "")
         fi
-
-        # v9.2.2: Inject subagent preamble for Codex dispatches (Issue #176)
-        if [[ "$agent_type" == codex* && "$agent_type" != "codex-review" ]]; then
-            enhanced_prompt="${CODEX_SUBAGENT_PREAMBLE}${enhanced_prompt}"
+        # Belt-and-suspenders: bypass Gemini's interactive trust check in headless mode (#405).
+        # Newer Gemini CLI versions removed --skip-trust; detect support once per spawn process.
+        if [[ "$agent_type" == gemini* ]]; then
+            if [[ -z "${_GEMINI_SUPPORTS_SKIP_TRUST+x}" ]]; then
+                if [[ $(gemini --help 2>&1 | grep -c -- --skip-trust || true) -gt 0 ]]; then
+                    _GEMINI_SUPPORTS_SKIP_TRUST=true
+                else
+                    _GEMINI_SUPPORTS_SKIP_TRUST=false
+                fi
+            fi
+            if [[ "$_GEMINI_SUPPORTS_SKIP_TRUST" == "true" ]]; then
+                cmd_array+=(--skip-trust)
+            fi
         fi
 
         local auth_attempt=0
         local exit_code=0
         while true; do
             exit_code=0
+
+            # Per-provider timeout. TIMEOUT=0 means no absolute timeout; higher-level
+            # workflows supervise progress/stalls. Gemini only gets its legacy cap when
+            # TIMEOUT is non-zero and OCTOPUS_GEMINI_TIMEOUT is not explicitly set.
+            local _eff_timeout="${TIMEOUT:-0}"
+            if [[ "$agent_type" == gemini* ]]; then
+                if [[ -n "${OCTOPUS_GEMINI_TIMEOUT:-}" ]]; then
+                    _eff_timeout="$OCTOPUS_GEMINI_TIMEOUT"
+                elif [[ "$_eff_timeout" != "0" ]]; then
+                    _eff_timeout="180"
+                fi
+            fi
+
+            # oco-48z: quota/terminal-error fast-fail watcher for ALL providers (was
+            # gemini-only). Greps temp files every 2s; on match it kills the provider
+            # early and marks it quota-dead for the session (oco-cbb), so preflight and
+            # is_agent_available skip it instead of re-dispatching into the same failure.
+            local _quota_watcher_pid=""
+            local _spawn_pid=$BASHPID
+            local _provider_prefix="${agent_type%%-*}"
+            _quota_watcher_pid=$(start_quota_watcher \
+                "$_spawn_pid" \
+                "$temp_errors" \
+                "$temp_output" \
+                quota_watcher_kill_spawn_children \
+                "[$agent_type] Quota/terminal error detected - fast-failing (saves ~${_eff_timeout}s wait)" \
+                "$_provider_prefix")
+
             # v9.2.2: All agents use stdin-based prompt delivery to avoid ARG_MAX limits (Issue #173)
-            # Previously only gemini used stdin; codex/claude passed prompt as CLI arg which fails on large diffs
-            if printf '%s' "$enhanced_prompt" | run_with_timeout "$TIMEOUT" "${cmd_array[@]}" 2> "$temp_errors" | tee "$raw_output" > "$temp_output"; then
+            # Previously only gemini used stdin; codex/claude passed prompt as CLI arg which fails on large diffs.
+            if [[ "$agent_type" == agy* || "$agent_type" == "antigravity" ]]; then
+                printf '%s' "$enhanced_prompt" | OCTOPUS_UNBOUNDED_EXECUTION_SUPERVISED="spawn-agent-heartbeat" run_with_timeout "$_eff_timeout" "${cmd_array[@]}" 2> "$temp_errors" | tee "$raw_output" > "$temp_output"
+                exit_code=${PIPESTATUS[1]:-0}
+            elif printf '%s' "$enhanced_prompt" | OCTOPUS_UNBOUNDED_EXECUTION_SUPERVISED="spawn-agent-heartbeat" run_with_timeout "$_eff_timeout" "${cmd_array[@]}" 2> "$temp_errors" | tee "$raw_output" > "$temp_output"; then
                 exit_code=0
             else
                 exit_code=$?
             fi
+
+            stop_quota_watcher "$_quota_watcher_pid"
 
             # v8.16: Check if failure is auth-related and retryable
             if [[ $exit_code -ne 0 ]] && [[ $auth_attempt -lt $max_auth_retries ]]; then
@@ -551,6 +727,14 @@ ${heuristic_ctx}"
             break
         done
 
+        if [[ $exit_code -ne 0 && -s "$temp_errors" ]]; then
+            local stderr_excerpt=""
+            stderr_excerpt=$(grep -m5 '[^[:space:]]' "$temp_errors" 2>/dev/null | tr '\n' ' ' | head -c 600 || true)
+            if [[ -n "$stderr_excerpt" ]]; then
+                log "ERROR" "[$agent_type] provider stderr: $stderr_excerpt"
+            fi
+        fi
+
         # v8.16: Log auth retry metrics if retries occurred
         if [[ $auth_attempt -gt 0 ]]; then
             log "INFO" "Auth retries used: $auth_attempt/$max_auth_retries (backend=$OCTOPUS_BACKEND, exit=$exit_code)"
@@ -563,10 +747,14 @@ ${heuristic_ctx}"
             log "DEBUG" "Result already captured by SubagentStop hook, skipping CLI output parse"
         fi
 
+        local _octo_success_status="ok"
+        local _octo_success_reason=""
+        local _octo_tokens_out=0
+
         # v7.19.0 P0.1: Process output regardless of exit code (preserves partial results)
         if [[ "$_hook_captured" == "true" ]]; then
             # Hook already wrote ## Output + ## Status: SUCCESS — skip to post-processing
-            :
+            _octo_tokens_out=$(octo_estimate_tokens_for_file "$result_file" 2>/dev/null || echo 0)
         elif [[ $exit_code -eq 0 ]]; then
             # Filter out CLI header noise and extract actual response
             # v9.3.1: Check for CLI header separator before filtering — codex exec
@@ -596,17 +784,56 @@ ${heuristic_ctx}"
                     -e '^Run /mcp' \
                     "$temp_output" >> "$result_file" 2>/dev/null || cat "$temp_output" >> "$result_file"
             fi
+            if [[ "$agent_type" == codex* ]] \
+                && ! grep -q '[[:alnum:]]' "$temp_output" 2>/dev/null \
+                && type octo_file_has_codex_recoverable_stderr >/dev/null 2>&1 \
+                && octo_file_has_codex_recoverable_stderr "$temp_errors"; then
+                echo "(Codex response was emitted on stderr; see Warnings/Errors transcript below.)" >> "$result_file"
+            fi
 
             # v8.7.0: Add trust marker for external CLI output
-            case "$agent_type" in codex*|gemini*|perplexity*)
+            # v9.22.1: Also wrap the Output block in nonce boundaries so downstream
+            # synthesis prompts can identify provider-authored text as untrusted.
+            case "$agent_type" in codex*|gemini*|perplexity*|cursor-agent*)
                 if [[ "${OCTOPUS_SECURITY_V870:-true}" == "true" ]]; then
                     sed -i.bak '1s/^/<!-- trust=untrusted provider='"$agent_type"' -->\n/' "$result_file" 2>/dev/null || true
                     rm -f "${result_file}.bak"
-                fi ;; esac
+                fi
+                # Close the fenced block, then append an END marker (BEGIN goes below)
+                echo '```' >> "$result_file"
+                local _untrusted_nonce
+                _untrusted_nonce=$(head -c 8 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n' 2>/dev/null) \
+                    || _untrusted_nonce="${RANDOM}${RANDOM}${RANDOM}$(date +%s)"
+                echo "<!-- END-UNTRUSTED:provider=${agent_type}:nonce=${_untrusted_nonce} -->" >> "$result_file"
+                # Insert the BEGIN marker just above the "## Output" header
+                awk -v marker="<!-- BEGIN-UNTRUSTED:provider=${agent_type}:nonce=${_untrusted_nonce} -->" '
+                    /^## Output$/ && !done { print marker; done=1 }
+                    { print }
+                ' "$result_file" > "${result_file}.nonce" && mv "${result_file}.nonce" "$result_file"
+                ;;
+            *)
+                echo '```' >> "$result_file"
+                ;;
+            esac
 
-            echo '```' >> "$result_file"
             echo "" >> "$result_file"
-            echo "## Status: SUCCESS" >> "$result_file"
+            local _classification
+            _classification=$(classify_agent_output "$temp_output" "$exit_code" "$agent_type" "$temp_errors" 2>/dev/null || echo "ok:")
+            _octo_success_status="${_classification%%:*}"
+            _octo_success_reason="${_classification#*:}"
+            _octo_tokens_out=$(octo_estimate_tokens_for_file "$temp_output" 2>/dev/null || echo 0)
+
+            case "$_octo_success_status" in
+                failed)
+                    echo "## Status: FAILED (${_octo_success_reason:-unusable output})" >> "$result_file"
+                    ;;
+                degraded)
+                    echo "## Status: SUCCESS (DEGRADED: ${_octo_success_reason:-partial output})" >> "$result_file"
+                    ;;
+                *)
+                    echo "## Status: SUCCESS" >> "$result_file"
+                    ;;
+            esac
 
             # v8.6.0: Preserve native metrics block for batch completion
             if [[ -s "$raw_output" ]]; then
@@ -632,22 +859,30 @@ ${heuristic_ctx}"
             local end_time_ms elapsed_ms
             end_time_ms=$(( $(date +%s) * 1000 ))
             elapsed_ms=$((end_time_ms - start_time_ms))
-            update_agent_status "$agent_type" "completed" "$elapsed_ms" 0.0
-            # v8.18.0: Record provider learning
-            local result_summary
-            result_summary=$(head -c 200 "$result_file" 2>/dev/null | tr '\n' ' ')
-            append_provider_history "$agent_type" "${phase:-unknown}" "${enhanced_prompt:0:100}" "$result_summary" 2>/dev/null || true
-            # v8.20.0: Record outcome for provider intelligence
-            record_outcome "$agent_type" "$agent_type" "${task_type:-unknown}" "${phase:-unknown}" "success" "$elapsed_ms" 2>/dev/null || true
-            # v9.13: Reset circuit breaker on success
-            type record_success &>/dev/null && record_success "$provider_prefix" 2>/dev/null || true
-            # v9.3.0: Record file co-occurrence pattern for heuristic learning
-            record_run_pattern "$agent_type" "${enhanced_prompt:-$prompt}" "$result_file" 2>/dev/null || true
-            # v8.20.1: Record task duration metric
-            record_task_metric "task_duration_ms" "$elapsed_ms" 2>/dev/null || true
-            # v8.21.0: Anti-drift checkpoint (non-blocking)
-            if type run_drift_check &>/dev/null 2>&1; then
-                run_drift_check "${enhanced_prompt:-$prompt}" "$(cat "$result_file" 2>/dev/null)" "$agent_type" "${phase:-unknown}" 2>/dev/null || true
+            if [[ "$_octo_success_status" == "failed" ]]; then
+                update_agent_status "$agent_type" "failed" "$elapsed_ms" 0.0
+                record_outcome "$agent_type" "$agent_type" "${task_type:-unknown}" "${phase:-unknown}" "fail" "$elapsed_ms" 2>/dev/null || true
+                type record_failure &>/dev/null && record_failure "$provider_prefix" "provider_rejection" 2>/dev/null || true
+                type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "failed" "$tokens_in" "$_octo_tokens_out" "${_octo_success_reason:-unusable output}" "$elapsed_ms" "$result_file" "${role:-none}" || true
+            else
+                update_agent_status "$agent_type" "completed" "$elapsed_ms" 0.0
+                # v8.18.0: Record provider learning
+                local result_summary
+                result_summary=$(head -c 200 "$result_file" 2>/dev/null | tr '\n' ' ')
+                append_provider_history "$agent_type" "${phase:-unknown}" "${enhanced_prompt:0:100}" "$result_summary" 2>/dev/null || true
+                # v8.20.0: Record outcome for provider intelligence
+                record_outcome "$agent_type" "$agent_type" "${task_type:-unknown}" "${phase:-unknown}" "success" "$elapsed_ms" 2>/dev/null || true
+                # v9.13: Reset circuit breaker on success
+                type record_success &>/dev/null && record_success "$provider_prefix" 2>/dev/null || true
+                # v9.3.0: Record file co-occurrence pattern for heuristic learning
+                record_run_pattern "$agent_type" "${enhanced_prompt:-$prompt}" "$result_file" 2>/dev/null || true
+                # v8.20.1: Record task duration metric
+                record_task_metric "task_duration_ms" "$elapsed_ms" 2>/dev/null || true
+                type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "$_octo_success_status" "$tokens_in" "$_octo_tokens_out" "$_octo_success_reason" "$elapsed_ms" "$result_file" "${role:-none}" || true
+                # v8.21.0: Anti-drift checkpoint (non-blocking)
+                if type run_drift_check &>/dev/null 2>&1; then
+                    run_drift_check "${enhanced_prompt:-$prompt}" "$(cat "$result_file" 2>/dev/null)" "$agent_type" "${phase:-unknown}" 2>/dev/null || true
+                fi
             fi
         elif [[ $exit_code -eq 124 ]] || [[ $exit_code -eq 143 ]]; then
             # v7.19.0 P0.2: TIMEOUT - Preserve partial output
@@ -677,11 +912,15 @@ ${heuristic_ctx}"
             echo "" >> "$result_file"
             echo "## Status: TIMEOUT - PARTIAL RESULTS (exit code: $exit_code)" >> "$result_file"
             echo "" >> "$result_file"
-            echo "⚠️  **Warning**: Agent timed out after ${TIMEOUT}s but partial output preserved above." >> "$result_file"
+            echo "⚠️  **Warning**: Agent timed out after ${_eff_timeout}s but partial output preserved above." >> "$result_file"
             echo "" >> "$result_file"
             echo "**Recommendations**:" >> "$result_file"
             echo "- Partial results may still be valuable" >> "$result_file"
-            echo "- Consider increasing timeout: \`--timeout $((TIMEOUT * 2))\`" >> "$result_file"
+            if [[ "$_eff_timeout" =~ ^[0-9]+$ && "$_eff_timeout" -gt 0 ]]; then
+                echo "- Consider increasing timeout: \`--timeout $((_eff_timeout * 2))\`" >> "$result_file"
+            else
+                echo "- Consider setting an explicit timeout only if this task needs a wall-clock cap" >> "$result_file"
+            fi
             echo "- Simplify prompt to reduce complexity" >> "$result_file"
 
             # Append error details
@@ -705,6 +944,9 @@ ${heuristic_ctx}"
             end_time_ms=$(( $(date +%s) * 1000 ))
             elapsed_ms=$((end_time_ms - start_time_ms))
             update_agent_status "$agent_type" "timeout" "$elapsed_ms" 0.0
+            local tokens_out
+            tokens_out=$(octo_estimate_tokens_for_file "$temp_output" 2>/dev/null || echo 0)
+            type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "timeout" "$tokens_in" "$tokens_out" "Timed out before completion" "$elapsed_ms" "$result_file" "${role:-none}" || true
             # v8.20.0: Record timeout for provider intelligence
             record_outcome "$agent_type" "$agent_type" "${task_type:-unknown}" "${phase:-unknown}" "timeout" "$elapsed_ms" 2>/dev/null || true
             # v9.13: Record timeout as transient failure for circuit breaker
@@ -716,7 +958,7 @@ ${heuristic_ctx}"
             elif [[ -s "$raw_output" ]]; then
                 cat "$raw_output" >> "$result_file"
             else
-                echo "(no output captured)" >> "$result_file"
+                echo "(no output captured — ${agent_type} produced no stdout; check provider auth/config with 'orchestrate.sh doctor')" >> "$result_file"
             fi
             echo '```' >> "$result_file"
             echo "" >> "$result_file"
@@ -747,6 +989,9 @@ ${heuristic_ctx}"
             end_time_ms=$(( $(date +%s) * 1000 ))
             elapsed_ms=$((end_time_ms - start_time_ms))
             update_agent_status "$agent_type" "failed" "$elapsed_ms" 0.0
+            local tokens_out
+            tokens_out=$(octo_estimate_tokens_for_file "$temp_output" 2>/dev/null || echo 0)
+            type write_agent_status >/dev/null 2>&1 && write_agent_status "$agent_type" "failed" "$tokens_in" "$tokens_out" "Exit code $exit_code" "$elapsed_ms" "$result_file" "${role:-none}" || true
             # v8.20.0: Record failure for provider intelligence
             record_outcome "$agent_type" "$agent_type" "${task_type:-unknown}" "${phase:-unknown}" "fail" "$elapsed_ms" 2>/dev/null || true
             # v9.13: Record failure for circuit breaker (classify from error output if available)
@@ -785,11 +1030,37 @@ ${heuristic_ctx}"
         # Ensure file is fully written before background process exits
         sync
 
+        # Write completion marker — used by tangle_develop to detect thread end
+        # without relying on kill -0 (which tracks wrapper PID, not provider PID)
+        local _spawn_exit="${exit_code:-0}"
+        local _done_dir="${WORKSPACE_DIR:-${HOME}/.claude-octopus}/.octo/agents"
+        local _done_tmp="${_done_dir}/${task_id}.done.tmp.$$"
+        local _done_file="${_done_dir}/${task_id}.done"
+        if ! mkdir -p "$_done_dir" 2>/dev/null \
+           || ! { echo "$_spawn_exit" > "$_done_tmp" && mv -f "$_done_tmp" "$_done_file"; } 2>/dev/null; then
+            log WARN "Failed to write completion marker for $task_id (exit=$_spawn_exit)"
+            rm -f "$_done_tmp" 2>/dev/null || true
+        fi
+
+        local _hook_final_status="failed"
+        if [[ "${_spawn_exit:-0}" -eq 0 ]]; then
+            if [[ "${_octo_success_status:-ok}" == "failed" ]]; then
+                _hook_final_status="failed"
+            else
+                _hook_final_status="completed"
+            fi
+        elif [[ "${_spawn_exit:-0}" -eq 124 || "${_spawn_exit:-0}" -eq 143 ]]; then
+            _hook_final_status="timeout"
+        fi
+        _octopus_agent_lifecycle_event "completed" "$agent_type" "$task_id" "$role" "$phase" "$BASHPID" "$result_file" "$_spawn_exit" "$_hook_final_status"
+
         # v8.19.0: Cleanup heartbeat (self-terminating monitor handles this too)
         cleanup_heartbeat "$$" 2>/dev/null || true
     ) &
 
     local pid=$!
+
+    _octopus_agent_lifecycle_event "spawned" "$agent_type" "$task_id" "$role" "$phase" "$pid" "$result_file" "" "running"
 
     # v8.19.0: Start heartbeat monitor for agent process
     start_heartbeat_monitor "$pid" "$task_id"
@@ -807,5 +1078,42 @@ ${heuristic_ctx}"
     fi
 
     log INFO "Agent spawned with PID: $pid"
+    echo "$pid"
+}
+
+# Launch spawn_agent in the background and return the inner provider PID that
+# spawn_agent prints, not the short-lived wrapper PID from `$!`.
+spawn_agent_capture_pid() {
+    local agent_type="$1"
+    local prompt="$2"
+    local task_id="${3:-$(date +%s)}"
+    local role="${4:-}"
+    local phase="${5:-}"
+    local use_fork="${6:-false}"
+
+    local pid_file
+    pid_file=$(mktemp "${TMPDIR:-/tmp}/octo-spawn-pid.XXXXXX") || return 1
+
+    spawn_agent "$agent_type" "$prompt" "$task_id" "$role" "$phase" "$use_fork" >"$pid_file" 2>&1 &
+    local wrapper_pid=$!
+
+    local pid=""
+    local attempts=0
+    while [[ $attempts -lt 100 ]]; do
+        pid=$(awk '/^[0-9]+$/ { value=$1 } END { print value }' "$pid_file" 2>/dev/null)
+        [[ -n "$pid" ]] && break
+        if ! kill -0 "$wrapper_pid" 2>/dev/null && [[ -s "$pid_file" ]]; then
+            break
+        fi
+        sleep 0.1
+        ((attempts++)) || true
+    done
+
+    if [[ -z "$pid" ]]; then
+        log "WARN" "spawn_agent produced no provider PID for $task_id within 10s; tracking wrapper PID $wrapper_pid" >&2
+        pid="$wrapper_pid"
+    fi
+
+    rm -f "$pid_file"
     echo "$pid"
 }

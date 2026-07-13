@@ -6,14 +6,19 @@
 #
 # Kill switch: OCTO_CAREFUL_MODE=off — disables all destructive command checks
 set -euo pipefail
+# EXIT trap — emits diagnostic stderr ONLY when the hook exits non-zero, so
+# the Claude Code harness error "No stderr output" can never recur. EXIT (not
+# ERR) avoids over-firing on intermediate `grep -o`/`cmd | ...` inside $() that
+# the hook's logic already handles. See issue #313.
+_octo_hook_exit() { local c=$?; if [[ $c -ne 0 ]]; then echo "[hook:$(basename "$0")] exit $c" >&2 2>/dev/null || true; fi; return 0; }
+trap _octo_hook_exit EXIT
+
+_HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_HOOK_DIR/../scripts/lib/session-id.sh" 2>/dev/null || true
 
 # Kill switch — respect user's choice to disable careful mode entirely
+# (careful mode is opt-in via /octo:careful; OCTO_CAREFUL_MODE=off is the dedicated off-switch)
 [[ "${OCTO_CAREFUL_MODE:-on}" == "off" ]] && { echo '{"decision":"allow"}'; exit 0; }
-
-# Respect bypassPermissions mode — hooks must not override the user's CLI permission setting
-for _sf in "${CLAUDE_PROJECT_DIR:-.}/.claude/settings.local.json" "${CLAUDE_PROJECT_DIR:-.}/.claude/settings.json" "$HOME/.claude/settings.json"; do
-    [[ -f "$_sf" ]] && grep -q '"bypassPermissions"' "$_sf" 2>/dev/null && { echo '{"decision":"allow"}'; exit 0; }
-done
 
 # Read tool input from stdin
 if command -v timeout &>/dev/null; then
@@ -24,14 +29,18 @@ fi
 [[ -z "$INPUT" ]] && INPUT='{}'
 
 # Only gate Bash commands
-TOOL_NAME=$(echo "$INPUT" | grep -o '"tool_name":"[^"]*"' | head -1 | cut -d'"' -f4)
+TOOL_NAME=$(echo "$INPUT" | grep -o '"tool_name":"[^"]*"' 2>/dev/null | head -1 | cut -d'"' -f4 || true)
 if [[ "$TOOL_NAME" != "Bash" ]]; then
     echo '{"decision":"allow"}'
     exit 0
 fi
 
 # Check if careful mode is active
-STATE_FILE="/tmp/octopus-careful-${CLAUDE_SESSION_ID:-$$}.txt"
+if declare -f octo_session_state_file >/dev/null 2>&1; then
+    STATE_FILE=$(octo_session_state_file "careful" "txt" "$INPUT")
+else
+    STATE_FILE="/tmp/octopus-careful-${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-$$}}.txt"
+fi
 if [[ ! -f "$STATE_FILE" ]]; then
     echo '{"decision":"allow"}'
     exit 0
@@ -42,7 +51,7 @@ fi
 if command -v jq &>/dev/null; then
     COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // .command // ""' 2>/dev/null || echo "")
 else
-    COMMAND=$(echo "$INPUT" | grep -o '"command":"[^"]*"' | head -1 | cut -d'"' -f4)
+    COMMAND=$(echo "$INPUT" | grep -o '"command":"[^"]*"' 2>/dev/null | head -1 | cut -d'"' -f4 || true)
 fi
 # Also check raw input as fallback for escaped-quote edge cases
 CHECK_TEXT="${COMMAND}

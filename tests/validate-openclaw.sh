@@ -15,11 +15,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+source "$SCRIPT_DIR/helpers/test-framework.sh"
+test_suite "validate-openclaw.sh — Verify OpenClaw compatibility layer integrity"
+
 PASS=0
 FAIL=0
 
-pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
-fail() { echo "  FAIL: $1" >&2; FAIL=$((FAIL + 1)); }
+pass() { test_case "$1"; test_pass; }
+fail() { test_case "$1"; test_fail "${2:-$1}"; }
 
 echo "=== OpenClaw Compatibility Validation ==="
 echo ""
@@ -156,8 +160,10 @@ echo ""
 # --- 4. Skill Registry Sync ---
 echo "4. Skill Registry Sync"
 
-SKILL_COUNT=$(ls -1 "$PLUGIN_ROOT/.claude/skills/"*.md 2>/dev/null | wc -l | tr -d ' ')
-COMMAND_COUNT=$(ls -1 "$PLUGIN_ROOT/.claude/commands/"*.md 2>/dev/null | wc -l | tr -d ' ')
+FLAT_SKILL_COUNT=$(find "$PLUGIN_ROOT/.claude/skills" -maxdepth 1 -type f -name '*.md' -print 2>/dev/null | wc -l | tr -d ' ')
+DIR_SKILL_COUNT=$(find "$PLUGIN_ROOT/.claude/skills" -mindepth 2 -maxdepth 2 -type f -name 'SKILL.md' -print 2>/dev/null | wc -l | tr -d ' ')
+SKILL_COUNT=$((FLAT_SKILL_COUNT + DIR_SKILL_COUNT))
+COMMAND_COUNT=$(find "$PLUGIN_ROOT/.claude/commands" -maxdepth 1 -type f -name '*.md' -print 2>/dev/null | wc -l | tr -d ' ')
 TOTAL=$((SKILL_COUNT + COMMAND_COUNT))
 
 pass "Found ${SKILL_COUNT} skills and ${COMMAND_COUNT} commands (${TOTAL} total)"
@@ -195,19 +201,4 @@ exit(0 if 'name' in required and 'description' in required else 1)
 else
     fail "skill-schema.json not found"
 fi
-
-echo ""
-
-# --- Summary ---
-echo "=== Results ==="
-echo "  Passed: $PASS"
-echo "  Failed: $FAIL"
-echo ""
-
-if [[ $FAIL -gt 0 ]]; then
-    echo "VALIDATION FAILED"
-    exit 1
-else
-    echo "ALL CHECKS PASSED"
-    exit 0
-fi
+test_summary

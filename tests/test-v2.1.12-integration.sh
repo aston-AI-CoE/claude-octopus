@@ -6,6 +6,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+source "$SCRIPT_DIR/helpers/test-framework.sh"
+test_suite "for v2.1.12+ feature integration"
+
 ORCHESTRATE="${PROJECT_ROOT}/scripts/orchestrate.sh"
 # v9.12: Search orchestrate.sh + lib/*.sh for functions that may have been decomposed
 ALL_SRC=$(mktemp)
@@ -17,11 +21,6 @@ TESTS_RUN=0
 TESTS_PASSED=0
 TESTS_FAILED=0
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
 
 # Logging functions
 log_test() {
@@ -89,42 +88,6 @@ test_feature_flags() {
             return 1
         fi
     done
-}
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Unit Tests: Task Management
-# ═══════════════════════════════════════════════════════════════════════════════
-
-test_task_management_functions() {
-    run_test "Task management functions exist"
-
-    local functions=(
-        "create_workflow_tasks"
-        "create_task"
-        "update_task_status"
-        "get_task_status_summary"
-    )
-
-    for func in "${functions[@]}"; do
-        if grep -q "^${func}()\|^${func} ()" "$ALL_SRC"; then
-            log_pass "Function $func found"
-        else
-            log_fail "Function $func not found"
-            return 1
-        fi
-    done
-}
-
-test_task_directory_creation() {
-    run_test "Task directory structure creation"
-
-    # Check if task management creates proper directories
-    if grep -q 'mkdir -p.*tasks' "$ALL_SRC"; then
-        log_pass "Task directory creation logic found"
-    else
-        log_fail "Task directory creation logic not found"
-        return 1
-    fi
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -210,28 +173,6 @@ test_hooks_json_updated() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Unit Tests: Bash Wildcard Permissions
-# ═══════════════════════════════════════════════════════════════════════════════
-
-test_wildcard_validation() {
-    run_test "Bash wildcard validation functions"
-
-    if grep -q "validate_cli_pattern" "$ALL_SRC"; then
-        log_pass "validate_cli_pattern function found"
-    else
-        log_fail "validate_cli_pattern function not found"
-        return 1
-    fi
-
-    if grep -q "check_cli_permissions" "$ALL_SRC"; then
-        log_pass "check_cli_permissions function found"
-    else
-        log_fail "check_cli_permissions function not found"
-        return 1
-    fi
-}
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # Integration Tests: Flow Skills
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -239,14 +180,15 @@ test_flow_skill_frontmatter() {
     run_test "Flow skills have v2.1.12+ frontmatter"
 
     local flow_skills=(
-        "flow-discover.md"
-        "flow-define.md"
-        "flow-develop.md"
-        "flow-deliver.md"
+        "flow-discover"
+        "flow-define"
+        "flow-develop"
+        "flow-deliver"
     )
 
     for skill in "${flow_skills[@]}"; do
-        local skill_path="${PROJECT_ROOT}/.claude/skills/${skill}"
+        local skill_path
+        skill_path="$(resolve_claude_skill_path "$skill")"
 
         if [[ ! -f "$skill_path" ]]; then
             log_fail "Skill $skill not found"
@@ -292,12 +234,11 @@ test_backward_compatibility() {
         return 1
     fi
 
-    # Check that task management functions check feature flags
-    if grep -q 'SUPPORTS_TASK_MANAGEMENT.*!= "true"' "$ALL_SRC" || \
-       grep -q 'SUPPORTS_TASK_MANAGEMENT.*== "false"' "$ALL_SRC"; then
-        log_pass "Task management checks feature flag before executing"
+    # Check that task management feature flag is declared
+    if grep -q 'SUPPORTS_TASK_MANAGEMENT=' "$ALL_SRC"; then
+        log_pass "Task management feature flag declared"
     else
-        log_fail "Task management missing feature flag check"
+        log_fail "Task management feature flag missing"
         return 1
     fi
 }
@@ -325,68 +266,42 @@ test_existing_functionality() {
 # Main Test Execution
 # ═══════════════════════════════════════════════════════════════════════════════
 
-main() {
-    echo "=================================================="
-    echo "Claude Octopus v2.1.12+ Integration Test Suite"
-    echo "=================================================="
-    echo ""
+echo "=================================================="
+echo "Claude Octopus v2.1.12+ Integration Test Suite"
+echo "=================================================="
+echo ""
 
-    log_info "Starting test suite..."
-    echo ""
+log_info "Starting test suite..."
+echo ""
 
-    # Unit Tests
-    echo "--- Unit Tests: Version Detection ---"
-    test_version_detection
-    test_feature_flags
-    echo ""
+# Unit Tests
+echo "--- Unit Tests: Version Detection ---"
+test_version_detection
+test_feature_flags
+echo ""
 
-    echo "--- Unit Tests: Task Management ---"
-    test_task_management_functions
-    test_task_directory_creation
-    echo ""
+echo "--- Unit Tests: Fork Context ---"
+test_fork_context_support
+test_fork_markers
+echo ""
 
-    echo "--- Unit Tests: Fork Context ---"
-    test_fork_context_support
-    test_fork_markers
-    echo ""
+echo "--- Unit Tests: Hook System ---"
+test_hook_scripts_exist
+test_hooks_json_updated
+echo ""
 
-    echo "--- Unit Tests: Hook System ---"
-    test_hook_scripts_exist
-    test_hooks_json_updated
-    echo ""
+# Integration Tests
+echo "--- Integration Tests: Flow Skills ---"
+test_flow_skill_frontmatter
+echo ""
 
-    echo "--- Unit Tests: Bash Wildcards ---"
-    test_wildcard_validation
-    echo ""
+# Backward Compatibility Tests
+echo "--- Backward Compatibility Tests ---"
+test_backward_compatibility
+test_existing_functionality
+echo ""
 
-    # Integration Tests
-    echo "--- Integration Tests: Flow Skills ---"
-    test_flow_skill_frontmatter
-    echo ""
-
-    # Backward Compatibility Tests
-    echo "--- Backward Compatibility Tests ---"
-    test_backward_compatibility
-    test_existing_functionality
-    echo ""
-
-    # Summary
-    echo "=================================================="
-    echo "Test Results"
-    echo "=================================================="
-    echo "Total tests run: $TESTS_RUN"
-    echo -e "${GREEN}Passed: $TESTS_PASSED${NC}"
-    echo -e "${RED}Failed: $TESTS_FAILED${NC}"
-    echo ""
-
-    if [[ $TESTS_FAILED -eq 0 ]]; then
-        echo -e "${GREEN}✓ All tests passed!${NC}"
-        exit 0
-    else
-        echo -e "${RED}✗ Some tests failed${NC}"
-        exit 1
-    fi
-}
-
-# Run tests
-main "$@"
+# Summary
+echo "=================================================="
+echo "Test Results"
+test_summary

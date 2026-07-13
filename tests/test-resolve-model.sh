@@ -4,13 +4,13 @@
 set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+source "$SCRIPT_DIR/helpers/test-framework.sh"
+test_suite "resolve_octopus_model (v3.0 refactor)"
+
 PLUGIN_DIR="$(dirname "$SCRIPT_DIR")"
 ORCHESTRATE_SH="${PLUGIN_DIR}/scripts/orchestrate.sh"
 
-# Colors
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-NC='\033[0m'
 
 echo "Testing resolve_octopus_model (v3.0)"
 echo "======================================"
@@ -29,11 +29,13 @@ export HOME="$CLAUDE_OCTOPUS_WORKSPACE"
 log() { :; }
 export -f log
 
-# Source orchestrate.sh
-# We need to be careful as sourcing orchestrate.sh might try to do things
-# Let's mock some other things it might need
+# Source only the minimal files needed for resolve_octopus_model.
+# Sourcing the full orchestrate.sh can hang on VPS environments due to
+# provider detection, version checks, and heavy initialization code.
 export CLAUDE_PLUGIN_ROOT="$PLUGIN_DIR"
-source "$ORCHESTRATE_SH" || true
+export CLAUDE_CODE_SESSION=""
+export SUPPORTS_OPUS_4_7="${SUPPORTS_OPUS_4_7:-false}"
+source "${PLUGIN_DIR}/scripts/lib/model-resolver.sh"
 
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -65,7 +67,7 @@ clear_model_cache() {
 
 # Test 1: Hard-coded defaults
 clear_model_cache
-assert_eq "$(resolve_octopus_model "codex" "codex")" "gpt-5.4" "Default codex"
+assert_eq "$(resolve_octopus_model "codex" "codex")" "gpt-5.5" "Default codex"
 clear_model_cache
 assert_eq "$(resolve_octopus_model "gemini" "gemini")" "gemini-3.1-pro-preview" "Default gemini"
 
@@ -146,7 +148,47 @@ export OCTOPUS_COST_MODE="budget"
 assert_eq "$(resolve_octopus_model "codex" "codex")" "config-mini" "Tier mapping (budget)"
 unset OCTOPUS_COST_MODE
 
-# Test 8: Session override
+# Test 8: Provider-scoped role routing wins over phase routing
+clear_model_cache
+cat > "$CONFIG_FILE" << EOF
+{
+  "version": "3.0",
+  "providers": {
+    "codex": { "default": "deepseek-ai/DeepSeek-V4-Pro", "logic_review": "gpt-5.5" },
+    "claude": { "default": "claude-sonnet-4.6", "review": "claude-review-phase" },
+    "gemini": { "default": "gemini-3.1-pro-preview" }
+  },
+  "routing": {
+    "phases": { "review": "claude:review" },
+    "roles": { "logic-reviewer": "codex:logic_review" }
+  }
+}
+EOF
+assert_eq "$(resolve_octopus_model "codex" "codex" "review" "logic-reviewer")" "gpt-5.5" "Provider-scoped role routing overrides review phase routing for matching provider"
+clear_model_cache
+assert_eq "$(resolve_octopus_model "claude" "claude-sonnet" "review" "logic-reviewer")" "claude-review-phase" "Cross-provider role routing falls back to matching phase routing for claude"
+clear_model_cache
+assert_eq "$(resolve_octopus_model "gemini" "gemini" "review" "logic-reviewer")" "gemini-3.1-pro-preview" "Provider-scoped role routing does not leak codex or claude models to gemini"
+clear_model_cache
+assert_eq "$(resolve_octopus_model "codex" "codex" "review" "arch-reviewer")" "deepseek-ai/DeepSeek-V4-Pro" "Cross-provider phase routing does not leak claude model to codex"
+
+clear_model_cache
+cat > "$CONFIG_FILE" << EOF
+{
+  "version": "3.0",
+  "providers": {
+    "codex": { "default": "deepseek-ai/DeepSeek-V4-Pro" },
+    "claude": { "default": "claude-sonnet-4.6", "review": "claude-review-phase" }
+  },
+  "routing": {
+    "phases": { "review": "claude:review" },
+    "roles": { "logic-reviewer": "gpt-5.5" }
+  }
+}
+EOF
+assert_eq "$(resolve_octopus_model "claude" "claude-sonnet" "review" "logic-reviewer")" "claude-review-phase" "Bare role model invalid for provider falls back to matching phase routing"
+
+# Test 9: Session override
 clear_model_cache
 cat > "$CONFIG_FILE" << EOF
 {
@@ -162,7 +204,4 @@ assert_eq "$(resolve_octopus_model "codex" "codex")" "session-override" "Session
 # Cleanup
 export HOME="$HOME_ORIG"
 rm -rf "$CLAUDE_OCTOPUS_WORKSPACE"
-
-echo ""
-echo "Summary: $TESTS_PASSED/$TESTS_RUN tests passed"
-echo "All tests passed!"
+test_summary

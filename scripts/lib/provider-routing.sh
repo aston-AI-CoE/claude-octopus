@@ -15,7 +15,7 @@
 
 # Agent configurations
 # Models (Mar 2026) - Premium defaults for Design Thinking workflows:
-# - OpenAI GPT-5.x: gpt-5.4 (premium, OAuth+API), gpt-5.4-pro (API-key only), gpt-5.3-codex, gpt-5.3-codex-spark (fast),
+# - OpenAI GPT-5.x: gpt-5.5 (premium, OAuth+API), gpt-5.4-pro (API-key only), gpt-5.3-codex, gpt-5.3-codex-spark (fast),
 # [EXTRACTED to lib/dispatch.sh in v9.7.7]
 
 # NOTE: get_agent_command_array() removed in v9.7.7 — was dead code with broken
@@ -23,38 +23,164 @@
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECURITY: Environment isolation for external CLI providers (v8.7.0)
-# Returns env prefix that limits environment variables to essentials only
+# Populates PROVIDER_ENV_ARRAY with argv tokens that limit environment
+# variables to essentials only. This stays safe when PATH contains spaces.
 # ═══════════════════════════════════════════════════════════════════════════════
 build_provider_env() {
     local provider="$1"
+    PROVIDER_ENV_ARRAY=()
 
     if [[ "${OCTOPUS_SECURITY_V870:-true}" != "true" ]]; then
         return 0
     fi
 
-    # v9.15.1: Skip env -i isolation on Windows — PATH contains spaces
-    # (C:\Program Files\...) which break read -ra word splitting in spawn.sh
-    case "${OCTOPUS_PLATFORM:-$(uname)}" in
-        MINGW*|MSYS*|CYGWIN*|Windows*) return 0 ;;
-    esac
+    # v9.23: Propagate W3C trace headers into isolated env when present so
+    # external CLIs (codex/gemini/perplexity) participate in distributed traces.
+    # SUPPORTS_TRACEPARENT was detected in v2.1.98+ (Bash subprocesses) and
+    # v2.1.110+ added the same for SDK/headless sessions.
+    local -a _trace_env=()
+    if [[ -n "${TRACEPARENT:-}" ]]; then
+        _trace_env+=("TRACEPARENT=${TRACEPARENT}")
+    fi
+    if [[ -n "${TRACESTATE:-}" ]]; then
+        _trace_env+=("TRACESTATE=${TRACESTATE}")
+    fi
 
     # v9.2.1: Try resolving env vars before building isolated env (Issue #177)
     case "$provider" in
         codex*)
-            [[ -z "${OPENAI_API_KEY:-}" ]] && resolve_provider_env "OPENAI_API_KEY" 2>/dev/null
-            echo "env -i PATH=$PATH HOME=$HOME OPENAI_API_KEY=${OPENAI_API_KEY:-} TMPDIR=${TMPDIR:-/tmp}"
+            if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+                resolve_provider_env "OPENAI_API_KEY" 2>/dev/null || true
+            fi
+
+            # Preserve Codex CLI provider configuration while keeping env
+            # isolation. Codex supports OpenAI-compatible providers via
+            # config.toml, where env_key may name a provider-specific key
+            # (for example a router/proxy key) rather than OPENAI_API_KEY.
+            local _codex_config_home="${CODEX_HOME:-$HOME/.codex}"
+            local _codex_config="${_codex_config_home}/config.toml"
+            local _codex_env_key=""
+            if [[ -f "$_codex_config" ]]; then
+                _codex_env_key=$(sed -nE 's/^[[:space:]]*env_key[[:space:]]*=[[:space:]]*"([A-Za-z_][A-Za-z0-9_]*)".*/\1/p' "$_codex_config" | head -1)
+                if [[ -n "$_codex_env_key" && "$_codex_env_key" != "OPENAI_API_KEY" ]]; then
+                    resolve_provider_env "$_codex_env_key" 2>/dev/null || true
+                fi
+            fi
+
+            PROVIDER_ENV_ARRAY=(env -i "PATH=$PATH" "HOME=$HOME" "OPENAI_API_KEY=${OPENAI_API_KEY:-}" "TMPDIR=${TMPDIR:-/tmp}")
+            if [[ -n "${CODEX_HOME:-}" ]]; then
+                PROVIDER_ENV_ARRAY+=("CODEX_HOME=${CODEX_HOME}")
+            fi
+            if [[ -n "$_codex_env_key" && "$_codex_env_key" != "OPENAI_API_KEY" && -n "${!_codex_env_key:-}" ]]; then
+                PROVIDER_ENV_ARRAY+=("${_codex_env_key}=${!_codex_env_key}")
+            fi
+            # codex has NO flag to disable its OSS/local-model auto-download
+            # (verified against `codex exec --help`). Octopus instead gates that
+            # pull externally via helpers/codex-run.sh. That shim runs inside this
+            # isolated env, so forward the pull-guard opt-in contract here —
+            # otherwise `env -i` strips it and the shim would refuse every OSS
+            # dispatch (or, worse if absent, never see the user's opt-in/cap).
+            local _oss_var
+            for _oss_var in OCTOPUS_OLLAMA_ALLOW_PULL OCTOPUS_OLLAMA_MAX_PULL_GB OCTOPUS_OLLAMA_BIN OCTOPUS_CODEX_OSS_PATTERNS; do
+                if [[ -n "${!_oss_var:-}" ]]; then
+                    PROVIDER_ENV_ARRAY+=("${_oss_var}=${!_oss_var}")
+                fi
+            done
+            if [[ ${#_trace_env[@]} -gt 0 ]]; then
+                PROVIDER_ENV_ARRAY+=("${_trace_env[@]}")
+            fi
             ;;
         gemini*)
-            [[ -z "${GEMINI_API_KEY:-}" ]] && resolve_provider_env "GEMINI_API_KEY" 2>/dev/null
-            [[ -z "${GOOGLE_API_KEY:-}" ]] && resolve_provider_env "GOOGLE_API_KEY" 2>/dev/null
-            echo "env -i PATH=$PATH HOME=$HOME GEMINI_API_KEY=${GEMINI_API_KEY:-} GOOGLE_API_KEY=${GOOGLE_API_KEY:-} NODE_NO_WARNINGS=1 TMPDIR=${TMPDIR:-/tmp}"
+            if [[ -z "${GEMINI_API_KEY:-}" ]]; then
+                resolve_provider_env "GEMINI_API_KEY" 2>/dev/null || true
+            fi
+            if [[ -z "${GOOGLE_API_KEY:-}" ]]; then
+                resolve_provider_env "GOOGLE_API_KEY" 2>/dev/null || true
+            fi
+            PROVIDER_ENV_ARRAY=(env -i "PATH=$PATH" "HOME=$HOME" "GEMINI_API_KEY=${GEMINI_API_KEY:-}" "GOOGLE_API_KEY=${GOOGLE_API_KEY:-}" "GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-}" "GOOGLE_CLOUD_PROJECT_ID=${GOOGLE_CLOUD_PROJECT_ID:-}" "NODE_NO_WARNINGS=1" "TMPDIR=${TMPDIR:-/tmp}" "GEMINI_CLI_TRUST_WORKSPACE=${GEMINI_CLI_TRUST_WORKSPACE:-true}")
+            if [[ ${#_trace_env[@]} -gt 0 ]]; then
+                PROVIDER_ENV_ARRAY+=("${_trace_env[@]}")
+            fi
+            ;;
+        agy*|antigravity)
+            # Antigravity defaults to a minimal environment. Users who need
+            # desktop/session inheritance can explicitly allow the full env.
+            if [[ "${OCTOPUS_ALLOW_FULL_AGY_ENV:-false}" == "true" ]]; then
+                if [[ "${OCTOPUS_SECURITY_V870:-true}" == "true" ]] && declare -f log_warn >/dev/null 2>&1; then
+                    log_warn "Antigravity CLI inherits the parent shell environment because OCTOPUS_ALLOW_FULL_AGY_ENV=true."
+                fi
+                PROVIDER_ENV_ARRAY=()
+            else
+                PROVIDER_ENV_ARRAY=(env -i "PATH=$PATH" "HOME=$HOME" "TERM=${TERM:-dumb}" "TMPDIR=${TMPDIR:-/tmp}")
+                if [[ -n "${AGY_AUTH_TOKEN:-}" ]]; then
+                    PROVIDER_ENV_ARRAY+=("AGY_AUTH_TOKEN=${AGY_AUTH_TOKEN}")
+                fi
+                if [[ -n "${AGY_CONFIG:-}" ]]; then
+                    PROVIDER_ENV_ARRAY+=("AGY_CONFIG=${AGY_CONFIG}")
+                fi
+                if [[ -n "${ANTIGRAVITY_API_KEY:-}" ]]; then
+                    PROVIDER_ENV_ARRAY+=("ANTIGRAVITY_API_KEY=${ANTIGRAVITY_API_KEY}")
+                fi
+                if [[ ${#_trace_env[@]} -gt 0 ]]; then
+                    PROVIDER_ENV_ARRAY+=("${_trace_env[@]}")
+                fi
+            fi
+            ;;
+        grok*)
+            # Grok defaults to a minimal environment (parity with codex/gemini/agy).
+            # Users needing full desktop/session inheritance can opt out.
+            if [[ "${OCTOPUS_ALLOW_FULL_GROK_ENV:-false}" == "true" ]]; then
+                if [[ "${OCTOPUS_SECURITY_V870:-true}" == "true" ]] && declare -f log_warn >/dev/null 2>&1; then
+                    log_warn "Grok CLI inherits the parent shell environment because OCTOPUS_ALLOW_FULL_GROK_ENV=true."
+                fi
+                PROVIDER_ENV_ARRAY=()
+            else
+                if [[ -z "${XAI_API_KEY:-}" ]] && declare -f resolve_provider_env >/dev/null 2>&1; then
+                    resolve_provider_env "XAI_API_KEY" 2>/dev/null || true
+                fi
+                PROVIDER_ENV_ARRAY=(env -i "PATH=$PATH" "HOME=$HOME" "TERM=${TERM:-dumb}" "TMPDIR=${TMPDIR:-/tmp}")
+                if [[ -n "${XAI_API_KEY:-}" ]]; then
+                    PROVIDER_ENV_ARRAY+=("XAI_API_KEY=${XAI_API_KEY}")
+                fi
+                if [[ ${#_trace_env[@]} -gt 0 ]]; then
+                    PROVIDER_ENV_ARRAY+=("${_trace_env[@]}")
+                fi
+            fi
             ;;
         perplexity*)
-            [[ -z "${PERPLEXITY_API_KEY:-}" ]] && resolve_provider_env "PERPLEXITY_API_KEY" 2>/dev/null
-            echo "env -i PATH=$PATH HOME=$HOME PERPLEXITY_API_KEY=${PERPLEXITY_API_KEY:-} TMPDIR=${TMPDIR:-/tmp}"
+            # perplexity_execute is a shell function — env -i cannot exec it (#300)
+            if [[ -z "${PERPLEXITY_API_KEY:-}" ]]; then
+                resolve_provider_env "PERPLEXITY_API_KEY" 2>/dev/null || true
+            fi
+            return 0
+            ;;
+        openrouter*)
+            # openrouter_execute is a shell function — env -i cannot exec it (#300)
+            if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+                resolve_provider_env "OPENROUTER_API_KEY" 2>/dev/null || true
+            fi
+            return 0
+            ;;
+        claude-sdk*)
+            # v9.50.0: Agent SDK seat — the shim strips session markers and sets
+            # ANTHROPIC_API_KEY itself; just make sure the SDK key is resolvable.
+            if [[ -z "${CLAUDE_SDK_API_KEY:-}" ]] && declare -f resolve_provider_env >/dev/null 2>&1; then
+                resolve_provider_env "CLAUDE_SDK_API_KEY" 2>/dev/null || true
+            fi
+            return 0
+            ;;
+        claude*)
+            # A headless claude (or clarp wrapping it) must NOT inherit the parent
+            # Claude Code session markers, or the inner `claude` hangs thinking it
+            # is a nested child (council/agent-sync seat stalls at 0 bytes until
+            # timeout). Strip them; keep the rest of the env (PATH/HOME/auth).
+            PROVIDER_ENV_ARRAY=(env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH)
+            if [[ ${#_trace_env[@]} -gt 0 ]]; then
+                PROVIDER_ENV_ARRAY+=("${_trace_env[@]}")
+            fi
             ;;
         *)
-            # Claude and other providers: no isolation needed
+            # Other providers: no isolation needed
             return 0
             ;;
     esac
@@ -131,7 +257,7 @@ migrate_provider_config() {
         
         # Extract existing model preferences to seed v3.0
         local codex_model gemini_model
-        codex_model=$(jq -r '.providers.codex.model // .providers.codex.default // "gpt-5.4"' "$config_file")
+        codex_model=$(jq -r '.providers.codex.model // .providers.codex.default // "gpt-5.5"' "$config_file")
         gemini_model=$(jq -r '.providers.gemini.model // .providers.gemini.default // "gemini-3.1-pro-preview"' "$config_file")
         
         cat > "$tmp_file" << EOF
@@ -140,17 +266,22 @@ migrate_provider_config() {
   "providers": {
     "codex": {
       "default": "$codex_model",
-      "fallback": "gpt-5.4",
-      "spark": "gpt-5.4",
+      "fallback": "gpt-5.5",
+      "spark": "gpt-5.5",
       "mini": "gpt-5.4-mini",
       "reasoning": "o3",
-      "large_context": "gpt-5.4"
+      "large_context": "gpt-5.5"
     },
     "gemini": {
       "default": "$gemini_model",
       "fallback": "gemini-3-flash-preview",
       "flash": "gemini-3-flash-preview",
-      "image": "gemini-3-pro-image-preview"
+      "image": "gemini-3-pro-image"
+    },
+    "agy": {
+      "default": "Gemini 3.1 Pro (High)",
+      "fallback": "Gemini 3.5 Flash (High)",
+      "flash": "Gemini 3.5 Flash (Low)"
     }
   },
   "routing": {
@@ -158,7 +289,7 @@ migrate_provider_config() {
       "deliver": "codex:default",
       "review": "codex:default",
       "security": "codex:reasoning",
-      "research": "gemini:default"
+      "research": "agy"
     },
     "roles": {
       "researcher": "perplexity"
@@ -194,6 +325,7 @@ EOF
         '.providers.codex.fallback'
         '.providers.gemini.default'
         '.providers.gemini.fallback'
+        '.providers.gemini.image'
         '.overrides.codex'
         '.overrides.gemini'
     )
@@ -206,13 +338,15 @@ EOF
         local replacement=""
         case "$current_val" in
             claude-sonnet-4-5|claude-sonnet-4-5-20250514|claude-3-5-sonnet*|claude-sonnet-4*)
-                if [[ "$path" == *codex* ]]; then replacement="gpt-5.4"; fi ;;
+                if [[ "$path" == *codex* ]]; then replacement="gpt-5.5"; fi ;;
             gemini-2.0-flash-thinking*|gemini-2.0-flash-exp*|gemini-exp-*)
                 replacement="gemini-3-flash-preview" ;;
             gemini-2.0-pro*|gemini-1.5-pro*|gemini-pro)
                 replacement="gemini-3.1-pro-preview" ;;
+            gemini-3-pro-image-preview)
+                replacement="gemini-3-pro-image" ;;  # shutdown 2026-06-25 (codex review)
             gpt-4o*|gpt-4-turbo*|gpt-4-*|o1-*|chatgpt-*)
-                replacement="gpt-5.4" ;;
+                replacement="gpt-5.5" ;;
         esac
 
         if [[ -n "$replacement" ]]; then
@@ -241,10 +375,10 @@ set_provider_model() {
 
     # v8.49.0: Provider whitelist validation
     case "$provider" in
-        codex|gemini|claude|perplexity|opencode|openrouter) ;;
+        codex|gemini|claude|claude-sdk|perplexity|opencode|openrouter|atlascloud|openai-compatible|openai-tools|openai-compatible-agent|cursor-agent) ;;
         *)
             if [[ "${4:-}" != "--force" ]]; then
-                echo "ERROR: Unknown provider '$provider'. Valid: codex, gemini, claude, perplexity, opencode, openrouter" >&2
+                echo "ERROR: Unknown provider '$provider'. Valid: codex, gemini, claude, claude-sdk, perplexity, opencode, openrouter, atlascloud, openai-compatible, openai-tools, openai-compatible-agent, cursor-agent" >&2
                 echo "  Use --force to set a custom provider (e.g., for local proxies)" >&2
                 return 1
             fi
@@ -260,7 +394,7 @@ set_provider_model() {
     if ! validate_model_name "$model"; then
         echo "ERROR: Invalid model name: '$model'" >&2
         echo "  Model names must not contain shell metacharacters (spaces, ;, |, &, \$, \`, quotes)" >&2
-        echo "  Examples: gpt-5.4, gemini-3.1-pro-preview, claude-opus-4.6" >&2
+        echo "  Examples: gpt-5.5, gemini-3.1-pro-preview, claude-opus-4.6" >&2
         return 1
     fi
 
@@ -272,18 +406,23 @@ set_provider_model() {
   "version": "3.0",
   "providers": {
     "codex": {
-      "default": "gpt-5.4",
-      "fallback": "gpt-5.4",
-      "spark": "gpt-5.4",
+      "default": "gpt-5.5",
+      "fallback": "gpt-5.5",
+      "spark": "gpt-5.5",
       "mini": "gpt-5.4-mini",
       "reasoning": "o3",
-      "large_context": "gpt-5.4"
+      "large_context": "gpt-5.5"
     },
     "gemini": {
       "default": "gemini-3.1-pro-preview",
       "fallback": "gemini-3-flash-preview",
       "flash": "gemini-3-flash-preview",
-      "image": "gemini-3-pro-image-preview"
+      "image": "gemini-3-pro-image"
+    },
+    "agy": {
+      "default": "Gemini 3.1 Pro (High)",
+      "fallback": "Gemini 3.5 Flash (High)",
+      "flash": "Gemini 3.5 Flash (Low)"
     }
   },
   "routing": {
@@ -291,7 +430,7 @@ set_provider_model() {
       "deliver": "codex:default",
       "review": "codex:default",
       "security": "codex:reasoning",
-      "research": "gemini:default"
+      "research": "agy"
     }
   },
   "tiers": {
@@ -346,12 +485,12 @@ reset_provider_model() {
         # Clear all overrides (v8.49.0: atomic)
         atomic_json_update "$config_file" '.overrides = {}'
         echo "✓ Cleared all model overrides"
-    elif [[ "$provider" =~ ^(codex|gemini|claude|perplexity|opencode|openrouter)$ ]]; then
+    elif [[ "$provider" =~ ^(codex|gemini|claude|claude-sdk|perplexity|opencode|openrouter|atlascloud|openai-compatible|openai-tools|openai-compatible-agent|cursor-agent)$ ]]; then
         # Clear specific override (v8.49.0: atomic + jq --arg)
         atomic_json_update "$config_file" 'del(.overrides[$p])' --arg p "$provider"
         echo "✓ Cleared $provider override"
     else
-        echo "ERROR: Invalid provider '$provider'. Use 'codex', 'gemini', 'claude', 'perplexity', 'opencode', 'openrouter', or 'all'" >&2
+        echo "ERROR: Invalid provider '$provider'. Use 'codex', 'gemini', 'claude', 'claude-sdk', 'perplexity', 'opencode', 'openrouter', 'atlascloud', 'openai-compatible-agent', 'cursor-agent', or 'all'" >&2
         return 1
     fi
 
@@ -421,6 +560,10 @@ reset_provider_lockouts() {
 # Each provider accumulates project-specific knowledge in .octo/providers/{name}-history.md
 
 append_provider_history() {
+    case "${OCTOPUS_PROVIDER_HISTORY:-on}" in
+        off|false|0|no) return 0 ;;
+    esac
+
     local provider="$1"
     local phase="$2"
     local task_brief="$3"
@@ -458,6 +601,10 @@ HISTEOF
 }
 
 read_provider_history() {
+    case "${OCTOPUS_PROVIDER_HISTORY:-on}" in
+        off|false|0|no) return 0 ;;
+    esac
+
     local provider="$1"
     local history_file="${WORKSPACE_DIR}/.octo/providers/${provider}-history.md"
 
@@ -515,10 +662,13 @@ is_api_based_provider() {
             [[ -n "${PERPLEXITY_API_KEY:-}" ]] && return 0
             return 1
             ;;
+        atlascloud)
+            [[ -n "${ATLASCLOUD_API_KEY:-}" ]] && return 0
+            return 1
+            ;;
         *)
             # Unknown provider, assume API-based for safety
             return 0
             ;;
     esac
 }
-

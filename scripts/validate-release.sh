@@ -25,12 +25,18 @@ echo ""
 echo "🔒 Checking plugin names..."
 
 PLUGIN_NAME=$(grep '"name"' "$ROOT_DIR/.claude-plugin/plugin.json" | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
+CODEX_PLUGIN_JSON="$ROOT_DIR/.codex-plugin/plugin.json"
+if [[ ! -f "$CODEX_PLUGIN_JSON" ]]; then
+    echo -e "  ${RED}CRITICAL ERROR: Codex plugin manifest not found at $CODEX_PLUGIN_JSON${NC}"
+    exit 1
+fi
+CODEX_PLUGIN_NAME=$(grep '"name"' "$CODEX_PLUGIN_JSON" | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
 MARKETPLACE_PLUGIN_NAME=$(sed -n '/"plugins"/,/]/p' "$ROOT_DIR/.claude-plugin/marketplace.json" | grep '"name"' | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
 
 if [[ "$PLUGIN_NAME" != "octo" ]]; then
     echo -e "  ${RED}CRITICAL ERROR: plugin.json name is '$PLUGIN_NAME' - MUST be 'octo'${NC}"
     echo -e "  ${RED}This controls command namespace (/octo:* commands)${NC}"
-    ((errors++))
+    ((errors++)) || true
 else
     echo -e "  ${GREEN}✓ plugin.json name: octo (command namespace)${NC}"
 fi
@@ -38,9 +44,17 @@ fi
 if [[ "$MARKETPLACE_PLUGIN_NAME" != "octo" ]]; then
     echo -e "  ${RED}CRITICAL ERROR: marketplace.json plugin name is '$MARKETPLACE_PLUGIN_NAME' - MUST be 'octo'${NC}"
     echo -e "  ${RED}This controls install command (octo@nyldn-plugins) and must match plugin.json name${NC}"
-    ((errors++))
+    ((errors++)) || true
 else
     echo -e "  ${GREEN}✓ marketplace.json plugin name: octo (matches plugin.json for /plugin UI)${NC}"
+fi
+
+if [[ "$CODEX_PLUGIN_NAME" != "$MARKETPLACE_PLUGIN_NAME" ]]; then
+    echo -e "  ${RED}CRITICAL ERROR: Codex plugin name '$CODEX_PLUGIN_NAME' does not match marketplace name '$MARKETPLACE_PLUGIN_NAME'${NC}"
+    echo -e "  ${RED}Codex rejects installation when these names differ${NC}"
+    ((errors++)) || true
+else
+    echo -e "  ${GREEN}✓ Codex plugin name: $CODEX_PLUGIN_NAME (matches marketplace selector)${NC}"
 fi
 
 echo ""
@@ -51,8 +65,16 @@ echo ""
 echo "📦 Checking version synchronization..."
 
 PLUGIN_VERSION=$(grep '"version"' "$ROOT_DIR/.claude-plugin/plugin.json" | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
-MARKETPLACE_VERSION=$(grep '"version"' "$ROOT_DIR/.claude-plugin/marketplace.json" | grep -v "1.0.0" | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
 PACKAGE_VERSION=$(grep '"version"' "$ROOT_DIR/package.json" | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
+
+MARKETPLACE_VERSION=""
+if ! command -v jq >/dev/null 2>&1; then
+    echo -e "  ${RED}ERROR: jq is required to parse marketplace.json${NC}"
+    ((errors++)) || true
+elif ! MARKETPLACE_VERSION=$(jq -r '.plugins[] | select(.name == "octo") | .version // empty' "$ROOT_DIR/.claude-plugin/marketplace.json"); then
+    echo -e "  ${RED}ERROR: unable to parse octo version from marketplace.json${NC}"
+    ((errors++)) || true
+fi
 
 # Check README badge
 README_BADGE_VERSION=$(grep -o 'Version-[0-9.]*' "$ROOT_DIR/README.md" | head -1 | sed 's/Version-//')
@@ -64,21 +86,93 @@ echo "  README badge:     $README_BADGE_VERSION"
 
 if [[ "$PLUGIN_VERSION" != "$MARKETPLACE_VERSION" ]]; then
     echo -e "  ${RED}ERROR: plugin.json ($PLUGIN_VERSION) != marketplace.json ($MARKETPLACE_VERSION)${NC}"
-    ((errors++))
+    ((errors++)) || true
 fi
 
 if [[ "$PLUGIN_VERSION" != "$PACKAGE_VERSION" ]]; then
     echo -e "  ${RED}ERROR: plugin.json ($PLUGIN_VERSION) != package.json ($PACKAGE_VERSION)${NC}"
-    ((errors++))
+    ((errors++)) || true
+fi
+
+if command -v jq >/dev/null 2>&1; then
+    while IFS='|' read -r label path expression; do
+        [[ -z "$label" ]] && continue
+        value=$(jq -r "$expression" "$ROOT_DIR/$path" 2>/dev/null || true)
+        echo "  $label: $value"
+        if [[ "$value" != "$PLUGIN_VERSION" ]]; then
+            echo -e "  ${RED}ERROR: $label ($value) != plugin.json ($PLUGIN_VERSION)${NC}"
+            ((errors++)) || true
+        fi
+    done < <(cat <<'EOF'
+codex-plugin|.codex-plugin/plugin.json|.version
+cursor-plugin|.cursor-plugin/plugin.json|.version
+factory-plugin|.factory-plugin/plugin.json|.version
+factory-marketplace|.factory-plugin/marketplace.json|.plugins[] | select(.name == "claude-octopus") | .version // empty
+EOF
+)
+
+    while IFS= read -r entry; do
+        [[ -z "$entry" ]] && continue
+        if ! jq -e --arg entry "$entry" '.files | index($entry)' "$ROOT_DIR/package.json" >/dev/null 2>&1; then
+            echo -e "  ${RED}ERROR: package.json files[] is missing public root '$entry'${NC}"
+            ((errors++)) || true
+        fi
+    done < <(cat <<'EOF'
+.claude-plugin/
+.codex-plugin/
+.cursor-plugin/
+.factory-plugin/
+.gemini/
+.opencode/
+.mcp.json
+bin/
+managed-settings.d/
+skills/
+docs/
+EOF
+)
 fi
 
 if [[ "$PLUGIN_VERSION" != "$README_BADGE_VERSION" ]]; then
     echo -e "  ${YELLOW}WARNING: plugin.json ($PLUGIN_VERSION) != README badge ($README_BADGE_VERSION)${NC}"
-    ((warnings++))
+    ((warnings++)) || true
 fi
 
 if [[ $errors -eq 0 ]] && [[ "$PLUGIN_VERSION" == "$MARKETPLACE_VERSION" ]] && [[ "$PLUGIN_VERSION" == "$PACKAGE_VERSION" ]]; then
     echo -e "  ${GREEN}✓ All versions synchronized: v$PLUGIN_VERSION${NC}"
+fi
+
+# Marketplace installers resolve by git ref; an un-tagged release silently
+# pins every consumer to main@HEAD.
+if git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if git -C "$ROOT_DIR" show-ref --verify --quiet "refs/tags/v$PLUGIN_VERSION" \
+       || git -C "$ROOT_DIR" show-ref --verify --quiet "refs/tags/$PLUGIN_VERSION"; then
+        echo -e "  ${GREEN}✓ git tag v$PLUGIN_VERSION exists${NC}"
+    else
+        echo -e "  ${YELLOW}WARNING: no git tag v$PLUGIN_VERSION — fresh installs pin to main@HEAD${NC}"
+        ((warnings++)) || true
+    fi
+fi
+
+echo ""
+
+# ============================================================================
+# 2b. PROVIDER CONTRACT AUDIT (release gate for provider drift)
+# ============================================================================
+echo "🔌 Running provider contract audit..."
+
+AUDIT_SCRIPT="$SCRIPT_DIR/helpers/audit-provider-contracts.sh"
+if [[ -x "$AUDIT_SCRIPT" ]]; then
+    if AUDIT_OUTPUT=$("$AUDIT_SCRIPT" 2>&1); then
+        echo -e "  ${GREEN}✓ $(echo "$AUDIT_OUTPUT" | grep '^SUMMARY' || echo 'provider contract audit passed')${NC}"
+    else
+        echo -e "  ${RED}ERROR: provider contract audit failed (provider auth/version/setup drift)${NC}"
+        echo "$AUDIT_OUTPUT" | grep '^FAIL' | sed 's/^/    /'
+        ((errors++)) || true
+    fi
+else
+    echo -e "  ${RED}ERROR: audit-provider-contracts.sh missing or not executable — provider contract is ungated${NC}"
+    ((errors++)) || true
 fi
 
 echo ""
@@ -93,24 +187,113 @@ if command -v claude >/dev/null 2>&1; then
         echo -e "  ${GREEN}✓ Claude plugin validator passed${NC}"
     else
         echo -e "  ${RED}ERROR: claude plugin validate failed for plugin.json${NC}"
-        ((errors++))
+        ((errors++)) || true
     fi
 
     if claude plugin validate "$ROOT_DIR/.claude-plugin/marketplace.json"; then
         echo -e "  ${GREEN}✓ Marketplace manifest validator passed${NC}"
     else
         echo -e "  ${RED}ERROR: claude plugin validate failed for marketplace.json${NC}"
-        ((errors++))
+        ((errors++)) || true
     fi
 else
     echo -e "  ${YELLOW}WARNING: claude CLI not installed; skipping runtime plugin validation${NC}"
-    ((warnings++))
+    ((warnings++)) || true
 fi
 
 echo ""
 
 # ============================================================================
-# 4. COMMAND REGISTRATION CHECK
+# 4. PLUGIN ZIP / URL RELEASE SMOKE
+# ============================================================================
+echo "📦 Checking plugin zip/plugin-url release smoke..."
+
+if command -v claude >/dev/null 2>&1; then
+    CLAUDE_HELP=$(claude --help 2>/dev/null || true)
+    if echo "$CLAUDE_HELP" | grep -q -- '--plugin-url'; then
+        echo -e "  ${GREEN}✓ Claude Code supports --plugin-url${NC}"
+    else
+        echo -e "  ${YELLOW}WARNING: Claude Code does not advertise --plugin-url; update to v2.1.129+ for URL smoke tests${NC}"
+        ((warnings++)) || true
+    fi
+
+    if echo "$CLAUDE_HELP" | grep -q -- '--plugin-dir' && echo "$CLAUDE_HELP" | grep -q '\.zip'; then
+        echo -e "  ${GREEN}✓ Claude Code supports --plugin-dir .zip archives${NC}"
+    else
+        echo -e "  ${YELLOW}WARNING: Claude Code does not advertise --plugin-dir .zip support; update to v2.1.128+ for archive smoke tests${NC}"
+        ((warnings++)) || true
+    fi
+
+    if command -v zip >/dev/null 2>&1; then
+        PLUGIN_ZIP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/octo-release-smoke.XXXXXX")
+        PLUGIN_ZIP="$PLUGIN_ZIP_DIR/octo-plugin.zip"
+        cleanup_release_smoke() {
+            if [[ -n "${PLUGIN_URL_SERVER_PID:-}" ]]; then
+                kill "$PLUGIN_URL_SERVER_PID" >/dev/null 2>&1 || true
+            fi
+            rm -rf "$PLUGIN_ZIP_DIR"
+        }
+        trap cleanup_release_smoke EXIT
+
+        if (cd "$ROOT_DIR" && zip -qr "$PLUGIN_ZIP" . \
+            -x '.git/*' './.git/*' '.claude-octopus/*' './.claude-octopus/*' \
+               'node_modules/*' './node_modules/*' '.DS_Store' './.DS_Store' \
+               '.tmp.*' './.tmp.*'); then
+            echo -e "  ${GREEN}✓ Packaged plugin zip for release smoke: $PLUGIN_ZIP${NC}"
+        else
+            echo -e "  ${RED}ERROR: Failed to package plugin zip for --plugin-dir smoke${NC}"
+            ((errors++)) || true
+        fi
+
+        if [[ "${OCTOPUS_RELEASE_RUNTIME_SMOKE:-0}" == "1" && -s "$PLUGIN_ZIP" ]]; then
+            RUNTIME_ZIP_OUT="$PLUGIN_ZIP_DIR/plugin-dir-runtime.jsonl"
+            if claude --plugin-dir "$PLUGIN_ZIP" --print --output-format stream-json --include-hook-events \
+                --max-budget-usd "${OCTOPUS_RELEASE_SMOKE_MAX_BUDGET_USD:-0.05}" \
+                "Reply exactly: octo plugin-dir zip smoke ok" >"$RUNTIME_ZIP_OUT" 2>&1; then
+                echo -e "  ${GREEN}✓ Runtime --plugin-dir zip smoke passed${NC}"
+            else
+                echo -e "  ${RED}ERROR: Runtime --plugin-dir zip smoke failed${NC}"
+                sed 's/^/    /' "$RUNTIME_ZIP_OUT" | tail -20
+                ((errors++)) || true
+            fi
+
+            if command -v python3 >/dev/null 2>&1 && echo "$CLAUDE_HELP" | grep -q -- '--plugin-url'; then
+                PLUGIN_URL_PORT="${OCTOPUS_RELEASE_SMOKE_PORT:-48731}"
+                (cd "$PLUGIN_ZIP_DIR" && python3 -m http.server "$PLUGIN_URL_PORT" --bind 127.0.0.1 >"$PLUGIN_ZIP_DIR/http.log" 2>&1) &
+                PLUGIN_URL_SERVER_PID=$!
+                sleep 1
+                PLUGIN_URL="http://127.0.0.1:${PLUGIN_URL_PORT}/$(basename "$PLUGIN_ZIP")"
+                RUNTIME_URL_OUT="$PLUGIN_ZIP_DIR/plugin-url-runtime.jsonl"
+                if claude --plugin-url "$PLUGIN_URL" --print --output-format stream-json --include-hook-events \
+                    --max-budget-usd "${OCTOPUS_RELEASE_SMOKE_MAX_BUDGET_USD:-0.05}" \
+                    "Reply exactly: octo plugin-url smoke ok" >"$RUNTIME_URL_OUT" 2>&1; then
+                    echo -e "  ${GREEN}✓ Runtime --plugin-url smoke passed${NC}"
+                else
+                    echo -e "  ${RED}ERROR: Runtime --plugin-url smoke failed${NC}"
+                    sed 's/^/    /' "$RUNTIME_URL_OUT" | tail -20
+                    ((errors++)) || true
+                fi
+            else
+                echo -e "  ${YELLOW}WARNING: python3 or --plugin-url unavailable; skipping URL runtime smoke${NC}"
+                ((warnings++)) || true
+            fi
+        else
+            echo -e "  ${GREEN}✓ Runtime plugin load smoke is opt-in${NC}"
+            echo "    Set OCTOPUS_RELEASE_RUNTIME_SMOKE=1 to exercise --plugin-dir zip and --plugin-url with Claude Code"
+        fi
+    else
+        echo -e "  ${YELLOW}WARNING: zip command not found; skipping plugin archive smoke package${NC}"
+        ((warnings++)) || true
+    fi
+else
+    echo -e "  ${YELLOW}WARNING: claude CLI not installed; skipping plugin zip/plugin-url smoke${NC}"
+    ((warnings++)) || true
+fi
+
+echo ""
+
+# ============================================================================
+# 5. COMMAND REGISTRATION CHECK
 # ============================================================================
 echo "📝 Checking command registration..."
 
@@ -120,11 +303,14 @@ COMMAND_FILES=$(ls "$ROOT_DIR/.claude/commands/"*.md 2>/dev/null | xargs -n1 bas
 # Get commands registered in plugin.json
 REGISTERED_COMMANDS=$(grep -o '\.claude/commands/[^"]*\.md' "$ROOT_DIR/.claude-plugin/plugin.json" | sed 's|.*\.claude/commands/||' | sort)
 
+# Plugin commands are namespaced by .claude-plugin/plugin.json (`octo`), so
+# command: doctor exposes /octo:doctor rather than a bare /doctor command.
+
 # Find unregistered commands
 for cmd_file in $COMMAND_FILES; do
     if ! echo "$REGISTERED_COMMANDS" | grep -q "^${cmd_file}$"; then
         echo -e "  ${RED}ERROR: Command file '$cmd_file' not registered in plugin.json${NC}"
-        ((errors++))
+        ((errors++)) || true
     fi
 done
 
@@ -132,7 +318,7 @@ done
 for reg_cmd in $REGISTERED_COMMANDS; do
     if ! echo "$COMMAND_FILES" | grep -q "^${reg_cmd}$"; then
         echo -e "  ${RED}ERROR: Registered command '$reg_cmd' does not exist${NC}"
-        ((errors++))
+        ((errors++)) || true
     fi
 done
 
@@ -157,8 +343,8 @@ for cmd_file in "$ROOT_DIR/.claude/commands/"*.md; do
     if [[ -n "$cmd_name" ]] && [[ "$cmd_name" == *":"* ]]; then
         echo -e "  ${RED}ERROR: $(basename "$cmd_file") has 'command: $cmd_name' - must NOT include namespace prefix${NC}"
         echo -e "  ${RED}  Claude Code will automatically add '/octo:' prefix based on plugin name${NC}"
-        ((errors++))
-        ((invalid_frontmatter++))
+        ((errors++)) || true
+        ((invalid_frontmatter++)) || true
     fi
 done
 
@@ -173,20 +359,28 @@ echo ""
 # ============================================================================
 echo "🎯 Checking skill registration..."
 
-SKILL_FILES=$(ls "$ROOT_DIR/.claude/skills/"*.md 2>/dev/null | xargs -n1 basename | sort)
-REGISTERED_SKILLS=$(grep -o '\.claude/skills/[^"]*\.md' "$ROOT_DIR/.claude-plugin/plugin.json" | sed 's|.*\.claude/skills/||' | sort)
+if command -v jq >/dev/null 2>&1 && jq -e '.skills[]? | select(startswith("./skills/"))' "$ROOT_DIR/.claude-plugin/plugin.json" >/dev/null 2>&1; then
+    SKILL_FILES=$(find "$ROOT_DIR/skills" -mindepth 2 -maxdepth 2 -name "SKILL.md" -type f 2>/dev/null | sed "s|^$ROOT_DIR/skills/||;s|/SKILL.md$||" | sort)
+    REGISTERED_SKILLS=$(jq -r '.skills[]? | select(startswith("./skills/")) | sub("^\\./skills/"; "") | sub("/$"; "")' "$ROOT_DIR/.claude-plugin/plugin.json" | sort)
+else
+    SKILL_FILES=$({
+        find "$ROOT_DIR/.claude/skills" -maxdepth 1 -type f -name '*.md' -print 2>/dev/null | xargs -n1 basename 2>/dev/null
+        find "$ROOT_DIR/.claude/skills" -mindepth 2 -maxdepth 2 -type f -name 'SKILL.md' -print 2>/dev/null | sed "s|^$ROOT_DIR/.claude/skills/||;s|/SKILL.md$||"
+    } | sort)
+    REGISTERED_SKILLS=$(grep -o '\.claude/skills/[^"]*\.md' "$ROOT_DIR/.claude-plugin/plugin.json" | sed 's|.*\.claude/skills/||' | sort)
+fi
 
 for skill_file in $SKILL_FILES; do
     if ! echo "$REGISTERED_SKILLS" | grep -q "^${skill_file}$"; then
         echo -e "  ${RED}ERROR: Skill file '$skill_file' not registered in plugin.json${NC}"
-        ((errors++))
+        ((errors++)) || true
     fi
 done
 
 for reg_skill in $REGISTERED_SKILLS; do
     if ! echo "$SKILL_FILES" | grep -q "^${reg_skill}$"; then
         echo -e "  ${RED}ERROR: Registered skill '$reg_skill' does not exist${NC}"
-        ((errors++))
+        ((errors++)) || true
     fi
 done
 
@@ -205,7 +399,17 @@ echo ""
 echo "🏷️  Checking skill frontmatter format..."
 
 invalid_skill_names=0
-for skill_file in "$ROOT_DIR/.claude/skills/"*.md; do
+if command -v jq >/dev/null 2>&1 && jq -e '.skills[]? | select(startswith("./skills/"))' "$ROOT_DIR/.claude-plugin/plugin.json" >/dev/null 2>&1; then
+    SKILL_FRONTMATTER_FILES=("$ROOT_DIR"/skills/*/SKILL.md)
+else
+    mapfile -t SKILL_FRONTMATTER_FILES < <({
+        find "$ROOT_DIR/.claude/skills" -maxdepth 1 -type f -name '*.md' -print 2>/dev/null
+        find "$ROOT_DIR/.claude/skills" -mindepth 2 -maxdepth 2 -type f -name 'SKILL.md' -print 2>/dev/null
+    } | LC_ALL=C sort)
+fi
+
+for skill_file in "${SKILL_FRONTMATTER_FILES[@]}"; do
+    [[ -f "$skill_file" ]] || continue
     skill_name=$(sed -n '2p' "$skill_file" | grep -o 'name: .*' | sed 's/name: //' || true)
     # Skip if no name found (might be a different format)
     if [[ -z "$skill_name" ]]; then
@@ -215,8 +419,8 @@ for skill_file in "$ROOT_DIR/.claude/skills/"*.md; do
     if [[ "$skill_name" != "skill-"* ]] && [[ "$skill_name" != "flow-"* ]] && [[ "$skill_name" != "octopus-"* ]] && [[ "$skill_name" != "sys-"* ]]; then
         echo -e "  ${RED}ERROR: $(basename "$skill_file") has 'name: $skill_name' - must use descriptive prefix${NC}"
         echo -e "  ${RED}  Use: skill-, flow-, sys-, or octopus- prefix (NOT octo:)${NC}"
-        ((errors++))
-        ((invalid_skill_names++))
+        ((errors++)) || true
+        ((invalid_skill_names++)) || true
     fi
 done
 
@@ -231,16 +435,29 @@ echo ""
 # ============================================================================
 echo "🏪 Checking marketplace description..."
 
-MARKETPLACE_DESC=$(grep '"description"' "$ROOT_DIR/.claude-plugin/marketplace.json" | grep -v "Multi-tentacled orchestration" | head -1)
+if command -v jq >/dev/null 2>&1; then
+    MARKETPLACE_DESC=$(jq -r '.plugins[] | select(.name == "octo") | .description // empty' "$ROOT_DIR/.claude-plugin/marketplace.json")
+else
+    MARKETPLACE_DESC=$(grep '"description"' "$ROOT_DIR/.claude-plugin/marketplace.json" | grep -v "Multi-tentacled orchestration" | head -1)
+fi
 
 if echo "$MARKETPLACE_DESC" | grep -q "v$PLUGIN_VERSION"; then
     echo -e "  ${GREEN}✓ Marketplace description mentions v$PLUGIN_VERSION${NC}"
 else
     echo -e "  ${YELLOW}WARNING: Marketplace description may not mention current version v$PLUGIN_VERSION${NC}"
-    ((warnings++))
+    ((warnings++)) || true
 fi
 
 echo ""
+
+# Release artifact creation is intentionally limited to a clean main checkout.
+# Running validation on a dirty release branch should validate files only, not
+# create tags/releases that point at the wrong commit.
+CURRENT_BRANCH=$(git -C "$ROOT_DIR" branch --show-current 2>/dev/null || echo "")
+WORKTREE_DIRTY=$(git -C "$ROOT_DIR" status --porcelain 2>/dev/null || echo "")
+can_create_release_artifacts() {
+    [[ "$CURRENT_BRANCH" == "main" && -z "$WORKTREE_DIRTY" ]]
+}
 
 # ============================================================================
 # 9. GIT TAG CHECK & AUTO-CREATE
@@ -255,37 +472,29 @@ if git tag -l "$EXPECTED_TAG" | grep -q "$EXPECTED_TAG"; then
     if [[ "$TAG_COMMIT" == "$HEAD_COMMIT" ]]; then
         echo -e "  ${GREEN}✓ Tag $EXPECTED_TAG exists and points to HEAD${NC}"
     else
-        echo -e "  ${YELLOW}WARNING: Tag $EXPECTED_TAG exists but doesn't point to HEAD${NC}"
-        echo -e "  ${YELLOW}  Tag points to: ${TAG_COMMIT:0:7}${NC}"
-        echo -e "  ${YELLOW}  HEAD is:       ${HEAD_COMMIT:0:7}${NC}"
-        echo -e "  ${YELLOW}  Updating tag to point to current HEAD...${NC}"
-
-        # Delete old tag locally and remotely, create new one
-        git tag -d "$EXPECTED_TAG" >/dev/null 2>&1 || true
-        git push origin ":refs/tags/$EXPECTED_TAG" >/dev/null 2>&1 || true
+        echo -e "  ${RED}ERROR: Tag $EXPECTED_TAG exists but doesn't point to HEAD${NC}"
+        echo -e "  ${RED}  Tag points to: ${TAG_COMMIT:0:7}${NC}"
+        echo -e "  ${RED}  HEAD is:       ${HEAD_COMMIT:0:7}${NC}"
+        echo -e "  ${RED}  Refusing to move an existing release tag automatically${NC}"
+        ((errors++)) || true
+    fi
+else
+    echo -e "  ${YELLOW}NOTE: Tag $EXPECTED_TAG not yet created${NC}"
+    if can_create_release_artifacts; then
+        echo -e "  ${GREEN}  Auto-creating tag...${NC}"
 
         # Extract CHANGELOG entry for tag message
         TAG_MESSAGE=$(awk "/## \[$PLUGIN_VERSION\]/,/^## \[/" "$ROOT_DIR/CHANGELOG.md" | head -20 | tail -n +2)
         if [[ -n "$TAG_MESSAGE" ]]; then
             git tag -a "$EXPECTED_TAG" -m "$TAG_MESSAGE"
+            echo -e "  ${GREEN}✓ Tag $EXPECTED_TAG created with CHANGELOG excerpt${NC}"
         else
             git tag -a "$EXPECTED_TAG" -m "Release $EXPECTED_TAG"
+            echo -e "  ${GREEN}✓ Tag $EXPECTED_TAG created${NC}"
         fi
-        echo -e "  ${GREEN}✓ Tag $EXPECTED_TAG updated to point to HEAD${NC}"
-        ((warnings++))
-    fi
-else
-    echo -e "  ${YELLOW}NOTE: Tag $EXPECTED_TAG not yet created${NC}"
-    echo -e "  ${GREEN}  Auto-creating tag...${NC}"
-
-    # Extract CHANGELOG entry for tag message
-    TAG_MESSAGE=$(awk "/## \[$PLUGIN_VERSION\]/,/^## \[/" "$ROOT_DIR/CHANGELOG.md" | head -20 | tail -n +2)
-    if [[ -n "$TAG_MESSAGE" ]]; then
-        git tag -a "$EXPECTED_TAG" -m "$TAG_MESSAGE"
-        echo -e "  ${GREEN}✓ Tag $EXPECTED_TAG created with CHANGELOG excerpt${NC}"
     else
-        git tag -a "$EXPECTED_TAG" -m "Release $EXPECTED_TAG"
-        echo -e "  ${GREEN}✓ Tag $EXPECTED_TAG created${NC}"
+        echo -e "  ${YELLOW}  Deferring tag creation until release changes are merged to clean main${NC}"
+        ((warnings++)) || true
     fi
 fi
 
@@ -306,11 +515,11 @@ if [[ -f "$CHANGELOG_FILE" ]]; then
     else
         echo -e "  ${RED}ERROR: CHANGELOG.md missing entry for v$PLUGIN_VERSION${NC}"
         echo -e "  ${RED}  Add a changelog entry before releasing${NC}"
-        ((errors++))
+        ((errors++)) || true
     fi
 else
     echo -e "  ${YELLOW}WARNING: CHANGELOG.md not found${NC}"
-    ((warnings++))
+    ((warnings++)) || true
 fi
 
 echo ""
@@ -341,7 +550,7 @@ else
             # Check if tag exists on remote
             REMOTE_TAG_SHA=$(git ls-remote origin "refs/tags/$EXPECTED_TAG" 2>/dev/null | cut -f1)
 
-            if [[ -n "$REMOTE_TAG_SHA" ]]; then
+            if [[ -n "$REMOTE_TAG_SHA" ]] && can_create_release_artifacts; then
                 echo -e "  ${GREEN}  Auto-creating GitHub release from CHANGELOG...${NC}"
 
                 # Extract CHANGELOG entry for this version
@@ -353,15 +562,15 @@ else
                         echo -e "  ${GREEN}✓ GitHub release $EXPECTED_TAG created${NC}"
                     else
                         echo -e "  ${YELLOW}WARNING: Failed to create GitHub release${NC}"
-                        ((warnings++))
+                        ((warnings++)) || true
                     fi
                 else
                     echo -e "  ${YELLOW}WARNING: No CHANGELOG entry found for v$PLUGIN_VERSION${NC}"
                     echo -e "  ${YELLOW}  Cannot auto-create release without release notes${NC}"
-                    ((warnings++))
+                    ((warnings++)) || true
                 fi
             else
-                echo -e "  ${YELLOW}  Tag not yet pushed to remote - will create release after push${NC}"
+                echo -e "  ${YELLOW}  Release creation deferred until tag exists on clean main${NC}"
             fi
         fi
     fi
@@ -370,13 +579,32 @@ fi
 echo ""
 
 # ============================================================================
-# HELPER: Push tag if needed (v8.13.0 - deduplicated, always --force)
+# HELPER: Push tag if needed
 # ============================================================================
 push_tag_if_needed() {
     local tag="$1"
+    if ! can_create_release_artifacts; then
+        echo -e "${YELLOW}NOTE: Not pushing/creating release artifacts outside a clean main checkout${NC}"
+        return 0
+    fi
+
     if git tag -l "$tag" | grep -q "$tag"; then
-        REMOTE_TAG_SHA=$(git ls-remote origin "refs/tags/$tag" 2>/dev/null | cut -f1)
+        REMOTE_TAG_SHA=$(git ls-remote origin "refs/tags/$tag^{}" 2>/dev/null | cut -f1)
+        if [[ -z "$REMOTE_TAG_SHA" ]]; then
+            REMOTE_TAG_SHA=$(git ls-remote origin "refs/tags/$tag" 2>/dev/null | cut -f1)
+        fi
         LOCAL_TAG_SHA=$(git rev-list -n 1 "$tag" 2>/dev/null)
+        HEAD_COMMIT=$(git rev-parse HEAD)
+
+        if [[ "$LOCAL_TAG_SHA" != "$HEAD_COMMIT" ]]; then
+            echo -e "${YELLOW}WARNING: Not pushing $tag because it does not point to HEAD${NC}"
+            return 0
+        fi
+
+        if [[ -n "$REMOTE_TAG_SHA" ]] && [[ "$REMOTE_TAG_SHA" != "$LOCAL_TAG_SHA" ]]; then
+            echo -e "${RED}ERROR: Remote tag $tag already exists at ${REMOTE_TAG_SHA:0:7}; refusing to rewrite it${NC}"
+            return 1
+        fi
 
         if [[ "$REMOTE_TAG_SHA" == "$LOCAL_TAG_SHA" ]] && [[ -n "$REMOTE_TAG_SHA" ]]; then
             echo -e "${GREEN}✓ Tag $tag already up to date on remote${NC}"
@@ -385,7 +613,7 @@ push_tag_if_needed() {
 
         echo ""
         echo -e "${GREEN}📤 Pushing tag $tag to remote...${NC}"
-        git push --no-verify origin "$tag" --force 2>/dev/null
+        git push --no-verify origin "$tag" 2>/dev/null
         echo -e "${GREEN}✓ Tag pushed to remote${NC}"
 
         # Auto-create GitHub release if gh is available and authenticated
